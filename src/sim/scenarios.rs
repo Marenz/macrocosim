@@ -271,10 +271,9 @@ fn quoted(ctx: &mut TulispContext, obj: TulispObject) -> TulispObject {
     [ctx.intern("quote"), obj].into_iter().collect()
 }
 
-/// Resolve a scenario's `record` directive to a directory. The Lisp
-/// runner can't branch on symbol-vs-string (tulisp has no
-/// `stringp`/`symbolp` defun), so it's done here: a symbol (`'csv`)
-/// becomes a default per-scenario dir, a string is taken verbatim.
+/// Resolve a scenario's `record` directive to a directory: a symbol
+/// (`'csv`) becomes a default per-scenario dir, a string is taken
+/// verbatim.
 fn record_dir(o: &TulispObject, name: &str) -> Result<String, String> {
     if o.symbolp() {
         Ok(format!("scenario-{name}"))
