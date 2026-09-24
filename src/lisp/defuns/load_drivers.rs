@@ -40,6 +40,7 @@ AsList! {
 /// Sets boiler `id`'s steam demand from `value` (a number, lambda or
 /// symbol), in kg/s.
 fn set_boiler_demand(
+    ctx: &mut TulispContext,
     router: &SharedSiteRouter,
     name: &str,
     id: i64,
@@ -61,7 +62,9 @@ fn set_boiler_demand(
         let kg_per_s = f64::try_from(value)? as f32;
         boiler.set_steam_demand_kg_per_s(kg_per_s);
         w.note_knob_changed(id as u64, "boiler-demand", Some(kg_per_s), None, None);
-    } else if let Some(scalar) = crate::sim::dynamic_scalar::DynamicScalar::from_lisp(value, 0.0) {
+    } else if let Some(scalar) =
+        crate::sim::dynamic_scalar::DynamicScalar::from_lisp(ctx, value, 0.0)?
+    {
         // Printed source and the cached value right after
         // construction — same pattern as set-meter-power.
         let printed = value.to_string();
@@ -93,7 +96,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     let r = router.clone();
     ctx.defun(
         "set-meter-power",
-        move |id: i64, value: TulispObject| -> Result<bool, Error> {
+        move |ctx: &mut TulispContext, id: i64, value: TulispObject| -> Result<bool, Error> {
             let w = r.site();
             let Some(c) = w.get(id as u64) else {
                 return Err(Error::invalid_argument(format!(
@@ -110,7 +113,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                 }
                 w.note_knob_changed(id as u64, "meter-power", Some(watts as f32), None, None);
             } else if let Some(scalar) =
-                crate::sim::dynamic_scalar::DynamicScalar::from_lisp(&value, 0.0)
+                crate::sim::dynamic_scalar::DynamicScalar::from_lisp(ctx, &value, 0.0)?
             {
                 // Printed source (same text `source_text` would report)
                 // and the cached value right after construction, before
@@ -143,7 +146,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     let r = router.clone();
     ctx.defun(
         "set-meter-reactive-power",
-        move |id: i64, value: TulispObject| -> Result<bool, Error> {
+        move |ctx: &mut TulispContext, id: i64, value: TulispObject| -> Result<bool, Error> {
             let w = r.site();
             let Some(c) = w.get(id as u64) else {
                 return Err(Error::invalid_argument(format!(
@@ -164,7 +167,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                     None,
                 );
             } else if let Some(scalar) =
-                crate::sim::dynamic_scalar::DynamicScalar::from_lisp(&value, 0.0)
+                crate::sim::dynamic_scalar::DynamicScalar::from_lisp(ctx, &value, 0.0)?
             {
                 // Printed source and the cached value right after
                 // construction, before the scalar moves into the
@@ -319,7 +322,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     let r = router.clone();
     ctx.defun(
         "set-solar-sunlight",
-        move |id: i64, value: TulispObject| -> Result<bool, Error> {
+        move |ctx: &mut TulispContext, id: i64, value: TulispObject| -> Result<bool, Error> {
             let w = r.site();
             let Some(c) = w.get(id as u64) else {
                 return Err(Error::invalid_argument(format!(
@@ -352,7 +355,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                 }
                 w.note_knob_changed(id as u64, "solar-sunlight", Some(pct), None, None);
             } else if let Some(scalar) =
-                crate::sim::dynamic_scalar::DynamicScalar::from_lisp(&value, 100.0)
+                crate::sim::dynamic_scalar::DynamicScalar::from_lisp(ctx, &value, 100.0)?
             {
                 // Printed source and the cached value right after
                 // construction — same pattern as set-meter-power above.
@@ -428,8 +431,8 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     let r = router.clone();
     ctx.defun(
         "set-boiler-demand-kg-per-s",
-        move |id: i64, value: TulispObject| -> Result<bool, Error> {
-            set_boiler_demand(&r, "set-boiler-demand-kg-per-s", id, &value)
+        move |ctx: &mut TulispContext, id: i64, value: TulispObject| -> Result<bool, Error> {
+            set_boiler_demand(ctx, &r, "set-boiler-demand-kg-per-s", id, &value)
         },
     );
 
@@ -439,7 +442,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
         move |ctx: &mut TulispContext, id: i64, value: TulispObject| -> Result<bool, Error> {
             warn_renamed("set-boiler-demand", "set-boiler-demand-kg-per-s", " (kg/s)");
             let value = Convert::PerHourToPerSecond.apply(ctx, "set-boiler-demand", &value)?;
-            set_boiler_demand(&r, "set-boiler-demand", id, &value)
+            set_boiler_demand(ctx, &r, "set-boiler-demand", id, &value)
         },
     );
 

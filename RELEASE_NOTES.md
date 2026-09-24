@@ -202,6 +202,19 @@ What to change in your own scripts:
   one of ok, error, standby`. A string in place of a symbol gets
   `Expected a symbol for Health (one of ok, error, standby), got:
   "error"`. Update code that matches the old text.
+- A dynamic value is now compiled once, when you give it. This covers
+  the expression or symbol given to `:power-w`, `:reactive-power-var`,
+  `:sunlight-pct` or `:demand-kg-per-s`, and to `set-meter-power`,
+  `set-meter-reactive-power`, `set-solar-sunlight`,
+  `set-boiler-demand` or `set-boiler-demand-kg-per-s`. A form that
+  does not compile, such as `'(car)`, is an error at that call. In a
+  config file it stops the file from loading.
+- A macro in such an expression is expanded at that call. Define it
+  before the call, earlier in the same file or in an earlier eval. A
+  macro defined later is not picked up, and neither is a later change
+  to a value the macro reads.
+- A function such an expression calls can be defined or redefined
+  later. The next refresh uses the new definition.
 - `(ev-info ID)`, `(ev-presets)` and `(weather-status)` read back the new
   names with no old names: `:soc-pct`, `:target-soc-pct`,
   `:capacity-wh` (Wh, not kWh), `clear-sky-pct` and `sunlight-pct`.

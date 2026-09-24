@@ -353,7 +353,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
     let r = router.clone();
     ctx.defun(
         "%make-meter",
-        move |_ctx: &mut TulispContext, args: Plist<Renamed<MeterArgs>>| {
+        move |ctx: &mut TulispContext, args: Plist<Renamed<MeterArgs>>| {
             let w = r.site();
             let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
@@ -365,12 +365,12 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             // per-component value comes first and wins.
             // `DynamicScalar::from_lisp` dispatches on shape — constant
             // for numbers, eval/funcall for the rest.
-            let power_source = a
-                .power
-                .as_ref()
-                .and_then(|v| DynamicScalar::from_lisp(v, 0.0));
+            let power_source = match a.power.as_ref() {
+                Some(v) => DynamicScalar::from_lisp(ctx, v, 0.0)?,
+                None => None,
+            };
             let reactive_source =
-                meter_reactive_source(a.reactive_power.as_ref(), a.power_factor, a.leading)?;
+                meter_reactive_source(ctx, a.reactive_power.as_ref(), a.power_factor, a.leading)?;
             let meter = Meter::new(
                 id,
                 interval,
@@ -495,7 +495,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
     let r = router.clone();
     ctx.defun(
         "%make-solar-inverter",
-        move |_ctx: &mut TulispContext, args: Plist<Renamed<SolarInverterArgs>>| {
+        move |ctx: &mut TulispContext, args: Plist<Renamed<SolarInverterArgs>>| {
             let w = r.site();
             let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
@@ -525,7 +525,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                         }
                     } else {
                         let fallback = cfg.sunlight_pct.unwrap_or(100.0);
-                        dynamic_sunlight = DynamicScalar::from_lisp(raw, fallback);
+                        dynamic_sunlight = DynamicScalar::from_lisp(ctx, raw, fallback)?;
                         cfg.sunlight_dynamic = true;
                     }
                 }
@@ -696,7 +696,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
     let r = router.clone();
     ctx.defun(
         "%make-steam-boiler",
-        move |_ctx: &mut TulispContext, args: Plist<Renamed<SteamBoilerArgs>>| {
+        move |ctx: &mut TulispContext, args: Plist<Renamed<SteamBoilerArgs>>| {
             let w = r.site();
             let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
@@ -750,7 +750,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                         cfg.demand_kg_per_s = kg_per_s as f32;
                     }
                 } else {
-                    dynamic_demand = DynamicScalar::from_lisp(raw, cfg.demand_kg_per_s);
+                    dynamic_demand = DynamicScalar::from_lisp(ctx, raw, cfg.demand_kg_per_s)?;
                     cfg.demand_dynamic = true;
                 }
             }
@@ -910,6 +910,7 @@ pub(crate) fn preset_from_lisp(
 /// valid power factor) are rejected here rather than left to produce
 /// nonsense Q downstream.
 fn meter_reactive_source(
+    ctx: &mut TulispContext,
     reactive_power: Option<&TulispObject>,
     power_factor: Option<f64>,
     leading: Option<bool>,
@@ -935,9 +936,10 @@ fn meter_reactive_source(
             leading: leading.unwrap_or(false),
         }));
     }
-    Ok(reactive_power
-        .and_then(|v| DynamicScalar::from_lisp(v, 0.0))
-        .map(ReactiveSource::Var))
+    match reactive_power {
+        Some(v) => Ok(DynamicScalar::from_lisp(ctx, v, 0.0)?.map(ReactiveSource::Var)),
+        None => Ok(None),
+    }
 }
 
 /// Resolve the component id from an `:id` plist value, falling back to

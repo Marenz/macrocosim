@@ -719,7 +719,7 @@ mod tests {
     fn lambda_power_source_refreshes_each_tick() {
         let mut ctx = tulisp::TulispContext::new();
         let lambda = ctx.eval_string("(lambda () 1234.5)").unwrap();
-        let scalar = DynamicScalar::from_lisp(&lambda, 0.0).expect("lambda → dynamic");
+        let scalar = DynamicScalar::from_funcall(lambda, 0.0);
         assert!(scalar.is_dynamic());
 
         let w = MicrogridSite::new();
@@ -776,7 +776,7 @@ mod tests {
         let m = Meter::new(
             1,
             Duration::from_secs(1),
-            DynamicScalar::from_lisp(&1875.0f64.into(), 0.0),
+            Some(DynamicScalar::constant(1875.0)),
             None,
             0.0,
             false,
@@ -1115,7 +1115,7 @@ mod tests {
         // A scenario displaces it with a dynamic source.
         let mut ctx = tulisp::TulispContext::new();
         let lambda = ctx.eval_string("(lambda () 42.0)").unwrap();
-        m.set_active_power_source(DynamicScalar::from_lisp(&lambda, 0.0).unwrap());
+        m.set_active_power_source(DynamicScalar::from_funcall(lambda, 0.0));
         assert!(m.meter_power_reading().unwrap().expr.is_some());
 
         assert!(m.restore_knob(snap));

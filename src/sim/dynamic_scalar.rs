@@ -20,25 +20,13 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use tulisp::{TulispContext, TulispObject};
-
-/// How to resolve the source expression on each refresh.
-#[derive(Clone)]
-enum Source {
-    /// Evaluate the expression as-is. Symbols deref to their variable
-    /// value; arithmetic forms compute; numeric literals self-evaluate.
-    Eval(TulispObject),
-    /// Call the source with no arguments. For lambda values supplied
-    /// directly as a plist value (`:power-w (lambda () …)`) — in tulisp
-    /// such a lambda is self-evaluating, so eval would just hand back
-    /// the lambda; funcall actually runs it.
-    Funcall(TulispObject),
-}
+use tulisp::{Error, TulispContext, TulispObject};
 
 /// A scalar input that is either a constant or a Lisp expression.
 pub struct DynamicScalar {
     cached: AtomicU32,
-    source: Option<Source>,
+    /// The zero-argument function each refresh calls.
+    source: Option<TulispObject>,
     /// Printed Lisp form of `source`, captured at construction so
     /// read-back never touches the `TulispObject` off the
     /// interpreter lock. `None` for constants.
@@ -49,7 +37,7 @@ pub struct DynamicScalar {
 /// current bits, `Acquire` pairing with `set`'s `Release`) alongside
 /// the source and its printed text. The cached value and the atomic
 /// itself are independent after the clone: a `set` on one never
-/// touches the other. The `Source` it wraps is a different story —
+/// touches the other. The source it holds is a different story —
 /// the `TulispObject` inside is itself `Clone`, an `Arc` bump under
 /// tulisp's sync feature, so a lambda's or symbol's underlying Lisp
 /// cell is deliberately SHARED between the original and the clone;
@@ -78,17 +66,26 @@ impl DynamicScalar {
         }
     }
 
-    /// A Lisp-driven value resolved by [`TulispContext::eval`] each
-    /// refresh. Use this for symbol-form sources (`'consumer-power`)
-    /// or arbitrary Lisp expressions whose evaluation yields a
-    /// number.
-    pub fn from_eval(expr: TulispObject, fallback: f32) -> Self {
+    /// A Lisp-driven value: EXPR is compiled once, as the body of a
+    /// lambda, and the lambda is called on each refresh. Use this for
+    /// symbol-form sources (`'consumer-power`) or arbitrary Lisp
+    /// expressions whose evaluation yields a number. Fails if EXPR
+    /// does not compile.
+    pub fn from_eval(
+        ctx: &mut TulispContext,
+        expr: TulispObject,
+        fallback: f32,
+    ) -> Result<Self, Error> {
         let source_text = Some(expr.to_string());
-        Self {
+        let lambda: TulispObject = [ctx.intern("lambda"), TulispObject::nil(), expr]
+            .into_iter()
+            .collect();
+        let callable = ctx.eval(&lambda)?;
+        Ok(Self {
             cached: AtomicU32::new(fallback.to_bits()),
-            source: Some(Source::Eval(expr)),
+            source: Some(callable),
             source_text,
-        }
+        })
     }
 
     /// A Lisp-driven value resolved by [`TulispContext::funcall`]
@@ -99,7 +96,7 @@ impl DynamicScalar {
         let source_text = Some(callable.to_string());
         Self {
             cached: AtomicU32::new(fallback.to_bits()),
-            source: Some(Source::Funcall(callable)),
+            source: Some(callable),
             source_text,
         }
     }
@@ -109,24 +106,28 @@ impl DynamicScalar {
     /// - `nil` → `None`.
     /// - number → [`Self::constant`].
     /// - symbol, cons, string → [`Self::from_eval`] (a symbol derefs;
-    ///   a cons re-evaluates each refresh).
+    ///   a cons is compiled once and runs on each refresh).
     /// - anything else (`Lambda` / `CompiledDefun` / opaque Rust
     ///   handle) → [`Self::from_funcall`].
     ///
     /// Pass a lambda value *unquoted* in the plist —
     /// `:power-w (lambda () …)` — so the plist evaluator hands back the
     /// compiled function rather than the literal list.
-    pub fn from_lisp(obj: &TulispObject, fallback: f32) -> Option<Self> {
+    pub fn from_lisp(
+        ctx: &mut TulispContext,
+        obj: &TulispObject,
+        fallback: f32,
+    ) -> Result<Option<Self>, Error> {
         if obj.null() {
-            return None;
+            return Ok(None);
         }
         if obj.numberp() {
-            return f64::try_from(obj).ok().map(|n| Self::constant(n as f32));
+            return Ok(f64::try_from(obj).ok().map(|n| Self::constant(n as f32)));
         }
         if obj.symbolp() || obj.consp() || obj.stringp() {
-            return Some(Self::from_eval(obj.clone(), fallback));
+            return Self::from_eval(ctx, obj.clone(), fallback).map(Some);
         }
-        Some(Self::from_funcall(obj.clone(), fallback))
+        Ok(Some(Self::from_funcall(obj.clone(), fallback)))
     }
 
     /// Read the cached resolved value. Cheap; never blocks. Acquire
@@ -165,10 +166,8 @@ impl DynamicScalar {
     /// garbage.
     pub fn refresh(&self, ctx: &mut TulispContext) {
         let Some(src) = &self.source else { return };
-        let (label, result) = match src {
-            Source::Eval(e) => (e, ctx.eval(e)),
-            Source::Funcall(f) => (f, ctx.funcall(f, ())),
-        };
+        let label = self.source_text.as_deref().unwrap_or_default();
+        let result = ctx.funcall(src, ());
         match result {
             Ok(obj) => match f64::try_from(&obj) {
                 Ok(v) if v.is_finite() => self.set(v as f32),
@@ -220,10 +219,23 @@ mod tests {
         // `'(* 3 14.0)` returns the quoted list itself; refresh evals
         // it to 42.0.
         let src = ctx.eval_string("'(* 3 14.0)").unwrap();
-        let s = DynamicScalar::from_eval(src, 0.0);
+        let s = DynamicScalar::from_eval(&mut ctx, src, 0.0).unwrap();
         assert_eq!(s.get(), 0.0);
         s.refresh(&mut ctx);
         assert_eq!(s.get(), 42.0);
+    }
+
+    // The expression is compiled once, when the value is made: a
+    // macro redefined afterwards does not change it.
+    #[test]
+    fn from_eval_compiles_once() {
+        let mut ctx = TulispContext::new();
+        ctx.eval_string("(defmacro level () 1.0)").unwrap();
+        let src = ctx.eval_string("'(level)").unwrap();
+        let s = DynamicScalar::from_eval(&mut ctx, src, 0.0).unwrap();
+        ctx.eval_string("(defmacro level () 2.0)").unwrap();
+        s.refresh(&mut ctx);
+        assert_eq!(s.get(), 1.0);
     }
 
     #[test]
@@ -233,7 +245,7 @@ mod tests {
         // refresh path should reject it and keep the fallback
         // rather than poison the cache.
         let src = ctx.eval_string("'(/ 1.0 0.0)").unwrap();
-        let s = DynamicScalar::from_eval(src, 7.5);
+        let s = DynamicScalar::from_eval(&mut ctx, src, 7.5).unwrap();
         s.refresh(&mut ctx);
         assert_eq!(s.get(), 7.5);
     }
@@ -242,7 +254,7 @@ mod tests {
     fn from_eval_keeps_fallback_on_non_numeric() {
         let mut ctx = TulispContext::new();
         let src = ctx.eval_string("'\"not a number\"").unwrap();
-        let s = DynamicScalar::from_eval(src, 1.5);
+        let s = DynamicScalar::from_eval(&mut ctx, src, 1.5).unwrap();
         s.refresh(&mut ctx);
         assert_eq!(s.get(), 1.5);
     }
@@ -252,7 +264,7 @@ mod tests {
         let mut ctx = TulispContext::new();
         ctx.eval_string("(setq consumer-power 1500.0)").unwrap();
         let sym = ctx.eval_string("'consumer-power").unwrap();
-        let s = DynamicScalar::from_eval(sym, 0.0);
+        let s = DynamicScalar::from_eval(&mut ctx, sym, 0.0).unwrap();
         s.refresh(&mut ctx);
         assert_eq!(s.get(), 1500.0);
         // Mutate the bound variable; refresh picks up the new value.
@@ -276,13 +288,17 @@ mod tests {
 
         // Numeric → constant.
         let n = ctx.eval_string("42.0").unwrap();
-        let s = DynamicScalar::from_lisp(&n, 0.0).unwrap();
+        let s = DynamicScalar::from_lisp(&mut ctx, &n, 0.0)
+            .unwrap()
+            .unwrap();
         assert!(!s.is_dynamic());
         assert_eq!(s.get(), 42.0);
 
         // Lambda value (CompiledDefun after eval) → funcall.
         let l = ctx.eval_string("(lambda () 9.5)").unwrap();
-        let s = DynamicScalar::from_lisp(&l, 0.0).unwrap();
+        let s = DynamicScalar::from_lisp(&mut ctx, &l, 0.0)
+            .unwrap()
+            .unwrap();
         assert!(s.is_dynamic());
         s.refresh(&mut ctx);
         assert_eq!(s.get(), 9.5);
@@ -290,20 +306,28 @@ mod tests {
         // Symbol → eval (deref) on refresh.
         ctx.eval_string("(setq pv-cap 8000.0)").unwrap();
         let sym = ctx.eval_string("'pv-cap").unwrap();
-        let s = DynamicScalar::from_lisp(&sym, 0.0).unwrap();
+        let s = DynamicScalar::from_lisp(&mut ctx, &sym, 0.0)
+            .unwrap()
+            .unwrap();
         assert!(s.is_dynamic());
         s.refresh(&mut ctx);
         assert_eq!(s.get(), 8000.0);
 
         // Cons cell (arbitrary Lisp expression) → eval on refresh.
         let expr = ctx.eval_string("'(* 2 21)").unwrap();
-        let s = DynamicScalar::from_lisp(&expr, 0.0).unwrap();
+        let s = DynamicScalar::from_lisp(&mut ctx, &expr, 0.0)
+            .unwrap()
+            .unwrap();
         s.refresh(&mut ctx);
         assert_eq!(s.get(), 42.0);
 
         // nil → None.
         let nil = ctx.eval_string("nil").unwrap();
-        assert!(DynamicScalar::from_lisp(&nil, 0.0).is_none());
+        assert!(
+            DynamicScalar::from_lisp(&mut ctx, &nil, 0.0)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -321,7 +345,7 @@ mod tests {
         let mut ctx = TulispContext::new();
         ctx.eval_string("(setq clone-src 10.0)").unwrap();
         let sym = ctx.eval_string("'clone-src").unwrap();
-        let s = DynamicScalar::from_eval(sym, 0.0);
+        let s = DynamicScalar::from_eval(&mut ctx, sym, 0.0).unwrap();
         s.refresh(&mut ctx);
         assert_eq!(s.get(), 10.0);
 
@@ -350,7 +374,9 @@ mod tests {
         // source rather than the opaque `CompiledDefun` a compiled
         // lambda value would print as.
         let obj = ctx.eval_string("'(lambda () 5)").unwrap();
-        let s = DynamicScalar::from_lisp(&obj, 0.0).unwrap();
+        let s = DynamicScalar::from_lisp(&mut ctx, &obj, 0.0)
+            .unwrap()
+            .unwrap();
         let text = s.source_text().expect("dynamic scalar has source text");
         assert!(text.contains("lambda"), "got: {text}");
     }

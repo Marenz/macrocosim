@@ -811,7 +811,7 @@ mod tests {
         let mut ctx = tulisp::TulispContext::new();
         let b = boiler(SteamBoilerConfig::default());
         let lambda = ctx.eval_string("(lambda () 77.0)").unwrap();
-        let scalar = DynamicScalar::from_lisp(&lambda, 0.0).unwrap();
+        let scalar = DynamicScalar::from_funcall(lambda, 0.0);
         b.set_steam_demand_source(scalar);
         let text_before = b.demand_reading().expr;
         assert!(text_before.is_some());

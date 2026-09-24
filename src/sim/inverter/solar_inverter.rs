@@ -762,7 +762,7 @@ mod tests {
         let mut ctx = tulisp::TulispContext::new();
         let inv = SolarInverter::new(1, Duration::from_secs(1), cfg_with_sun(100.0));
         let lambda = ctx.eval_string("(lambda () 40.0)").unwrap();
-        let scalar = DynamicScalar::from_lisp(&lambda, 100.0).expect("lambda → dynamic");
+        let scalar = DynamicScalar::from_funcall(lambda, 100.0);
         inv.set_sunlight_source(scalar);
 
         // Pre-refresh: the cached fallback (100.0) is still in effect.
@@ -781,7 +781,7 @@ mod tests {
         let mut ctx = tulisp::TulispContext::new();
         let inv = SolarInverter::new(1, Duration::from_secs(1), cfg_with_sun(100.0));
         let lambda = ctx.eval_string("(lambda () 70.0)").unwrap();
-        inv.set_sunlight_source(DynamicScalar::from_lisp(&lambda, 100.0).unwrap());
+        inv.set_sunlight_source(DynamicScalar::from_funcall(lambda, 100.0));
         inv.refresh_inputs(&mut ctx);
         assert!((inv.min_avail_w() - (-7_000.0)).abs() < 1e-3);
 
@@ -1032,7 +1032,7 @@ mod tests {
         assert!(!inv.has_unrenderable_source(), "a static one is fine");
         let mut ctx = tulisp::TulispContext::new();
         let lambda = ctx.eval_string("(lambda () 40.0)").unwrap();
-        inv.set_sunlight_source(DynamicScalar::from_lisp(&lambda, 80.0).unwrap());
+        inv.set_sunlight_source(DynamicScalar::from_funcall(lambda, 80.0));
         assert!(inv.has_unrenderable_source());
     }
 
@@ -1116,7 +1116,7 @@ mod tests {
         let mut ctx = tulisp::TulispContext::new();
         let inv = SolarInverter::new(1, Duration::from_secs(1), cfg_with_sun(50.0));
         let lambda = ctx.eval_string("(lambda () 33.0)").unwrap();
-        let scalar = DynamicScalar::from_lisp(&lambda, 50.0).unwrap();
+        let scalar = DynamicScalar::from_funcall(lambda, 50.0);
         inv.set_sunlight_source(scalar);
         let text_before = inv.sunlight_reading().expr;
         assert!(text_before.is_some());
