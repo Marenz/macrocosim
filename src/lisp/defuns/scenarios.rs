@@ -302,10 +302,7 @@ pub(super) fn register_lifecycle(
             // and leave its agents and cues firing into the new run.
             //
             // The full `(scenario-stop)` — not just the Rust half —
-            // so the previous run's timers are cancelled too. Same
-            // `ctx.eval`-on-a-built-form reason as `scenario-stop`'s
-            // own call into `scenario--cancel-timers`: `eval_string`
-            // would reset `eval_depth` re-entrantly.
+            // so the previous run's timers are cancelled too.
             //
             // Termination is structural, not a matter of this check:
             // stopping a scenario never starts one, so there is no
@@ -325,9 +322,8 @@ pub(super) fn register_lifecycle(
                 sites.iter().any(|s| s.scenario_is_running())
             };
             if running {
-                let stop_call: TulispObject =
-                    vec![ctx.intern("scenario-stop")].into_iter().collect();
-                if let Err(e) = ctx.eval(&stop_call) {
+                let stop = ctx.intern("scenario-stop");
+                if let Err(e) = ctx.funcall(&stop, ()) {
                     log::warn!(
                         "scenario-start: tearing down the running scenario failed: {}",
                         e
@@ -357,27 +353,12 @@ pub(super) fn register_lifecycle(
             // this point could re-drive a knob a heartbeat after
             // restore puts it back, undoing the restore.
             //
-            // `ctx.eval`, NOT `ctx.eval_string`: this defun body runs
-            // WHILE `(scenario-stop)` itself is being evaluated, and
-            // `eval_string` unconditionally resets `eval_depth` to 0
-            // as its top-level entry point — fine called from Rust
-            // between evals (`reload`'s own `(cancel-timers)` call),
-            // but re-entrant here it corrupts the outer eval's depth
-            // bookkeeping and the bytecode interpreter panics
-            // ("attempt to subtract with overflow") once IT tries to
-            // unwind. Building the call form and using `ctx.eval`
-            // (which doesn't touch `eval_depth`) avoids the hazard —
-            // same pattern `sim::scenarios::start` uses to invoke
-            // `scenario--run` from Rust.
-            //
             // Errors are logged rather than propagated — a teardown
             // must still restore knobs even if cancellation itself
             // somehow fails (e.g. scenarios.lisp wasn't loaded in
             // this context).
-            let cancel_call: TulispObject = vec![ctx.intern("scenario--cancel-timers")]
-                .into_iter()
-                .collect();
-            if let Err(e) = ctx.eval(&cancel_call) {
+            let cancel = ctx.intern("scenario--cancel-timers");
+            if let Err(e) = ctx.funcall(&cancel, ()) {
                 log::warn!("scenario-stop: scenario--cancel-timers failed: {e}");
             }
             let now = nowsrc.now();

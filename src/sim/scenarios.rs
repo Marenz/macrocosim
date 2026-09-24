@@ -264,13 +264,6 @@ pub fn snapshot(registry: &SharedScenarios) -> Vec<ScenarioView> {
     out
 }
 
-/// Wrap `obj` in `(quote OBJ)` so a pre-built value (a lambda, a
-/// section plist, a list) rides through `eval` intact rather than
-/// being evaluated as code.
-fn quoted(ctx: &mut TulispContext, obj: TulispObject) -> TulispObject {
-    [ctx.intern("quote"), obj].into_iter().collect()
-}
-
 /// Resolve a scenario's `record` directive to a directory: a symbol
 /// (`'csv`) becomes a default per-scenario dir, a string is taken
 /// verbatim.
@@ -319,23 +312,11 @@ pub fn start(
 
     let mut c = ctx.borrow_mut();
     // (scenario--run NAME SEED SETUP DRIVE AGENTS CUES EXPECT RECORD-DIR),
-    // every arg quoted so the already-built section values pass through.
-    let args = [
-        TulispObject::from(sname),
-        seed.map_or_else(TulispObject::nil, TulispObject::from),
-        setup.unwrap_or_else(TulispObject::nil),
-        drive.into_iter().collect(),
-        agents.into_iter().collect(),
-        cues.into_iter().collect(),
-        expect.into_iter().collect(),
-        rec.map_or_else(TulispObject::nil, TulispObject::from),
-    ];
-    let mut call = vec![c.intern("scenario--run")];
-    for a in args {
-        call.push(quoted(&mut c, a));
-    }
-    let call: TulispObject = call.into_iter().collect();
-    c.eval(&call).map(|_| ()).map_err(|e| e.to_string())
+    // with the section values as they are; a `None` goes as nil.
+    let run = c.intern("scenario--run");
+    c.funcall(&run, (sname, seed, setup, drive, agents, cues, expect, rec))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
