@@ -21,6 +21,7 @@ use crate::sim::microgrids::SharedSiteRouter;
 
 use super::{Metadata, handle, make};
 
+mod bounds;
 mod clock;
 mod frequency;
 mod fs;
@@ -69,7 +70,8 @@ pub(super) fn register_runtime(
     weather::register(ctx, router.clone());
     time::register(ctx);
     reactive::register(ctx, router.clone());
-    setpoints::register(ctx, router.clone(), metadata);
+    setpoints::register(ctx, router.clone(), metadata.clone());
+    bounds::register(ctx, router.clone(), metadata);
     queries::register(ctx, router.clone());
     world_ops::register(ctx, router.clone());
     scenarios::register_lifecycle(ctx, router, microgrids, now);

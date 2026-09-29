@@ -51,6 +51,8 @@ export const COMPLETIONS = [
   "ev-presets",
   "set-active-power",
   "set-reactive-power",
+  "augment-active-bounds",
+  "augment-reactive-bounds",
   "set-meter-power",
   "clear-meter-power",
   "clear-meter-reactive",

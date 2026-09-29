@@ -62,6 +62,8 @@ exercises the simulator:
 | `(set-component-command-mode ID K)`    | `'normal` / `'timeout` / `'error`                        |
 | `(set-active-power ID W &OPTIONAL MS CLAMP)` | gRPC-style setpoint; MS = lifetime in ms, non-nil CLAMP clamps into the live envelope instead of rejecting |
 | `(set-reactive-power ID VAR &OPTIONAL MS CLAMP)` | same for the reactive axis; CLAMP pulls into `reactive_setpoint_envelope` (own PF / kVA band ∩ children's Q bands ∩ live augmentations), falling back to the component's own band when no child reports one |
+| `(augment-active-bounds ID BOUNDS &OPTIONAL MS)` | gRPC-style bounds augmentation: BOUNDS is `(LO HI)` or a list of bands, e.g. `'((-10000 -1000) (1000 10000))` for an exclusion zone; nil edge = unbounded; MS = lifetime in ms (default `default-augment-lifetime-ms`) |
+| `(augment-reactive-bounds ID BOUNDS &OPTIONAL MS)` | same for the reactive axis |
 | `(set-meter-reactive-power ID VAL)`    | drive a meter's `:reactive-power` (number / lambda / `'symbol`)  |
 | `(set-meter-power-factor ID PF &OPTIONAL LEADING)` | drive a meter's `:power-factor` (true cos φ in `(0, 1]`); non-nil LEADING negates the derived Q |
 | `(plug-ev ID PRESET &rest OVERRIDES)`  | plug a preset car (`'phev` `'city` `'sedan` `'van`) into a charger; overrides `:soc :target-soc :phases :max-current-a :capacity-kwh :taper-start :taper-floor` |
