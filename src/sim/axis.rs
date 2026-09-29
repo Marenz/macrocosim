@@ -39,8 +39,9 @@ pub struct AxisConfig {
 pub enum IdleTarget {
     /// Leave the ramp target alone when no command is armed.
     Hold,
-    /// Track this value when no command is armed (clamped into the
-    /// tracking envelope; an empty envelope parks at 0).
+    /// Track this value when no command is armed (0 holds; any other
+    /// value is clamped into the tracking envelope, and an empty
+    /// envelope parks at 0).
     Value(f32),
 }
 
@@ -215,38 +216,45 @@ impl PowerAxis {
     }
 
     /// drop_expired → promote (poll) → re-clamp the retained armed
-    /// value into the tracking envelope (empty envelope → park 0) or
-    /// apply the idle rule → slew → publish → return the new actual.
+    /// value into the tracking envelope (park 0 for a 0 value or an
+    /// empty envelope) or apply the idle rule → slew → publish → return
+    /// the new actual.
     pub fn step(&self, now: DateTime<Utc>, dt: Duration, ctx: StepCtx<'_>) -> f32 {
         self.augs.lock().drop_expired(now);
-        let env = self.tracking_envelope_at(now, ctx.other_axis, ctx.dynamic);
 
-        if let Some(armed) = self.delay.poll(now) {
-            // CommandDelay re-returns the armed value on every poll,
-            // so re-clamping it here every tick is what makes
-            // tighten→follow / re-widen→restore work with no extra
-            // state on this side.
-            if env.0.is_empty() {
-                self.ramp.set_target(0.0);
+        // CommandDelay re-returns the armed value on every poll, so
+        // re-clamping it here every tick is what makes tighten→follow /
+        // re-widen→restore work with no extra state on this side.
+        let target = match self.delay.poll(now) {
+            Some(armed) => Some(armed),
+            None => match ctx.idle {
+                IdleTarget::Value(v) if v.is_finite() => Some(v),
+                // A non-finite idle target (NaN from a bad
+                // dynamic-scalar read, say) must not reach the ramp —
+                // Ramp::set_target already drops NaN downstream, but
+                // validating at the door here matches accept's posture
+                // instead of relying on that as the only net.
+                IdleTarget::Value(_) => {
+                    log::debug!("PowerAxis::step ignored a non-finite idle target");
+                    None
+                }
+                IdleTarget::Hold => None,
+            },
+        };
+        // No target: leave the ramp target untouched.
+        if let Some(v) = target {
+            // "For power metrics, regardless of the bounds, 0W is
+            // always allowed" (Microgrid API), which is `accept`'s park
+            // rule, so 0 is never pulled to a band edge. An empty
+            // envelope parks at 0.
+            let tracked = if v == 0.0 {
+                0.0
             } else {
-                self.ramp.set_target(env.clamp(armed));
-            }
-        } else if let IdleTarget::Value(v) = ctx.idle {
-            // A non-finite idle target (NaN from a bad dynamic-scalar
-            // read, say) must not reach the ramp — Ramp::set_target
-            // already drops NaN downstream, but validating at the
-            // door here matches accept's posture instead of relying
-            // on that as the only net.
-            if !v.is_finite() {
-                log::debug!("PowerAxis::step ignored a non-finite idle target");
-            } else if env.0.is_empty() {
-                self.ramp.set_target(0.0);
-            } else {
-                self.ramp.set_target(env.clamp(v));
-            }
+                let env = self.tracking_envelope_at(now, ctx.other_axis, ctx.dynamic);
+                if env.0.is_empty() { 0.0 } else { env.clamp(v) }
+            };
+            self.ramp.set_target(tracked);
         }
-        // IdleTarget::Hold with nothing armed, or a non-finite idle
-        // value: leave the ramp target untouched.
 
         let actual = self.ramp.advance(dt);
         *self.published.lock() = actual;
@@ -422,6 +430,7 @@ impl PowerAxis {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::common::metrics::Bounds;
 
     /// A Q axis's per-tick context: the live P as the other axis, no
     /// dynamic band, and hold when nothing is armed.
@@ -493,6 +502,51 @@ mod tests {
             ),
             8_000.0
         );
+    }
+
+    /// 0 W is always allowed, whatever the bounds (Microgrid API): a 0
+    /// setpoint, or an idle 0, holds 0 inside an exclusion gap instead
+    /// of being pulled to the nearest band edge; any other value still
+    /// is.
+    #[test]
+    fn zero_holds_inside_an_exclusion_gap() {
+        let ax = PowerAxis::new(AxisConfig {
+            rated: Some((-10_000.0, 10_000.0)),
+            caps: None,
+            command_delay: Duration::ZERO,
+            ramp_rate_per_s: f32::INFINITY,
+            unit: "W",
+        });
+        let t0 = Utc::now();
+        let gap = VecBounds::new(vec![
+            Bounds {
+                lower: Some(-5_000.0),
+                upper: Some(-1_000.0),
+            },
+            Bounds {
+                lower: Some(1_000.0),
+                upper: Some(5_000.0),
+            },
+        ]);
+        ax.augment(t0, gap, Duration::from_secs(60));
+        let ctx = |idle| StepCtx {
+            other_axis: 0.0,
+            dynamic: None,
+            idle,
+        };
+        let dt = Duration::from_secs(1);
+        assert_eq!(ax.step(t0, dt, ctx(IdleTarget::Value(0.0))), 0.0);
+        ax.accept(0.0, t0, 0.0).unwrap();
+        assert_eq!(ax.step(t0, dt, ctx(IdleTarget::Hold)), 0.0);
+        ax.accept(3_000.0, t0, 0.0).unwrap();
+        assert_eq!(ax.step(t0, dt, ctx(IdleTarget::Hold)), 3_000.0);
+        // A later tightening still pulls a non-zero value to the edge.
+        ax.augment(
+            t0,
+            VecBounds::single(-10_000.0, 2_000.0),
+            Duration::from_secs(60),
+        );
+        assert_eq!(ax.step(t0, dt, ctx(IdleTarget::Hold)), 2_000.0);
     }
 
     #[test]
