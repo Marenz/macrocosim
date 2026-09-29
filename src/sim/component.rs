@@ -177,15 +177,33 @@ impl fmt::Display for SetpointError {
 
 impl std::error::Error for SetpointError {}
 
-/// Why an augmentation was not stored. `Unsupported` is a component
-/// with no augmentation storage on that axis (the gateway answers
-/// UNIMPLEMENTED, as for a setpoint it takes none of); `Disjoint`
-/// carries the component's current envelope, which the proposal does
-/// not overlap.
+/// Why an augmentation was not stored.
 #[derive(Debug)]
 pub enum AugmentError {
+    /// No bands, a non-finite edge, or an inverted band.
+    Malformed(String),
+    /// The component has no augmentation storage on that axis (the
+    /// gateway answers UNIMPLEMENTED, as for a setpoint it takes none
+    /// of).
     Unsupported,
+    /// The proposal does not overlap the component's current envelope,
+    /// carried here: what a client could still command, not the empty
+    /// composed result.
     Disjoint(VecBounds),
+}
+
+impl fmt::Display for AugmentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Malformed(m) => write!(f, "{m}"),
+            Self::Unsupported => write!(f, "stores no augmentation on this axis"),
+            Self::Disjoint(env) => write!(
+                f,
+                "augmentation is disjoint from the component's current envelope {env}; \
+                 no valid setpoint would remain"
+            ),
+        }
+    }
 }
 
 /// Per-tick snapshot a component emits for the gRPC telemetry
@@ -378,9 +396,9 @@ pub enum KnobSnapshot {
 ///   - **Lifecycle**: stream_interval, stream_jitter_pct, tick, telemetry.
 ///   - **Setpoints**: set_active_setpoint, set_reactive_setpoint,
 ///     reset_setpoint, try_augment_active_bounds,
-///     try_augment_reactive_bounds (the two atomic augment doors the
-///     gRPC route uses), augment_reactive_bounds (the unchecked
-///     test-only Q door), set_active_power_override.
+///     try_augment_reactive_bounds (the per-axis atomic augment doors
+///     behind `try_augment_bounds`), augment_reactive_bounds (the
+///     unchecked test-only Q door), set_active_power_override.
 ///   - **Bounds**: rated_active_bounds, effective_active_bounds,
 ///     reactive_bounds, rated_fuse_current.
 ///   - **Aggregation** (parent → child): aggregate_power_w,
@@ -525,13 +543,14 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     ) {
     }
 
-    /// Validate and apply an active-power bounds augmentation
-    /// atomically — the door behind the `AugmentElectricalComponent
-    /// Bounds` gRPC method's `AC_POWER_ACTIVE` route. The four
-    /// axis-backed components (`EvCharger`, `SteamBoiler`,
-    /// `BatteryInverter`, `SolarInverter`) override this to route
-    /// through their axis's `PowerAxis::try_augment`, which composes,
-    /// checks and inserts under one lock.
+    /// Check an active-power bounds augmentation against the live
+    /// envelope and apply it atomically. Reached through
+    /// `try_augment_bounds` (on `dyn SimulatedComponent`), which runs
+    /// the shape checks first; this door does not. The four axis-backed
+    /// components (`EvCharger`, `SteamBoiler`, `BatteryInverter`,
+    /// `SolarInverter`) override this to route through their axis's
+    /// `PowerAxis::try_augment`, which composes, checks and inserts
+    /// under one lock.
     ///
     /// The default says `Unsupported`: this component stores no
     /// augmentation on its active axis. A battery, a meter, a grid
@@ -975,6 +994,29 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// format rules: floats via `lisp_float`, non-finite values omitted,
     /// disabled reactive caps pinned as `0`.
     fn constructor_kwargs(&self) -> Vec<(&'static str, String)>;
+}
+
+impl dyn SimulatedComponent {
+    /// Validate and apply a bounds augmentation on `axis`: the shape
+    /// checks ([`VecBounds::check_augmentation_shape`]), then that
+    /// axis's atomic door. Callers use this rather than the per-axis
+    /// doors, which skip the shape checks.
+    pub fn try_augment_bounds(
+        &self,
+        axis: crate::timeout_tracker::SetpointAxis,
+        create_ts: DateTime<Utc>,
+        bounds: VecBounds,
+        lifetime: Duration,
+    ) -> Result<(), AugmentError> {
+        use crate::timeout_tracker::SetpointAxis;
+        bounds
+            .check_augmentation_shape()
+            .map_err(AugmentError::Malformed)?;
+        match axis {
+            SetpointAxis::Active => self.try_augment_active_bounds(create_ts, bounds, lifetime),
+            SetpointAxis::Reactive => self.try_augment_reactive_bounds(create_ts, bounds, lifetime),
+        }
+    }
 }
 
 /// Cloneable handle that we hand to Lisp via `Shared<dyn TulispAny>`.

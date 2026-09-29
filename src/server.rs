@@ -48,54 +48,6 @@ fn resolve_lifetime(
     }
 }
 
-/// Reject a malformed bounds augmentation before it reaches a
-/// component: an empty set, a non-finite edge, or an inverted band
-/// (lower > upper). These three are shape checks on the proposed band
-/// alone — axis-agnostic and independent of any live state, so they
-/// belong at the gateway.
-///
-/// Checking the proposed band against the component's CURRENT
-/// envelope does NOT belong here — that used to be a fourth check in
-/// this function, reading the envelope lock-free and applying it in a
-/// separate lock acquisition at the call site, which let two
-/// concurrent clients with mutually disjoint bands each validate
-/// against the same pre-state, both apply, and empty the composed
-/// envelope between them. Contrary to this function's old doc
-/// comment, an emptied envelope does NOT leave the running output
-/// "unconstrained": `PowerAxis::step` special-cases an empty tracking
-/// envelope to target 0 (see axis.rs), so the component parks at 0 W
-/// until the augmentation's TTL lapses. The fix moves that check into
-/// `PowerAxis::try_augment`, which composes, checks, and inserts
-/// under one lock — see the call site below.
-fn validate_augmentation(proposed: &VecBounds) -> Result<(), tonic::Status> {
-    if proposed.0.is_empty() {
-        return Err(tonic::Status::invalid_argument(
-            "augmentation contains no bounds",
-        ));
-    }
-    // NaN edges sail through every later comparison (all false),
-    // storing a de-facto no-op augmentation acknowledged with an
-    // expiry — reject them as a protocol error instead.
-    if let Some(b) = proposed.0.iter().find(|b| {
-        b.lower.is_some_and(|l| !l.is_finite()) || b.upper.is_some_and(|u| !u.is_finite())
-    }) {
-        return Err(tonic::Status::invalid_argument(format!(
-            "augmentation bound [{:?}, {:?}] has a non-finite edge",
-            b.lower, b.upper
-        )));
-    }
-    if let Some(b) = proposed
-        .0
-        .iter()
-        .find(|b| matches!((b.lower, b.upper), (Some(l), Some(u)) if l > u))
-    {
-        return Err(tonic::Status::invalid_argument(format!(
-            "augmentation bound [{:?}, {:?}] is inverted (lower > upper)",
-            b.lower, b.upper
-        )));
-    }
-    Ok(())
-}
 use crate::proto::common::microgrid::electrical_components::ElectricalComponentConnection;
 use crate::proto::common::microgrid::{Microgrid, MicrogridStatus};
 use crate::proto::microgrid::{
@@ -684,25 +636,21 @@ impl microgrid_server::Microgrid for MicrogridServer {
         })?;
         // Only the two AC power axes carry augmentable bounds. Every
         // other metric is a protocol error, and the message names the
-        // metric that was asked for.
-        if !matches!(
-            target_metric,
-            Metric::AcPowerActive | Metric::AcPowerReactive
-        ) {
-            return Err(tonic::Status::invalid_argument(format!(
-                "Unsupported metric type: {}. Only AC_POWER_ACTIVE and \
-                 AC_POWER_REACTIVE are supported.",
-                target_metric.as_str_name()
-            )));
-        }
-        let reactive = target_metric == Metric::AcPowerReactive;
-        // Journal the axis: the two routes log distinct kinds so
-        // /api/setpoints, the event bus and the setpoints CSV can tell
-        // a P augmentation from a Q one.
-        let journal_kind = if reactive {
-            SetpointKind::AugmentReactiveBounds
-        } else {
-            SetpointKind::AugmentBounds
+        // metric that was asked for. The two axes journal distinct
+        // kinds so /api/setpoints, the event bus and the setpoints CSV
+        // can tell a P augmentation from a Q one.
+        let (axis, journal_kind) = match target_metric {
+            Metric::AcPowerActive => (SetpointAxis::Active, SetpointKind::AugmentBounds),
+            Metric::AcPowerReactive => {
+                (SetpointAxis::Reactive, SetpointKind::AugmentReactiveBounds)
+            }
+            other => {
+                return Err(tonic::Status::invalid_argument(format!(
+                    "Unsupported metric type: {}. Only AC_POWER_ACTIVE and \
+                     AC_POWER_REACTIVE are supported.",
+                    other.as_str_name()
+                )));
+            }
         };
 
         let lifetime = resolve_lifetime(
@@ -740,69 +688,37 @@ impl microgrid_server::Microgrid for MicrogridServer {
             // Reject the augmentation for an errored/standby/unreachable
             // device, same as a setpoint command.
             Some(component) => match self.gate_runtime_faults(id).await {
-                Ok(_) => {
-                    let proposed = VecBounds::new(req.bounds);
-                    // `validate_augmentation` is now shape-only (empty,
-                    // non-finite edge, inverted); disjoint-from-the-live-
-                    // envelope is checked by the component itself,
-                    // atomically with applying it on an axis-backed
-                    // component (`PowerAxis::try_augment`, derate band
-                    // included). A component with no axis to store the
-                    // augmentation in answers `Unsupported` instead of
-                    // checking anything. That closes the race this
-                    // function used to have: validating against a
-                    // lock-free read here, then applying in a second,
-                    // separate lock acquisition, let two concurrent
-                    // clients with mutually disjoint bands each pass
-                    // and empty the composed envelope between them.
-                    match validate_augmentation(&proposed) {
-                        Ok(()) => {
-                            let applied = if reactive {
-                                component.try_augment_reactive_bounds(now, proposed, lifetime)
-                            } else {
-                                component.try_augment_active_bounds(now, proposed, lifetime)
-                            };
-                            match applied {
-                                Ok(()) => {
-                                    let expiry = now + chrono::Duration::seconds(lifetime_s);
-                                    Ok(tonic::Response::new(
-                                        AugmentElectricalComponentBoundsResponse {
-                                            valid_until_time: Some(
-                                                crate::proto_conv::datetime_to_ts(expiry),
-                                            ),
-                                        },
-                                    ))
-                                }
-                                // The component stores no augmentation
-                                // on this axis, so there is nothing an
-                                // ACK could promise. Same answer the
-                                // setpoint path gives a component that
-                                // takes no setpoint on this axis.
-                                Err(AugmentError::Unsupported) => {
-                                    Err(tonic::Status::unimplemented(format!(
-                                        "component {id} stores no augmentation for {}",
-                                        target_metric.as_str_name()
-                                    )))
-                                }
-                                // The `Disjoint` payload is the
-                                // component's CURRENT envelope — what a
-                                // client could still command — not the
-                                // composed result, which is empty
-                                // whenever this arm is reached and so
-                                // renders as a constant "[]". Naming
-                                // the live envelope tells the client
-                                // where to retry.
-                                Err(AugmentError::Disjoint(env)) => {
-                                    Err(tonic::Status::invalid_argument(format!(
-                                        "augmentation is disjoint from the component's current \
-                                         envelope {env}; no valid setpoint would remain",
-                                    )))
-                                }
-                            }
-                        }
-                        Err(status) => Err(status),
+                // The component checks the shape, then checks its
+                // live envelope and inserts under one lock
+                // (`PowerAxis::try_augment`), so concurrent clients
+                // can't empty the envelope between check and insert.
+                Ok(_) => match component.try_augment_bounds(
+                    axis,
+                    now,
+                    VecBounds::new(req.bounds),
+                    lifetime,
+                ) {
+                    Ok(()) => {
+                        let expiry = now + chrono::Duration::seconds(lifetime_s);
+                        Ok(tonic::Response::new(
+                            AugmentElectricalComponentBoundsResponse {
+                                valid_until_time: Some(crate::proto_conv::datetime_to_ts(expiry)),
+                            },
+                        ))
                     }
-                }
+                    Err(AugmentError::Malformed(m)) => Err(tonic::Status::invalid_argument(m)),
+                    // The component stores no augmentation on this
+                    // axis, so there is nothing an ACK could promise.
+                    // Same answer the setpoint path gives a component
+                    // that takes no setpoint on this axis.
+                    Err(AugmentError::Unsupported) => Err(tonic::Status::unimplemented(format!(
+                        "component {id} stores no augmentation for {}",
+                        target_metric.as_str_name()
+                    ))),
+                    Err(e @ AugmentError::Disjoint(_)) => {
+                        Err(tonic::Status::invalid_argument(e.to_string()))
+                    }
+                },
                 Err(status) => Err(status),
             },
             None => Err(tonic::Status::not_found(format!(

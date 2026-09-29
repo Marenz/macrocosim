@@ -62,6 +62,37 @@ impl VecBounds {
         VecBounds(bounds)
     }
 
+    /// The shape checks a bounds augmentation must pass: at least one
+    /// band, no non-finite edge, no inverted band. The check against
+    /// the live envelope is the component's (`PowerAxis::try_augment`).
+    pub fn check_augmentation_shape(&self) -> Result<(), String> {
+        if self.0.is_empty() {
+            return Err("augmentation contains no bounds".to_string());
+        }
+        // NaN edges sail through every later comparison (all false),
+        // storing a de-facto no-op augmentation acknowledged with an
+        // expiry — reject them as a protocol error instead.
+        if let Some(b) = self.0.iter().find(|b| {
+            b.lower.is_some_and(|l| !l.is_finite()) || b.upper.is_some_and(|u| !u.is_finite())
+        }) {
+            return Err(format!(
+                "augmentation bound [{:?}, {:?}] has a non-finite edge",
+                b.lower, b.upper
+            ));
+        }
+        if let Some(b) = self
+            .0
+            .iter()
+            .find(|b| matches!((b.lower, b.upper), (Some(l), Some(u)) if l > u))
+        {
+            return Err(format!(
+                "augmentation bound [{:?}, {:?}] is inverted (lower > upper)",
+                b.lower, b.upper
+            ));
+        }
+        Ok(())
+    }
+
     pub fn contains(&self, value: f32) -> bool {
         self.0.iter().any(|b| bounds_contains(b, value))
     }
@@ -411,6 +442,21 @@ impl ComponentBounds {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each shape rule rejects with its own message; a well-formed
+    /// band, open edges included, passes.
+    #[test]
+    fn augmentation_shape_checks() {
+        let err = |b: VecBounds| b.check_augmentation_shape().unwrap_err();
+        assert!(err(VecBounds::default()).contains("contains no bounds"));
+        assert!(err(VecBounds::single(f32::NAN, 1.0)).contains("non-finite edge"));
+        assert!(err(VecBounds::single(1.0, -1.0)).contains("is inverted"));
+        let open = VecBounds(vec![Bounds {
+            lower: None,
+            upper: Some(1.0),
+        }]);
+        assert!(open.check_augmentation_shape().is_ok());
+    }
 
     /// `or_zero_band` normalizes an empty band list to a single
     /// `(0.0, 0.0)` band, and leaves a non-empty `VecBounds`
