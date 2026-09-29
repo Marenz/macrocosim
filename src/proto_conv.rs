@@ -322,11 +322,13 @@ pub fn telemetry_to_proto(
     {
         states.push(code as i32);
     }
-    if let Some(s) = t.cable_state
-        && let Some(code) = parse_state(s)
-    {
-        states.push(code as i32);
-    }
+    states.extend(
+        t.cable_states
+            .iter()
+            .copied()
+            .filter_map(parse_state)
+            .map(|code| code as i32),
+    );
 
     // No state codes resolved → no snapshot at all; an empty snapshot
     // would make a metrics-only frame look like a state report.
@@ -675,6 +677,10 @@ mod tests {
         assert!(states.contains(&(C::Charging as i32)), "{states:?}");
         assert!(
             states.contains(&(C::EvChargingCableLockedAtEv as i32)),
+            "{states:?}"
+        );
+        assert!(
+            states.contains(&(C::EvChargingCableLockedAtStation as i32)),
             "{states:?}"
         );
         let t = ev.telemetry(&w);

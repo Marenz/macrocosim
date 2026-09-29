@@ -316,11 +316,14 @@ impl SimulatedComponent for EvCharger {
             frequency_hz: Some(grid.frequency_hz),
             active_power_bounds: bounds,
             component_state: Some(if s.draw_w > 0.0 { "charging" } else { "ready" }),
-            cable_state: Some(if s.ev.is_some() {
-                "ev-charging-cable-locked-at-ev"
+            cable_states: if s.ev.is_some() {
+                &[
+                    "ev-charging-cable-locked-at-station",
+                    "ev-charging-cable-locked-at-ev",
+                ]
             } else {
-                "ev-charging-cable-unplugged"
-            }),
+                &["ev-charging-cable-unplugged"]
+            },
             ..Default::default()
         }
     }
@@ -815,7 +818,7 @@ mod tests {
 
     /// A P-only AC component still advertises an EXPLICIT zero Q, so
     /// the stream and the UI read "settled at 0" rather than "metric
-    /// missing". The plug-derived fields follow the car: `cable_state`
+    /// missing". The plug-derived fields follow the car: `cable_states`
     /// says whether anything is connected and `soc_pct` is the car's,
     /// absent on an empty charger, which has no pack of its own.
     /// Killing mutation: `reactive_power_var: Some(0.0)` → `None`.
@@ -824,20 +827,26 @@ mod tests {
         let (w, ev) = sited(instant());
         let t = ev.telemetry(&w);
         assert_eq!(t.reactive_power_var, Some(0.0));
-        assert_eq!(t.cable_state, Some("ev-charging-cable-unplugged"));
+        assert_eq!(t.cable_states, &["ev-charging-cable-unplugged"][..]);
         assert_eq!(t.soc_pct, None, "an empty charger has no SoC to report");
 
         ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
         let t = ev.telemetry(&w);
         assert_eq!(t.reactive_power_var, Some(0.0));
-        assert_eq!(t.cable_state, Some("ev-charging-cable-locked-at-ev"));
+        assert_eq!(
+            t.cable_states,
+            &[
+                "ev-charging-cable-locked-at-station",
+                "ev-charging-cable-locked-at-ev"
+            ][..]
+        );
         assert_eq!(t.soc_pct, Some(30.0), "the car's SoC, not the charger's");
     }
 
     /// `component_state` is the proto state code the charger reports:
     /// "charging" exactly while power is flowing, "ready" otherwise —
     /// including a charger whose car is plugged in but paused, which
-    /// is what distinguishes it from `cable_state`.
+    /// is what distinguishes it from `cable_states`.
     /// Killing mutation: a constant `Some("ready")` (or keying it off
     /// `s.ev.is_some()` rather than `s.draw_w`).
     #[test]
@@ -869,8 +878,11 @@ mod tests {
         assert_eq!(ev.aggregate_power_w(&w), 0.0);
         assert_eq!(ev.telemetry(&w).component_state, Some("ready"));
         assert_eq!(
-            ev.telemetry(&w).cable_state,
-            Some("ev-charging-cable-locked-at-ev"),
+            ev.telemetry(&w).cable_states,
+            &[
+                "ev-charging-cable-locked-at-station",
+                "ev-charging-cable-locked-at-ev"
+            ][..],
             "paused is not unplugged",
         );
     }

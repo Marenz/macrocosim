@@ -246,7 +246,9 @@ pub struct Telemetry {
 
     pub component_state: Option<&'static str>,
     pub relay_state: Option<&'static str>,
-    pub cable_state: Option<&'static str>,
+    /// One state code per cable end: a plugged car is locked at the
+    /// station and at the car.
+    pub cable_states: &'static [&'static str],
 }
 
 impl Telemetry {
