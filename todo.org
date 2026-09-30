@@ -2272,3 +2272,26 @@ after one more =(make-meter)=. Options: snapshot the site before a
 structural eval and restore on =Err=, or render the managed file from
 the post-eval site only when the whole form succeeded and reload it
 otherwise.
+
+* Review backlog — 2026-09-29
+** TODO Headless runs judge bounds augmentations on two clocks :rust:scenarios:
+:LOGBOOK:
+- State "TODO"       from              [2026-09-29 Di 14:58]
+:END:
+
+In a headless (stepped) run physics ticks at sim time
+(=NowSource::sim=, based at 2020-01-01), but everything else reads
+=Utc::now()=: the augmentation's =create_ts=, =effective_static()=
+(reported bounds, telemetry, =component-bound-*=), the components'
+=accept= gates and =gate_setpoint=. So an =(augment-active-bounds …)=
+from a scenario cue or an =(every …)= never lapses in physics, while
+reported bounds and setpoint validation drop it after its lifetime in
+real time. Setpoint lifetimes have the same gap: =TimeoutTracker= runs
+on =Instant::now()= and =sim_step= never calls
+=reset_expired_setpoints=.
+
+Stamping Lisp augmentations with the sim =now= alone only moves the
+mismatch to validation and reporting. Fix: one clock for every reader.
+Thread the site's =now= through =effective_static=, the =accept= call
+sites, =gate_setpoint= and =reactive_bounds_raw=; stamp Lisp
+augmentations with it; drive setpoint expiry from =sim_step=.
