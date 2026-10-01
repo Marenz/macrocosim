@@ -68,8 +68,13 @@ async fn bind_or_exit(addr: SocketAddr, label: &str) -> (tokio::net::TcpListener
     (listener, resolved)
 }
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() {
+fn main() {
+    macrocosim::tokio_runtime::build()
+        .expect("Failed building the Runtime")
+        .block_on(serve());
+}
+
+async fn serve() {
     let args = Args::parse();
 
     // Suppress per-tick "channel closed" spam from frequenz-microgrid

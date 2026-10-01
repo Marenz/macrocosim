@@ -8,5 +8,6 @@ pub mod server;
 pub mod sim;
 pub mod timefmt;
 pub mod timeout_tracker;
+pub mod tokio_runtime;
 pub mod ui;
 pub mod ui_log;

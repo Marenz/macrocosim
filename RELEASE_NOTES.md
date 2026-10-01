@@ -234,3 +234,11 @@ What to change in your own scripts:
   `target_soc_pct`, `phases`, `max_current_a`, `capacity_wh`,
   `energy_wh`, `plugged_at` and `state`. It answers 404 for an unknown
   component and 400 for one that is not a charger.
+
+## Bug Fixes
+
+- Lisp code that recursed deep, but still within tulisp's limit of 1000
+  nested calls in a release build, could overflow a thread's stack and
+  end the server. The Lisp code the server runs after boot (evals,
+  reloads, timers and dynamic values) now gets an 8 MiB stack, so such
+  code runs, and deeper code stops with a Lisp error.

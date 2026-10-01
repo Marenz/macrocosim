@@ -130,6 +130,8 @@ is wiring the topology + animating the environment.
   `MetricSample`s
 - `src/timeout_tracker.rs` — request-lifetime deadlines on the site
   clock, owned by the gateway and expired on the physics tick
+- `src/tokio_runtime.rs` — the tokio runtime of `macrocosim`, with
+  thread stacks deep enough for its Lisp code
 - `src/bin/macrocosim.rs` — headless server
 - `src/bin/macroctl.rs` — clap-based client CLI
 - `sim/common.lisp` — Lisp helpers (`every`, `cancel-timers`,
