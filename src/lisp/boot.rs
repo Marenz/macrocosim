@@ -3048,4 +3048,24 @@ mod tests {
         cfg.record_self_write(&path, "body");
         assert!(!cfg.take_self_write(&path, "edited by hand"));
     }
+
+    /// A save recorded under a relative path (the default state dir
+    /// is `.`, so writes go to `./enterprise.lisp`) is still
+    /// recognised when the watcher asks with the canonical one.
+    #[test]
+    fn self_write_matches_a_relative_path() {
+        let (cfg, dir) = config_with("nil");
+        let canonical = dir.join("managed.lisp");
+        std::fs::write(&canonical, "body").unwrap();
+        let canonical = canonical.canonicalize().unwrap();
+        // The same file spelled relative to the working directory.
+        let cwd = std::env::current_dir().unwrap();
+        let mut relative = std::path::PathBuf::new();
+        for _ in cwd.components().skip(1) {
+            relative.push("..");
+        }
+        relative.push(canonical.strip_prefix("/").unwrap());
+        cfg.record_self_write(&relative, "body");
+        assert!(cfg.take_self_write(&canonical, "body"));
+    }
 }

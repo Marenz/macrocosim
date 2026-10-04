@@ -455,14 +455,18 @@ impl Config {
 
     /// Remember that macrocosim wrote `content` to `path`, so the
     /// file watcher can tell its own save apart from a human edit.
+    /// Keyed by the canonical path, which is what the watcher asks
+    /// with.
     pub(crate) fn record_self_write(&self, path: &Path, content: &str) {
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         self.written_hashes
             .lock()
-            .insert(path.to_path_buf(), content_hash(content));
+            .insert(path, content_hash(content));
     }
 
     /// Was `content` exactly what macrocosim last wrote to `path`?
-    /// If so, FORGET that write and answer true.
+    /// If so, FORGET that write and answer true. `path` must be
+    /// canonical, the key [`Self::record_self_write`] stores.
     ///
     /// The file watcher asks this before reloading, so a save
     /// macrocosim performed does not bounce back as a reload. The
