@@ -19,12 +19,15 @@
      colors desaturated a touch. */
   --bg: #1c2128;
   --bg-elev: #262b34;
+  /* Card and bar surfaces: the elevated background. */
+  --panel: var(--bg-elev);
   --border: #353a45;
   --fg: #b0b8c1;
   --muted: #7d848e;
   --accent: #79b8ff;
   --good: #6fbf73;
   --bad: #e58275;
+  --warn: #d9c46b;
   --standby: #c4ad55;
   /* Graph pills and the hover card (pill.js reads these once at load). */
   --pill-surface: #242a33;
@@ -642,7 +645,7 @@ body[data-mg-empty="1"][data-mg-view="selected"][data-subview="topology"] #topol
 }
 .formula-ref:hover { color: var(--good, #6bd97b); }
 .formula-num { color: var(--muted); }
-.formula-op  { color: var(--warn, #d9c46b); }
+.formula-op  { color: var(--warn); }
 .formula-call { color: var(--good, #6bd97b); }
 
 #snapshots-dialog #snapshot-save-form {
@@ -716,7 +719,7 @@ body[data-mg-empty="1"][data-mg-view="selected"][data-subview="topology"] #topol
   padding: 8px 10px;
   margin-bottom: 8px;
   font-size: 14px;
-  border: 1px solid var(--warn, #d9c46b);
+  border: 1px solid var(--warn);
   border-radius: 4px;
   background: rgba(217, 196, 107, 0.12);
 }
@@ -733,7 +736,7 @@ body[data-mg-empty="1"][data-mg-view="selected"][data-subview="topology"] #topol
 }
 .mg-chip.unmanaged {
   background: rgba(217, 196, 107, 0.18);
-  color: var(--warn, #d9c46b);
+  color: var(--warn);
 }
 .mg-chip.unsaved {
   background: rgba(255, 121, 121, 0.18);
@@ -820,7 +823,7 @@ body[data-mg-empty="1"][data-mg-view="selected"][data-subview="topology"] #topol
   text-transform: uppercase;
   letter-spacing: 0.04em;
   background: rgba(217, 196, 107, 0.18);
-  color: var(--warn, #d9c46b);
+  color: var(--warn);
   padding: 2px 8px;
   border-radius: 4px;
   white-space: nowrap;
