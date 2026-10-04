@@ -2500,6 +2500,91 @@ check(
   JSON.stringify({ zoomedRect, resizedRect, fittedRect }),
 );
 
+// ── e2e: the canvas selection shortcuts ──────────────────────────
+// Copy, cut, paste, select all and delete act only while the last
+// pointer press or focus move landed on the canvas. They act after a
+// canvas click, a jump to a node and arrival at a microgrid; they
+// leave the selection alone after Delete on a focused button,
+// Backspace after a click on an inspector fold header, or Backspace,
+// Ctrl+X and Ctrl+A after a click on the inspector's drag strip.
+const chpId = 1006; // the Berlin demo's CHP
+const nodeCount = async () => (await getModels()).length;
+const selectedIds = () =>
+  page.evaluate(async () => (await import("/assets/topology.js")).topology.selectedIds());
+const clearSelection = () =>
+  page.evaluate(async () => (await import("/assets/topology.js")).topology.select([]));
+const chpAloneSelected = async () => JSON.stringify(await selectedIds()) === `[${chpId}]`;
+const selectsAll = async () => {
+  await page.keyboard.press("Control+a");
+  const n = await nodeCount();
+  return n > 0 && (await selectedIds()).length === n;
+};
+const removePosts = [];
+const onRemovePost = (r) => {
+  if (r.method() === "POST" && /remove-component/.test(r.postData() ?? "")) removePosts.push(r.postData());
+};
+page.on("request", onRemovePost);
+const nodesBefore = await nodeCount();
+// Click the CHP until it alone is selected: a resize just before
+// can leave the view still moving, so the box is read afresh each
+// try. Returns whether it got there.
+const clickChp = async () => {
+  await clearSelection();
+  return waitFor(async () => {
+    const r = await page.evaluate(
+      async (id) => (await import("/assets/topology.js")).topology.debugNodeScreenRect(id),
+      chpId,
+    );
+    if (!r) return false;
+    await page.mouse.click(r.x + r.width / 2, r.y + r.height / 2);
+    return chpAloneSelected();
+  }, 5000).catch(() => false);
+};
+check("e2e: a canvas click selects a node", await clickChp(), JSON.stringify(await selectedIds()));
+check("e2e: Ctrl+A after a canvas click selects every node", await selectsAll(), JSON.stringify(await selectedIds()));
+const picked = [await clickChp()];
+await page.focus("#metrics-btn");
+await page.keyboard.press("Delete");
+await page.click("#inspect [data-fold-toggle]");
+await page.keyboard.press("Backspace");
+picked.push(await clickChp());
+await page.click("#inspector-drag");
+// The browser re-fires focus on the focused element when the window
+// comes back; that must not turn the shortcuts back on.
+await page.evaluate(() => document.activeElement.dispatchEvent(new FocusEvent("focusin", { bubbles: true })));
+await page.keyboard.press("Backspace");
+// Cut before select-all: an ignored Ctrl+A falls through to the
+// browser's text selection, and Ctrl+X with text selected would take
+// the native cut and test nothing.
+await page.keyboard.press("Control+x");
+await page.keyboard.press("Control+a");
+await new Promise((r) => setTimeout(r, 1000));
+page.off("request", onRemovePost);
+check(
+  "e2e: Delete, Backspace, cut and select-all away from the canvas leave the selection alone",
+  demoManaged === true &&
+    picked.every(Boolean) &&
+    removePosts.length === 0 &&
+    (await nodeCount()) === nodesBefore &&
+    (await chpAloneSelected()),
+  JSON.stringify({ demoManaged, picked, removePosts, nodesBefore, after: await nodeCount() }),
+);
+// A jump to a node (the formula explorer's #N links) hands the
+// keyboard to the canvas.
+await page.click("#inspect [data-fold-toggle]");
+await page.evaluate(async (id) => (await import("/assets/routing.js")).jumpToTopology(id), chpId);
+check("e2e: Ctrl+A after a jump to a node selects every node", await selectsAll(), JSON.stringify(await selectedIds()));
+// So does arriving at a microgrid from the list.
+await clearSelection();
+await backToMgList();
+await page.click(DEMO_CARD);
+check(
+  "e2e: Ctrl+A on arrival at a microgrid selects every node",
+  await waitFor(selectsAll, 5000).catch(() => false),
+  JSON.stringify(await selectedIds()),
+);
+await clearSelection();
+
 // ── e2e: charts without uPlot ─────────────────────────────────────
 // uPlot is a classic <script>, not a module: when it does not load
 // (a blocked asset, a bad vendor bump, its own load-time throw on an

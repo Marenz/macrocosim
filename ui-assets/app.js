@@ -426,6 +426,29 @@ async function init() {
     const logs = document.getElementById("logs");
     logs.scrollTop = logs.scrollHeight;
   };
+  // The shortcuts that act on the canvas selection (copy, cut,
+  // paste, select all, delete) work only while the last pointer press
+  // or focus move landed on the canvas or its empty-microgrid hint,
+  // so Backspace after a click anywhere else cannot delete the
+  // selection. A press elsewhere also takes focus off the canvas: one
+  // that cannot move focus (a panel's drag strip) would otherwise
+  // leave it there, and a refocus would turn the shortcuts back on.
+  let usingCanvas = true;
+  const onCanvas = (el) => el instanceof Element && el.closest("#topology, #topology-empty-hint") !== null;
+  const trackTarget = (e) => {
+    usingCanvas = onCanvas(e.target);
+  };
+  document.addEventListener(
+    "pointerdown",
+    (e) => {
+      trackTarget(e);
+      if (!usingCanvas && document.getElementById("topology").contains(document.activeElement)) {
+        document.activeElement.blur();
+      }
+    },
+    true,
+  );
+  document.addEventListener("focusin", trackTarget);
   // Editor-style keyboard shortcuts. All check that focus isn't in
   // a text editor (REPL textarea, dialog inputs) before firing, so
   // typing remains unaffected.
@@ -469,7 +492,7 @@ async function init() {
       // Common Windows-style redo alias.
       e.preventDefault();
       undoMgr.redo();
-    } else if (meta && (key === "c" || key === "v" || key === "x")) {
+    } else if (usingCanvas && meta && (key === "c" || key === "v" || key === "x")) {
       // With text selected somewhere on the page (inspector, log
       // panel, REPL output), the user means the NATIVE clipboard —
       // hijacking Ctrl+C there loses the copy, and Ctrl+X would
@@ -479,10 +502,10 @@ async function init() {
       if (key === "c") copySelection();
       else if (key === "v") pasteClipboard();
       else cutSelection();
-    } else if (meta && key === "a") {
+    } else if (usingCanvas && meta && key === "a") {
       e.preventDefault();
       selectAllVisible();
-    } else if (e.key === "Delete" || e.key === "Backspace") {
+    } else if (usingCanvas && (e.key === "Delete" || e.key === "Backspace")) {
       e.preventDefault();
       deleteSelection();
     } else if (e.key === "Escape") {
