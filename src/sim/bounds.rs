@@ -143,6 +143,17 @@ impl VecBounds {
         prev_upper.unwrap_or(value)
     }
 
+    /// Clamp a commanded `value` to this band, with two exceptions: 0
+    /// always stays 0 (a device may idle outside its band), and an
+    /// empty band leaves nothing but 0. Otherwise as [`Self::clamp`].
+    pub fn clamp_or_park(&self, value: f32) -> f32 {
+        if value == 0.0 || self.0.is_empty() {
+            0.0
+        } else {
+            self.clamp(value)
+        }
+    }
+
     /// Scale every edge by `factor` (positive, so band order is
     /// preserved). Divides a shared child's envelope across its
     /// parallel parents, mirroring the meter's power share.
@@ -442,6 +453,16 @@ impl ComponentBounds {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clamp_or_park_keeps_zero_parks_on_empty_and_clamps() {
+        let band = VecBounds::single(1000.0, 5000.0);
+        assert_eq!(band.clamp_or_park(0.0), 0.0);
+        assert_eq!(band.clamp_or_park(3000.0), 3000.0);
+        assert_eq!(band.clamp_or_park(8000.0), 5000.0);
+        assert_eq!(band.clamp_or_park(200.0), 1000.0);
+        assert_eq!(VecBounds::default().clamp_or_park(3000.0), 0.0);
+    }
 
     /// Each shape rule rejects with its own message; a well-formed
     /// band, open edges included, passes.

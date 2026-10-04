@@ -4,6 +4,7 @@ pub mod bounds;
 pub mod clock;
 pub mod component;
 pub mod decay;
+pub mod device_axis;
 pub mod dispatch;
 pub(crate) mod dynamic_scalar;
 pub mod energy;
