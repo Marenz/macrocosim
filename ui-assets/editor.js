@@ -189,6 +189,7 @@ export function showMenuItems(menu, items, x, y) {
     btn.addEventListener("click", () => {
       const idx = Number(btn.dataset.idx);
       hideContextMenu();
+      topology.focusCanvas();
       items[idx].action();
     });
   }

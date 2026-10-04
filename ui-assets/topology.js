@@ -1391,6 +1391,12 @@ export function createGraphCanvas(containerId, adapter = {}) {
       network.selectNodes(ids.filter((id) => componentById.has(id)));
       notifySelection();
     },
+    /// Give the canvas keyboard focus, so the selection shortcuts
+    /// (copy, paste, delete, …) act on it after an action aimed at
+    /// it that started elsewhere.
+    focusCanvas() {
+      container()?.querySelector(".vis-network")?.focus();
+    },
     /// Re-frame the canvas so every visible node fits. vis-network's
     /// auto-fit only fires on stabilization (we have physics off so
     /// it never runs again after the first paint), and the first

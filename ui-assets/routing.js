@@ -264,7 +264,12 @@ function applyRoute(mode) {
   // settled the CSS visibility before vis-network measures.
   if (mode === "microgrids" && selected != null && subview === "topology") {
     refitCharts();
-    requestAnimationFrame(() => topology.fit());
+    requestAnimationFrame(() => {
+      topology.fit();
+      // Arriving at a topology view hands the keyboard to the canvas,
+      // so a paste or select-all works without a click first.
+      if (routeChanged) topology.focusCanvas();
+    });
     topology.flushLive();
   }
   if (mode === "microgrids" && selected != null && subview === "dispatches") {
@@ -290,6 +295,7 @@ export function jumpToTopology(id) {
   // call ever moves.
   topology.resetNotify();
   topology.select([id]);
+  topology.focusCanvas();
   const c = topology.get(id);
   if (c) showComponent(c);
   // Center the node in the part of the canvas the inspector isn't
