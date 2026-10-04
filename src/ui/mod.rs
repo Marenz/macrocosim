@@ -37,19 +37,25 @@ use events_ws::events_ws;
 /// `microgrid` is the loopback client slot — the binary populates it
 /// via [`spawn_microgrid_loopback`] before / alongside the gRPC
 /// server starting. Pass an empty slot if the UI doesn't need
-/// aggregated Dashboard data (tests, etc.).
+/// aggregated Dashboard data (tests, etc.). `runtimes` starts and
+/// reports each microgrid's runtime, and holds the per-microgrid
+/// loopback slots the `/api/mg/{id}/microgrid/*` routes read.
 pub async fn serve_with_listener(
     listener: tokio::net::TcpListener,
     config: Config,
     microgrid: SharedMicrogrid,
-    loopbacks: MicrogridLoopbacks,
+    runtimes: crate::runtime::MicrogridRuntimes,
 ) -> std::io::Result<()> {
-    axum::serve(listener, router(config, microgrid, loopbacks))
+    axum::serve(listener, router(config, microgrid, runtimes))
         .await
         .map_err(std::io::Error::other)
 }
 
-fn router(config: Config, microgrid: SharedMicrogrid, loopbacks: MicrogridLoopbacks) -> Router {
+fn router(
+    config: Config,
+    microgrid: SharedMicrogrid,
+    runtimes: crate::runtime::MicrogridRuntimes,
+) -> Router {
     use handlers::{
         assets::{asset, index, logs_backfill},
         component::{component, component_for_mg},
@@ -186,7 +192,8 @@ fn router(config: Config, microgrid: SharedMicrogrid, loopbacks: MicrogridLoopba
         )
         .route("/ws/events", get(events_ws))
         .layer(Extension(microgrid))
-        .layer(Extension(loopbacks))
+        .layer(Extension(runtimes.loopbacks()))
+        .layer(Extension(runtimes))
         .layer(axum::middleware::from_fn(origin_guard))
         .with_state(config)
 }

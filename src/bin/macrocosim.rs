@@ -251,7 +251,7 @@ async fn main() {
     log::info!("Macrocosim UI listening on http://{ui_addr}");
     tasks.spawn(async move {
         if let Err(e) =
-            ui::serve_with_listener(ui_listener, ui_config, microgrid, runtimes.loopbacks()).await
+            ui::serve_with_listener(ui_listener, ui_config, microgrid, runtimes.clone()).await
         {
             log::error!("UI server exited: {e}");
         }

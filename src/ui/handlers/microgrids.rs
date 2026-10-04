@@ -5,18 +5,53 @@
 //!
 //! Create and import both mint a managed file and load it — the file
 //! is the microgrid's declaration, so the registry entry always comes
-//! from a load — and both notify the binary's registered-microgrid
-//! listener, which boots the runtime for the new site.
+//! from a load. `make-microgrid` announces the new microgrid during
+//! the load, and the runtime listener starts it; create, import and
+//! load-as then wait for that runtime and report it.
 
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::lisp::Config;
+use crate::runtime::{MicrogridRuntimes, RuntimeView};
+
+/// One `/api/microgrids` entry: the registry's view of the microgrid
+/// plus its runtime, `null` when none was started.
+#[derive(Serialize)]
+pub(in crate::ui) struct MicrogridListEntry {
+    #[serde(flatten)]
+    view: crate::sim::microgrids::MicrogridView,
+    runtime: Option<RuntimeView>,
+}
 
 pub(in crate::ui) async fn microgrids_list(
     State(config): State<Config>,
-) -> Json<Vec<crate::sim::microgrids::MicrogridView>> {
-    Json(crate::sim::microgrids::snapshot(&config.microgrids()))
+    axum::Extension(runtimes): axum::Extension<MicrogridRuntimes>,
+) -> Json<Vec<MicrogridListEntry>> {
+    Json(
+        crate::sim::microgrids::snapshot(&config.microgrids())
+            .into_iter()
+            .map(|view| {
+                let runtime = runtimes.status(view.id);
+                MicrogridListEntry { view, runtime }
+            })
+            .collect(),
+    )
+}
+
+/// Start `id`'s runtime and report it. Of this call and the
+/// listener's, the one that runs second finds the runtime running and
+/// only reads the status, or tries again after a failure. A start
+/// failure is reported, not returned: the microgrid exists either
+/// way.
+pub(in crate::ui) async fn start_and_report(
+    runtimes: &MicrogridRuntimes,
+    id: u64,
+) -> Option<RuntimeView> {
+    if let Err(e) = runtimes.start(id).await {
+        log::error!("Microgrid #{id}: {e}");
+    }
+    runtimes.status(id)
 }
 
 #[derive(Deserialize)]
@@ -41,25 +76,29 @@ pub(in crate::ui) struct CreateMicrogridResp {
     /// Always true — create writes a macrocosim-generated file, so
     /// the new microgrid's structure is macrocosim's to rewrite.
     managed: bool,
+    /// The new microgrid's runtime; `null` when none was started.
+    runtime: Option<RuntimeView>,
 }
 
 /// POST /api/microgrids/create — auto-allocates id + grpc_port,
 /// writes and loads a managed microgrid file with an empty topology,
-/// and broadcasts a registered-microgrid notification. The binary's
-/// listener (see `bin/macrocosim.rs`) reacts by booting the runtime
-/// — physics + history + Microgrid gRPC server + loopback client —
-/// so there is exactly one spawn path shared with runtime
-/// `(make-microgrid …)` evals, and no path can double-boot a
-/// runtime.
+/// then starts its runtime — physics + history + Microgrid gRPC
+/// server + loopback client — through [`MicrogridRuntimes`] and
+/// reports it. The runtime listener starts it too, on the load's
+/// announcement; `start` is serialized and returns early for a
+/// running runtime, so neither can double-boot it. A runtime that
+/// fails to start is reported in a 200: the microgrid exists either
+/// way.
 ///
 /// Empty-name requests are rejected. `(make-microgrid …)` builds the
 /// new site on the shared enterprise id allocator, so its
 /// auto-allocated component ids stay globally unique.
 pub(in crate::ui) async fn microgrids_create(
     State(config): State<Config>,
+    axum::Extension(runtimes): axum::Extension<MicrogridRuntimes>,
     Json(body): Json<CreateMicrogridBody>,
 ) -> Result<Json<CreateMicrogridResp>, (StatusCode, String)> {
-    let created = create_serialized(
+    let mut created = create_serialized(
         &config,
         &body.name,
         body.id,
@@ -67,14 +106,9 @@ pub(in crate::ui) async fn microgrids_create(
         body.tso.as_deref(),
     )
     .await?;
-    // Notify enterprise-wide subscribers: the binary's listener boots
-    // the runtime (physics + history + gRPC server + loopback), and
-    // the WS event pump starts forwarding topology_changed / sample
-    // events to live UI sessions. The file write + load both happen
-    // before this, so the listener's lookup finds the entry. Test
-    // fixtures run no listener — the entry simply gets no runtime,
-    // same as the old no-op spawner.
-    config.notify_microgrid_registered(created.id);
+    // The load registered the entry, so `start` finds it. Inert
+    // runtimes (unit tests) start nothing and report `null`.
+    created.runtime = start_and_report(&runtimes, created.id).await;
     Ok(Json(created))
 }
 
@@ -107,9 +141,8 @@ async fn create_serialized(
 /// The shared create path: claims id + port, writes the managed
 /// microgrid file, and loads it. The registry entry, its source and
 /// its managed flag all come from the load — the file is the
-/// microgrid's declaration, and nothing else may insert one. Does
-/// NOT notify the runtime spawner — the caller does, after any extra
-/// work of its own (the import evals its components in between).
+/// microgrid's declaration, and nothing else may insert one. Leaves
+/// `runtime` unset; the handler starts the runtime and fills it.
 ///
 /// Callers must hold the create lock; [`create_serialized`] is the
 /// only way in.
@@ -207,6 +240,7 @@ fn create_core(
         grpc_port: def.grpc_port,
         tso: def.tso,
         managed: true,
+        runtime: None,
     })
 }
 
@@ -235,6 +269,8 @@ pub(in crate::ui) struct ImportMicrogridResp {
     tso: Option<String>,
     components: usize,
     connections: usize,
+    /// The new microgrid's runtime; `null` when none was started.
+    runtime: Option<RuntimeView>,
 }
 
 /// POST /api/microgrids/import — creates a REAL microgrid from a
@@ -259,6 +295,7 @@ pub(in crate::ui) struct ImportMicrogridResp {
 /// 409, since claiming an id is create's job either way.
 pub(in crate::ui) async fn microgrids_import(
     State(config): State<Config>,
+    axum::Extension(runtimes): axum::Extension<MicrogridRuntimes>,
     Json(body): Json<ImportMicrogridBody>,
 ) -> Result<Json<ImportMicrogridResp>, (StatusCode, String)> {
     let import = crate::sim::site_import::parse(body.components, body.connections)
@@ -270,7 +307,7 @@ pub(in crate::ui) async fn microgrids_import(
     // replay is per site and cannot see a cross-site collision.
     // Parsing stays outside the lock; it touches no shared state.
     let import_lock = config.import_lock();
-    let _serialized = import_lock.lock().await;
+    let serialized = import_lock.lock().await;
     // Collision check against every registered site, plus the
     // bootstrap site legacy single-site configs run on.
     // `import.components` comes from a dedup-validated
@@ -324,7 +361,6 @@ pub(in crate::ui) async fn microgrids_import(
         import.max_id().saturating_add(1),
         std::sync::atomic::Ordering::SeqCst,
     );
-    config.notify_microgrid_registered(created.id);
     // Populate the (empty) new microgrid through the per-mg eval
     // path. eval_in_mg holds the interpreter lock across scope-set +
     // eval + overrides append, and the progn is one form, so the
@@ -335,9 +371,9 @@ pub(in crate::ui) async fn microgrids_import(
     let id = created.id;
     let evaled = super::blocking(move || cfg.eval_in_mg(id, &forms)).await?;
     if let Err(e) = evaled {
-        // The runtime is already booted, so this cannot roll back
-        // cleanly; the parse + collision checks above make this a
-        // should-not-happen. Name the leftover so the user can act.
+        // The microgrid is already registered, so this cannot roll
+        // back cleanly; the parse + collision checks above make this
+        // a should-not-happen. Name the leftover so the user can act.
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             format!(
@@ -346,6 +382,9 @@ pub(in crate::ui) async fn microgrids_import(
             ),
         ));
     }
+    // Starting the runtime binds a port and can be slow; the next
+    // import need not wait for it.
+    drop(serialized);
     Ok(Json(ImportMicrogridResp {
         id: created.id,
         name: created.name,
@@ -353,6 +392,7 @@ pub(in crate::ui) async fn microgrids_import(
         tso: created.tso,
         components: import.components.len(),
         connections: import.connections.len(),
+        runtime: start_and_report(&runtimes, created.id).await,
     }))
 }
 
@@ -440,23 +480,28 @@ pub(in crate::ui) struct LoadAsBody {
 /// and load the copy, so one file can back two live microgrids. The
 /// answer to the collision 409 above.
 ///
-/// Three outcomes, not two. A clean load is `200 {id}`. A load that
-/// left nothing behind (the copy was cleaned up) is the 409 the
-/// caller can retry under a different id. In between sits the
+/// Three outcomes, not two. A clean load is `200 {id, runtime}`. A
+/// load that left nothing behind (the copy was cleaned up) is the 409
+/// the caller can retry under a different id. In between sits the
 /// COMMITTED PARTIAL: the copy's generated block registered and its
 /// script section then failed, so the microgrid is live and its file
-/// is kept. That one is `200 {id, warning}` — reporting it as a 409
-/// would read as the collision code and invite a retry that then
-/// hits "target exists", or mints a second copy of a microgrid that
-/// already loaded.
+/// is kept. That one is `200 {id, runtime, warning}` — reporting it
+/// as a 409 would read as the collision code and invite a retry that
+/// then hits "target exists", or mints a second copy of a microgrid
+/// that already loaded. Both 200s carry the copy's runtime, `null`
+/// when none was started.
 pub(in crate::ui) async fn load_file_as(
     State(config): State<Config>,
+    axum::Extension(runtimes): axum::Extension<MicrogridRuntimes>,
     Json(body): Json<LoadAsBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let path = std::path::PathBuf::from(&body.path);
     let id = body.id;
     match super::blocking_under_create_lock(&config, move |cfg| cfg.load_as(&path, id)).await? {
-        Ok(id) => Ok(Json(serde_json::json!({ "id": id }))),
+        Ok(id) => Ok(Json(serde_json::json!({
+            "id": id,
+            "runtime": start_and_report(&runtimes, id).await,
+        }))),
         // `load_as` typed this for us — it is the only thing that
         // knows whether the copy got as far as registering, so the
         // handler never has to ask the registry and never has to
@@ -464,6 +509,7 @@ pub(in crate::ui) async fn load_file_as(
         Err(e) => match &e {
             crate::lisp::LoadAsError::CommittedPartial { id, .. } => Ok(Json(serde_json::json!({
                 "id": id,
+                "runtime": start_and_report(&runtimes, *id).await,
                 "warning": e.to_string(),
             }))),
             crate::lisp::LoadAsError::Other(_) => Err((StatusCode::CONFLICT, e.to_string())),

@@ -375,14 +375,6 @@ impl Config {
         self.sim_clock.is_some()
     }
 
-    /// Publish a `microgrid_registered` notification. Called by the
-    /// /api/microgrids/create handler after inserting the new entry,
-    /// so the WS event pump can spawn a forwarder for the freshly-
-    /// created site without waiting for a reconnect.
-    pub fn notify_microgrid_registered(&self, id: u64) {
-        let _ = self.microgrid_registered.send(id);
-    }
-
     /// Subscribe to `microgrid_registered` notifications. The WS
     /// event pump uses this to dynamically subscribe to new
     /// microgrid event buses post-connect.

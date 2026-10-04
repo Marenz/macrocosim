@@ -105,14 +105,17 @@ impl TestServer {
             r.keys().copied().next().expect("default microgrid entry")
         };
 
-        // Single-microgrid integration test: a one-entry loopbacks
-        // map, keyed by the real microgrid id so the per-mg
-        // /api/mg/{id}/microgrid/* routes resolve. /api/microgrid/*
-        // keeps reading the primary slot for backward compat.
-        let loopbacks = ui::new_microgrid_loopbacks();
-        loopbacks.write().insert(default_mg_id, microgrid.clone());
+        // Single-microgrid integration test: inert runtimes whose
+        // loopbacks map holds one entry, keyed by the real microgrid
+        // id so the per-mg /api/mg/{id}/microgrid/* routes resolve.
+        // /api/microgrid/* keeps reading the primary slot.
+        let runtimes = macrocosim::runtime::MicrogridRuntimes::inert();
+        runtimes
+            .loopbacks()
+            .write()
+            .insert(default_mg_id, microgrid.clone());
         handles.push(tokio::spawn(async move {
-            let _ = ui::serve_with_listener(ui_listener, ui_config, microgrid, loopbacks).await;
+            let _ = ui::serve_with_listener(ui_listener, ui_config, microgrid, runtimes).await;
         }));
         let microgrid_server = MicrogridServer::new(config.clone(), default_mg_id, config.site());
         let assets_server = AssetsServer::new(config.clone());

@@ -57,17 +57,29 @@ pub(in crate::ui) struct SnapshotsLoadBody {
 
 pub(in crate::ui) async fn snapshots_load_for_mg(
     State(config): State<Config>,
+    axum::Extension(runtimes): axum::Extension<crate::runtime::MicrogridRuntimes>,
     Path(mg_id): Path<u64>,
     Json(body): Json<SnapshotsLoadBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let as_id = body.as_id;
     let load = move |cfg: &Config| cfg.load_snapshot_for(mg_id, &body.name, body.as_id);
     // Loading `as_id` is a load-as: it claims an id and a port.
-    let loaded = if body.as_id.is_some() {
+    let loaded = if as_id.is_some() {
         super::blocking_under_create_lock(&config, load).await?
     } else {
         super::blocking(move || load(&config)).await?
     }
     .map_err(status_for)?;
+    // Loaded as a new microgrid: wait for its runtime and report it.
+    if as_id.is_some()
+        && let Some(id) = loaded
+    {
+        return Ok(Json(serde_json::json!({
+            "ok": true,
+            "id": id,
+            "runtime": super::microgrids::start_and_report(&runtimes, id).await,
+        })));
+    }
     Ok(Json(serde_json::json!({ "ok": true, "id": loaded })))
 }
 

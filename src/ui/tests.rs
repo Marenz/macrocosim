@@ -59,13 +59,22 @@ fn wrap_test_body(body: &str) -> String {
 static UNIQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// One-shot a request and return (status, body). axum's `oneshot`
-/// avoids binding a real port. Microgrid loopback slot is empty —
-/// the new `/api/microgrid/status` endpoint returns 503 without a
-/// real gRPC server, which is exactly the expected unit-test
-/// behaviour. Tests that want a populated handle would have to
-/// spin up the gRPC server too.
+/// avoids binding a real port. The runtimes are inert, so nothing is
+/// started and every loopback slot is empty — `/api/microgrid/status`
+/// returns 503 without a real gRPC server, which is exactly the
+/// expected unit-test behaviour. Tests that want a populated handle
+/// would have to spin up the gRPC server too.
 async fn call(config: Config, req: Request<Body>) -> (StatusCode, Vec<u8>) {
-    let resp = router(config, new_microgrid_slot(), new_microgrid_loopbacks())
+    call_with(config, crate::runtime::MicrogridRuntimes::inert(), req).await
+}
+
+/// [`call`] with a runtimes handle the test keeps across requests.
+async fn call_with(
+    config: Config,
+    runtimes: crate::runtime::MicrogridRuntimes,
+    req: Request<Body>,
+) -> (StatusCode, Vec<u8>) {
+    let resp = router(config, new_microgrid_slot(), runtimes)
         .oneshot(req)
         .await
         .unwrap();
@@ -1645,6 +1654,94 @@ async fn create_refuses_a_taken_id_or_port() {
     )
     .await;
     assert_eq!(st, StatusCode::CONFLICT, "port 8899 is taken");
+}
+
+/// With inert runtimes, nothing is started and the list says so.
+#[tokio::test]
+async fn the_list_reports_no_runtime_under_inert_runtimes() {
+    let config = config_with("nil").await;
+    let (st, body) = call(config, get("/api/microgrids")).await;
+    assert_eq!(st, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v[0].as_object().unwrap().contains_key("runtime"), "{v}");
+    assert!(v[0]["runtime"].is_null(), "{v}");
+}
+
+/// Runtimes that really bind, on `[::1]`.
+fn live_runtimes(config: &Config, ephemeral_ports: bool) -> crate::runtime::MicrogridRuntimes {
+    crate::runtime::MicrogridRuntimes::new(
+        config.clone(),
+        crate::runtime::RuntimeOptions {
+            ephemeral_ports,
+            bind_host: std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+        },
+    )
+    .unwrap()
+}
+
+/// Microgrid `id`'s entry in `/api/microgrids`.
+async fn listed(
+    config: Config,
+    runtimes: crate::runtime::MicrogridRuntimes,
+    id: u64,
+) -> serde_json::Value {
+    let (_, list) = call_with(config, runtimes, get("/api/microgrids")).await;
+    let list: serde_json::Value = serde_json::from_slice(&list).unwrap();
+    list.as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == id)
+        .cloned()
+        .unwrap()
+}
+
+/// A created microgrid reports the address its server bound, in the
+/// create answer and in the list.
+#[tokio::test]
+async fn create_reports_the_bound_address() {
+    let config = config_with("nil").await;
+    let runtimes = live_runtimes(&config, true);
+    let (st, body) = call_with(
+        config.clone(),
+        runtimes.clone(),
+        post_json("/api/microgrids/create", r#"{"name":"r","id":61}"#),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["runtime"]["status"], "running");
+    let addr = v["runtime"]["grpc_addr"].as_str().unwrap().to_string();
+    assert!(
+        !addr.ends_with(&format!(":{}", v["grpc_port"])),
+        "ephemeral, not configured: {addr}"
+    );
+    let entry = listed(config, runtimes, 61).await;
+    assert_eq!(entry["runtime"]["grpc_addr"], addr.as_str());
+}
+
+/// A create whose port is held answers 200 with the failure, and the
+/// list shows it failed.
+#[tokio::test]
+async fn create_on_a_held_port_reports_a_failed_runtime() {
+    let holder = std::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)).unwrap();
+    let port = holder.local_addr().unwrap().port();
+    let config = config_with("nil").await;
+    let runtimes = live_runtimes(&config, false);
+    let (st, body) = call_with(
+        config.clone(),
+        runtimes.clone(),
+        post_json(
+            "/api/microgrids/create",
+            &format!(r#"{{"name":"h","id":62,"grpc_port":{port}}}"#),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["runtime"]["status"], "failed");
+    let entry = listed(config, runtimes, 62).await;
+    assert_eq!(entry["runtime"]["status"], "failed");
+    drop(holder);
 }
 
 /// Adopt rewrites a whole file from ONE microgrid's live state, so a
