@@ -1225,6 +1225,41 @@ async fn operational_mode_eval_derives_and_is_enforced() {
     );
 }
 
+/// The create lock is held until a create's load ends, not until its
+/// handler ends: a client that goes away drops the handler future
+/// mid-load, and the load runs on in the blocking pool.
+#[tokio::test]
+async fn create_lock_outlives_a_dropped_handler_until_the_load_ends() {
+    let config =
+        config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
+    let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let cfg = config.clone();
+    let handler = tokio::spawn(async move {
+        super::handlers::blocking_under_create_lock(&cfg, move |_| {
+            started_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+        })
+        .await
+    });
+    tokio::task::spawn_blocking(move || started_rx.recv().unwrap())
+        .await
+        .unwrap();
+    handler.abort();
+    assert!(handler.await.unwrap_err().is_cancelled());
+    assert!(
+        config.create_lock().try_lock().is_err(),
+        "the lock must stay held while the load runs on"
+    );
+    release_tx.send(()).unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        config.create_lock().lock_owned(),
+    )
+    .await
+    .expect("the lock frees once the load ends");
+}
+
 /// Loading a file whose microgrid id is already live is refused with
 /// a 409 that names the collision and suggests a free id — the load
 /// picker turns that into a "load as N" button, which lands the same

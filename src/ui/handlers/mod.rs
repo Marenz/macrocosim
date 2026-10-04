@@ -73,6 +73,23 @@ pub(in crate::ui) async fn blocking<T: Send + 'static>(
     })
 }
 
+/// [`blocking`] under the create lock, for a route that claims a
+/// microgrid id and a port and then writes and loads a file. The
+/// guard moves into the blocking task, so it is held until the load
+/// ends even if the client goes away and the handler is dropped.
+pub(in crate::ui) async fn blocking_under_create_lock<T: Send + 'static>(
+    config: &Config,
+    f: impl FnOnce(&Config) -> T + Send + 'static,
+) -> Result<T, (StatusCode, String)> {
+    let guard = config.create_lock().lock_owned().await;
+    let config = config.clone();
+    blocking(move || {
+        let _guard = guard;
+        f(&config)
+    })
+    .await
+}
+
 /// Mirror of [`resolve_site`] for the loopback Microgrid client
 /// slot a microgrid owns. Used by the per-mg
 /// `/microgrid/{status,latest,formulas}` endpoints.

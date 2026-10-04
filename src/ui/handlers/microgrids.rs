@@ -89,7 +89,7 @@ pub(in crate::ui) async fn microgrids_create(
 /// second one sees the first in the registry and gets a 409.
 ///
 /// The whole body is blocking work (file writes plus a lisp eval),
-/// hence `super::blocking`, the same way import runs its eval.
+/// so it runs on the blocking pool with the lock's guard.
 async fn create_serialized(
     config: &Config,
     name: &str,
@@ -97,11 +97,11 @@ async fn create_serialized(
     grpc_port: Option<u16>,
     tso: Option<&str>,
 ) -> Result<CreateMicrogridResp, (StatusCode, String)> {
-    let create_lock = config.create_lock();
-    let _serialized = create_lock.lock().await;
-    let cfg = config.clone();
     let (name, tso) = (name.to_string(), tso.map(str::to_string));
-    super::blocking(move || create_core(&cfg, &name, id, grpc_port, tso.as_deref())).await?
+    super::blocking_under_create_lock(config, move |cfg| {
+        create_core(cfg, &name, id, grpc_port, tso.as_deref())
+    })
+    .await?
 }
 
 /// The shared create path: claims id + port, writes the managed
