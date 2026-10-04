@@ -83,15 +83,18 @@ fn augment(
     lifetime_ms: Option<i64>,
 ) -> Result<bool, Error> {
     let w = router.site();
-    let component = w
-        .get(id as u64)
-        .ok_or_else(|| Error::invalid_argument(format!("{name}: component {id} not found")))?;
+    let generation = w.run_generation();
+    if w.get(id as u64).is_none() {
+        return Err(Error::invalid_argument(format!(
+            "{name}: component {id} not found"
+        )));
+    }
     let proposed = parse_bounds(name, bounds)?;
     let lifetime = lifetime_ms
         .map(|ms| Duration::from_millis(ms.max(0) as u64))
         .unwrap_or_else(|| metadata.read().default_augment_lifetime);
-    component
-        .try_augment_bounds(axis, chrono::Utc::now(), proposed, lifetime)
+    w.gateway()
+        .augment(id as u64, generation, axis, proposed, lifetime)
         .map_err(|e| Error::invalid_argument(format!("{name}: component {id}: {e}")))?;
     Ok(true)
 }
@@ -112,10 +115,9 @@ fn augment(
 /// LIFETIME-MS omitted falls back to `default-augment-lifetime-ms`,
 /// like a gRPC request without `request_lifetime`. Unlike the gRPC
 /// route there is no [5 s, 15 min] window, no fault gating and no
-/// setpoint journal. The augmentation is stamped with wall time: in a
-/// headless (sim-clock) run physics keeps it for the whole run, while
-/// reported bounds and setpoint validation drop it after LIFETIME-MS of
-/// real time.
+/// setpoint journal. The augmentation is stamped on the site clock,
+/// so in a headless (sim-clock) run it lapses after LIFETIME-MS of
+/// sim time, everywhere at once.
 ///
 /// `(augment-reactive-bounds ID BOUNDS &OPTIONAL LIFETIME-MS)` — the
 /// same over the reactive axis (`AC_POWER_REACTIVE`), in VAr.
@@ -158,10 +160,8 @@ mod tests {
 
     /// Inverter 2's effective active bounds, as text.
     fn active_bounds(cfg: &crate::lisp::Config) -> String {
-        let site = cfg.site();
-        site.get(2)
-            .unwrap()
-            .effective_active_bounds()
+        cfg.site()
+            .bounds_of(2, crate::timeout_tracker::SetpointAxis::Active)
             .unwrap()
             .to_string()
     }
@@ -209,7 +209,9 @@ mod tests {
         cfg.eval("(augment-reactive-bounds 2 '(-1000 1000) 60000)")
             .unwrap();
         let site = cfg.site();
-        let q = site.get(2).unwrap().reactive_bounds().unwrap();
+        let q = site
+            .bounds_of(2, crate::timeout_tracker::SetpointAxis::Reactive)
+            .unwrap();
         assert_eq!(q.to_string(), "[-1000, 1000]");
         assert_eq!(active_bounds(&cfg), "[-10000, 10000]");
     }

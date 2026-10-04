@@ -229,9 +229,10 @@ struct MicrogridSiteInner {
     /// The Microgrid API state of this microgrid: commands, request
     /// lifetimes, augmentations. Cleared by `reset`.
     gateway: MicrogridGateway,
-    /// The test clock `tick_n` advances.
+    /// The manual clock `tick_n` installs as the site's clock and
+    /// advances.
     #[cfg(test)]
-    test_clock: parking_lot::Mutex<Option<DateTime<Utc>>>,
+    test_clock: parking_lot::Mutex<Option<Arc<tulisp_async::ManualClock>>>,
     /// Scenario lifecycle + event journal. Scoped to the MicrogridSite
     /// rather than the Config because long-running scenarios
     /// outlive an `eval_file` call and the gRPC server reads from
@@ -1506,19 +1507,29 @@ impl Default for MicrogridSite {
 
 #[cfg(test)]
 impl MicrogridSite {
-    /// Tick the whole site `n` times, `dt` apart, on a test clock
-    /// that starts at `now()` and only moves forward, so a command
+    /// Tick the whole site `n` times, `dt` apart. The first call
+    /// installs a manual clock starting at `now()` as the site's
+    /// clock; each tick advances it, so request lifetimes are stamped
+    /// and expire on the same time the ticks run on and a command
     /// crosses the gateway and device delays. Returns the last tick's
     /// time.
     pub(crate) fn tick_n(&self, n: usize, dt: Duration) -> DateTime<Utc> {
-        let mut clock = self.inner.test_clock.lock();
-        let mut now = clock.unwrap_or_else(|| self.now());
-        let step = chrono::Duration::from_std(dt).expect("a test tick fits chrono");
+        let clock = self
+            .inner
+            .test_clock
+            .lock()
+            .get_or_insert_with(|| {
+                let clock = Arc::new(tulisp_async::ManualClock::new());
+                self.set_now_source(NowSource::sim(self.now(), clock.clone()));
+                clock
+            })
+            .clone();
+        let mut now = self.now();
         for _ in 0..n {
-            now += step;
+            clock.advance(dt);
+            now = self.now();
             self.tick_once(now, dt);
         }
-        *clock = Some(now);
         now
     }
 }

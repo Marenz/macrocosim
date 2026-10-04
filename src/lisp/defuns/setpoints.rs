@@ -1,7 +1,7 @@
-//! `(set-active-power)` and `(set-reactive-power)` — apply a
-//! setpoint on one power axis and arm a request-lifetime timeout.
-//! Mirror gRPC's `SetElectricalComponentPower`; the reset fires from
-//! the loop in `Config::start_timeout_loop`.
+//! `(set-active-power)` and `(set-reactive-power)` — apply a setpoint
+//! on one power axis through the microgrid's gateway, like gRPC's
+//! `SetElectricalComponentPower`, and arm its request lifetime. They
+//! skip the gRPC fault gates and the setpoint journal.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,18 +9,16 @@ use std::time::Duration;
 use parking_lot::RwLock;
 use tulisp::{Error, TulispContext};
 
+use crate::sim::gateway::Mode;
 use crate::sim::microgrids::SharedSiteRouter;
 use crate::timeout_tracker::SetpointAxis;
 
 use super::super::Metadata;
 
-/// Lower bound on a non-zero request-lifetime that the setpoint
-/// defuns can install. The timeout loop polls at
-/// 100 ms and the default physics tick is 100 ms, so a sub-150 ms
-/// lifetime can expire before the next physics tick observes the
-/// setpoint at all — the ramp would clear without ever leaving
-/// idle. `lifetime-ms = 0` is preserved as an explicit "expire
-/// immediately" escape (used by tests) and bypasses the clamp.
+/// Lower bound on a non-zero request lifetime the setpoint defuns
+/// install. Expiry runs on the physics tick (100 ms by default), so a
+/// shorter lifetime can expire before the component ever acts on the
+/// command. `0` is kept as "expire at once" and bypasses the floor.
 const MIN_SETPOINT_LIFETIME_MS: u64 = 150;
 
 /// The request lifetime for a `LIFETIME-MS` argument: omitted falls
@@ -40,153 +38,81 @@ fn lifetime_from_arg(lifetime_ms: Option<i64>, metadata: &RwLock<Metadata>) -> D
         .unwrap_or_else(|| metadata.read().default_request_lifetime)
 }
 
-/// `(set-active-power ID WATTS &OPTIONAL LIFETIME-MS CLAMP)` — apply an
-/// active-power setpoint and arm a request-lifetime timeout, mirroring
-/// what gRPC's `SetElectricalComponentPower` does. Returns `t` on
-/// success; signals an error if the component doesn't exist or
-/// rejects the setpoint (e.g. out-of-bounds, unsupported kind).
+/// Shared body of the two defuns: one gateway command on `axis`.
+#[expect(clippy::too_many_arguments, reason = "one body for both defuns")]
+fn set_power(
+    router: &SharedSiteRouter,
+    metadata: &RwLock<Metadata>,
+    name: &str,
+    axis: SetpointAxis,
+    id: i64,
+    value: f64,
+    lifetime_ms: Option<i64>,
+    clamp: Option<bool>,
+) -> Result<bool, Error> {
+    let w = router.site();
+    let mode = if clamp.unwrap_or(false) {
+        Mode::Clamp
+    } else {
+        Mode::Reject
+    };
+    let lifetime = lifetime_from_arg(lifetime_ms, metadata);
+    w.gateway()
+        .set_power(
+            axis,
+            id as u64,
+            w.run_generation(),
+            value as f32,
+            lifetime,
+            mode,
+        )
+        .map_err(|e| Error::invalid_argument(format!("{name}: {e}")))?;
+    Ok(true)
+}
+
+/// `(set-active-power ID WATTS &OPTIONAL LIFETIME-MS CLAMP)` — apply
+/// an active-power setpoint through the gateway and arm its request
+/// lifetime. Returns `t`; signals an error if the component doesn't
+/// exist, takes no active setpoint, or the value is refused.
 ///
-/// `LIFETIME-MS` is the duration after which the setpoint snaps back
-/// to idle. Omitting it falls back to `default-request-lifetime-ms`,
-/// matching the gRPC behaviour. The reset fires from the loop in
-/// `Config::start_timeout_loop`.
+/// `LIFETIME-MS` is how long the setpoint stands before the physics
+/// step expires it and the axis ramps back to idle. Omitted falls
+/// back to `default-request-lifetime-ms`; `0` expires at once; any
+/// other value is floored at 150 ms.
 ///
-/// `CLAMP` (default nil) — when non-nil, a setpoint outside the live
-/// envelope (the inverter's own bounds intersected with its children's
-/// DC bounds) is clamped into range and applied instead of rejected.
-/// This is the primitive an in-sim controller scripted with `(every …)`
-/// uses to command "max within whatever cap the limiter currently
-/// allows" each tick without tracking the augmentations itself. With
-/// `CLAMP` nil the out-of-envelope command is rejected, like the gRPC
-/// gateway. 0 W (the fail-safe park) is applied as-is either way.
+/// `CLAMP` (default nil) — when non-nil, a value outside the setpoint
+/// envelope (the component's own bounds intersected with its
+/// children's) is clamped into it and applied instead of refused: the
+/// primitive an in-sim controller scripted with `(every …)` uses to
+/// command "max within whatever cap the limiter allows" each tick. 0
+/// W (the fail-safe park) is applied as-is either way.
 ///
 /// `(set-reactive-power ID VARS &OPTIONAL LIFETIME-MS CLAMP)` — the
-/// reactive-axis twin of `set-active-power`: apply a reactive-power
-/// setpoint and arm a request-lifetime timeout on the reactive axis
-/// only, mirroring gRPC's `SetElectricalComponentPower` with
-/// `PowerType::Reactive`. Returns `t` on success; signals an error
-/// if the component doesn't exist, has no reactive axis (meters,
-/// batteries), or rejects the value.
-///
-/// `LIFETIME-MS` follows the same rule as `set-active-power`
-/// (omitted → `default-request-lifetime-ms`, `0` → expire at once,
-/// otherwise floored at 150 ms).
-///
-/// `CLAMP` works exactly as it does on the active axis, over the
-/// reactive gateway envelope: the component's live Q band (the PF /
-/// apparent-power caps at its current active power, intersected with
-/// any live augmentation) narrowed by whatever Q bounds its children
-/// report. With `CLAMP` nil an out-of-envelope request is rejected;
-/// with it non-nil the request is pulled to the nearest edge and
-/// applied. 0 VAr always passes, like the 0 W park.
+/// same on the reactive axis, in VAr, against the reactive envelope:
+/// the component's live Q band (its PF / apparent-power caps at its
+/// current active power, ∩ any live augmentation) narrowed by
+/// whatever Q bounds its children report. 0 VAr always passes.
 pub(super) fn register(
     ctx: &mut TulispContext,
     router: SharedSiteRouter,
     metadata: Arc<RwLock<Metadata>>,
 ) {
-    let metadata_q = metadata.clone();
-    let r = router.clone();
-    ctx.defun(
-        "set-active-power",
-        move |id: i64,
-              watts: f64,
-              lifetime_ms: Option<i64>,
-              clamp: Option<bool>|
-              -> Result<bool, Error> {
-            let w = r.site();
-            let component = w.get(id as u64).ok_or_else(|| {
-                Error::invalid_argument(format!("set-active-power: component {id} not found"))
-            })?;
-            let mut watts = watts as f32;
-            // Envelope a setpoint must respect: the inverter's own bounds
-            // intersected with its children's DC bounds (None when it has
-            // no bounded children — then only its own bounds apply).
-            // 0 W (the fail-safe park) bypasses both arms below.
-            if watts != 0.0 {
-                if clamp.unwrap_or(false) {
-                    // Clamp into the live envelope instead of rejecting, so
-                    // an in-sim controller can command "max within the cap"
-                    // each tick without tracking the limiter's
-                    // augmentations itself. Falls back to the component's
-                    // own bounds when it has no bounded children.
-                    if let Some(envelope) = w
-                        .active_setpoint_envelope(id as u64)
-                        .or_else(|| component.effective_active_bounds())
-                    {
-                        watts = envelope.clamp(watts);
-                    }
-                } else {
-                    // The same gate as the gRPC SetPower route: reject
-                    // a command the battery can't accept rather than
-                    // silently saturating it.
-                    w.gate_setpoint(id as u64, SetpointAxis::Active, watts)
-                        .map_err(|m| Error::invalid_argument(format!("set-active-power: {m}")))?;
-                }
-            }
-            let lifetime = lifetime_from_arg(lifetime_ms, &metadata);
-            w.actuate_and_arm(
-                id as u64,
-                crate::timeout_tracker::SetpointAxis::Active,
-                lifetime,
-                || component.set_active_setpoint(watts),
-            )
-            .map_err(|e| Error::invalid_argument(format!("set-active-power: {e}")))?;
-            Ok(true)
-        },
-    );
-
-    // `(set-reactive-power …)` — documented with `register` above.
-    let r = router;
-    ctx.defun(
-        "set-reactive-power",
-        move |id: i64,
-              vars: f64,
-              lifetime_ms: Option<i64>,
-              clamp: Option<bool>|
-              -> Result<bool, Error> {
-            let w = r.site();
-            let component = w.get(id as u64).ok_or_else(|| {
-                Error::invalid_argument(format!("set-reactive-power: component {id} not found"))
-            })?;
-            let mut vars = vars as f32;
-            // Same two arms as `set-active-power`, over the reactive
-            // envelope: the component's own live Q band intersected
-            // with any Q bounds its children report (None when no
-            // child reports any — then only its own band applies).
-            // 0 VAr (the fail-safe park) bypasses both arms.
-            if vars != 0.0 {
-                if clamp.unwrap_or(false) {
-                    // Clamp into the live envelope instead of
-                    // rejecting, so an in-sim controller can command
-                    // "max Q within the current cap" each tick
-                    // without tracking augmentations itself. Falls
-                    // back to the component's own band when it has no
-                    // Q-reporting children. Full multi-band clamp,
-                    // like the active arm's.
-                    if let Some(envelope) = w
-                        .reactive_setpoint_envelope(id as u64)
-                        .or_else(|| component.reactive_bounds())
-                    {
-                        vars = envelope.clamp(vars);
-                    }
-                } else {
-                    // The same gate as the gRPC SetPower route, on the
-                    // Q axis.
-                    w.gate_setpoint(id as u64, SetpointAxis::Reactive, vars)
-                        .map_err(|m| Error::invalid_argument(format!("set-reactive-power: {m}")))?;
-                }
-            }
-            let lifetime = lifetime_from_arg(lifetime_ms, &metadata_q);
-            w.actuate_and_arm(
-                id as u64,
-                crate::timeout_tracker::SetpointAxis::Reactive,
-                lifetime,
-                || component.set_reactive_setpoint(vars),
-            )
-            .map_err(|e| Error::invalid_argument(format!("set-reactive-power: {e}")))?;
-            Ok(true)
-        },
-    );
+    for (name, axis) in [
+        ("set-active-power", SetpointAxis::Active),
+        ("set-reactive-power", SetpointAxis::Reactive),
+    ] {
+        let (r, m) = (router.clone(), metadata.clone());
+        ctx.defun(
+            name,
+            move |id: i64,
+                  value: f64,
+                  lifetime_ms: Option<i64>,
+                  clamp: Option<bool>|
+                  -> Result<bool, Error> {
+                set_power(&r, &m, name, axis, id, value, lifetime_ms, clamp)
+            },
+        );
+    }
 }
 
 #[cfg(test)]
@@ -194,15 +120,16 @@ mod tests {
     use std::time::Duration;
 
     use super::super::super::test_support::config_with;
+    use crate::timeout_tracker::SetpointAxis;
 
-    /// set-active-power applies a setpoint and arms the timeout tracker.
-    /// We verify both: the deadline is armed (`setpoint_remaining`),
-    /// and once it elapses, `reset_expired_setpoints` actually resets
-    /// the axis back to idle (checked via the applied power, since
-    /// `reset_expired_setpoints` no longer exposes the drained keys).
+    const DT: Duration = Duration::from_millis(100);
+
+    /// set-active-power applies a setpoint and arms its request
+    /// lifetime in the gateway. We verify both: the lifetime is
+    /// armed, and once a 0 ms lifetime elapses the axis ramps back to
+    /// idle.
     #[test]
     fn set_active_power_applies_setpoint_and_arms_timeout() {
-        use crate::timeout_tracker::SetpointAxis;
         let (cfg, _dir) = config_with(
             "(setq b1 (%make-battery :id 1 :rated-lower -5000.0 :rated-upper 5000.0))
              (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
@@ -213,13 +140,17 @@ mod tests {
         // 30-second lifetime — applies the setpoint and arms the
         // tracker; nothing should be expired yet.
         cfg.eval("(set-active-power 2 1500.0 30000)").unwrap();
-        assert!(site.setpoint_remaining(2, SetpointAxis::Active).is_some());
-        // Lifetime 0 → instantly elapses; the sweep resets the axis.
+        assert!(
+            site.gateway()
+                .remaining_lifetime(2, SetpointAxis::Active)
+                .is_some()
+        );
         cfg.eval("(set-active-power 2 1500.0 0)").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        assert_eq!(site.setpoint_remaining(2, SetpointAxis::Active), None);
-        site.reset_expired_setpoints();
-        inv.tick(&site, chrono::Utc::now(), Duration::from_millis(100));
+        assert_eq!(
+            site.gateway().remaining_lifetime(2, SetpointAxis::Active),
+            None
+        );
+        site.tick_n(3, DT);
         let p = inv.aggregate_power_w(&site);
         assert!(p.abs() < 1.0, "expected reset to 0 W, got {p}");
     }
@@ -258,7 +189,6 @@ mod tests {
     /// the primitive an in-sim controller uses to track the live cap.
     #[test]
     fn set_active_power_clamp_arg_clamps_into_envelope() {
-        use std::time::Duration;
         let (cfg, _dir) = config_with(
             // Inverter ±5 kW, battery ±1 kW -> combined envelope ±1 kW.
             "(setq b1 (%make-battery :id 1 :rated-lower -1000.0 :rated-upper 1000.0))
@@ -273,12 +203,12 @@ mod tests {
         let inv = site.get(2).unwrap();
         // command-delay is zero and ramp is infinite on the primitive
         // inverter, so one tick settles the commanded power.
-        inv.tick(&site, chrono::Utc::now(), Duration::from_millis(100));
+        site.tick_n(3, DT);
         let p = inv.aggregate_power_w(&site);
         assert!((p - 1000.0).abs() < 1.0, "expected clamp to +1 kW, got {p}");
         // Discharge side clamps symmetrically.
         cfg.eval("(set-active-power 2 -3000.0 30000 t)").unwrap();
-        inv.tick(&site, chrono::Utc::now(), Duration::from_millis(100));
+        site.tick_n(3, DT);
         let p = inv.aggregate_power_w(&site);
         assert!((p + 1000.0).abs() < 1.0, "expected clamp to -1 kW, got {p}");
     }
@@ -311,21 +241,25 @@ mod tests {
                                    :successors (list b1))";
 
     /// set-reactive-power applies a setpoint and arms the *reactive*
-    /// axis of the timeout tracker, leaving the active axis alone; once
-    /// it elapses, the sweep resets that axis back to idle.
+    /// axis of the timeout tracker, leaving the active axis alone;
+    /// once it elapses, that axis ramps back to idle.
     #[test]
     fn set_reactive_power_applies_setpoint_and_arms_reactive_timeout() {
-        use crate::timeout_tracker::SetpointAxis;
         let (cfg, _dir) = config_with(REACTIVE_SITE);
         let site = cfg.site();
         let inv = site.get(2).unwrap();
         cfg.eval("(set-reactive-power 2 1500.0 30000)").unwrap();
-        assert!(site.setpoint_remaining(2, SetpointAxis::Reactive).is_some());
+        assert!(
+            site.gateway()
+                .remaining_lifetime(2, SetpointAxis::Reactive)
+                .is_some()
+        );
         cfg.eval("(set-reactive-power 2 1500.0 0)").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        assert_eq!(site.setpoint_remaining(2, SetpointAxis::Reactive), None);
-        site.reset_expired_setpoints();
-        inv.tick(&site, chrono::Utc::now(), Duration::from_millis(100));
+        assert_eq!(
+            site.gateway().remaining_lifetime(2, SetpointAxis::Reactive),
+            None
+        );
+        site.tick_n(3, DT);
         let q = inv.aggregate_reactive_var(&site);
         assert!(q.abs() < 1.0, "expected reactive reset to 0 VAr, got {q}");
     }
@@ -347,20 +281,19 @@ mod tests {
     /// and applied: the published Q settles at ±5 kVAr.
     #[test]
     fn set_reactive_power_clamp_arg_clamps_into_band() {
-        use std::time::Duration;
         let (cfg, _dir) = config_with(REACTIVE_SITE);
         assert!(cfg.eval("(set-reactive-power 2 6000.0 30000)").is_err());
         cfg.eval("(set-reactive-power 2 6000.0 30000 t)").unwrap();
         let site = cfg.site();
         let inv = site.get(2).unwrap();
-        inv.tick(&site, chrono::Utc::now(), Duration::from_millis(100));
+        site.tick_n(3, DT);
         let q = inv.telemetry(&site).reactive_power_var.unwrap();
         assert!(
             (q - 5000.0).abs() < 1.0,
             "expected clamp to +5 kVAr, got {q}"
         );
         cfg.eval("(set-reactive-power 2 -6000.0 30000 t)").unwrap();
-        inv.tick(&site, chrono::Utc::now(), Duration::from_millis(100));
+        site.tick_n(3, DT);
         let q = inv.telemetry(&site).reactive_power_var.unwrap();
         assert!(
             (q + 5000.0).abs() < 1.0,
@@ -388,23 +321,15 @@ mod tests {
     /// round trip on the reactive axis.
     #[test]
     fn reactive_augmentation_narrows_accepts_and_expires() {
-        use crate::sim::bounds::VecBounds;
-        use std::time::Duration;
         let (cfg, _dir) = config_with(REACTIVE_SITE);
         // Wide band to start with: ±5 kVAr at P = 0.
         cfg.eval("(set-reactive-power 2 3000.0 30000)").unwrap();
 
         let site = cfg.site();
         let inv = site.get(2).unwrap();
-        // Narrow Q to ±1 kVAr. The two-second lifetime is the window
-        // the three evals + tick + telemetry read below have to land
-        // in; they take microseconds each, but a parallel `cargo
-        // test` can steal this thread for a long while, so leave real
-        // slack. The expiry leg sleeps only what is *left* of the
-        // lifetime, so a wide window costs no extra wall time.
-        const LIFETIME: Duration = Duration::from_secs(2);
-        let armed_at = chrono::Utc::now();
-        inv.augment_reactive_bounds(armed_at, VecBounds::single(-1000.0, 1000.0), LIFETIME);
+        // Narrow Q to ±1 kVAr for two seconds of site time.
+        cfg.eval("(augment-reactive-bounds 2 '(-1000 1000) 2000)")
+            .unwrap();
 
         // 3 kVAr no longer fits the live band.
         let res = cfg.eval("(set-reactive-power 2 3000.0 30000)");
@@ -414,7 +339,7 @@ mod tests {
         );
         // With CLAMP it is pulled to the +1 kVAr edge and applied.
         cfg.eval("(set-reactive-power 2 3000.0 30000 t)").unwrap();
-        inv.tick(&site, chrono::Utc::now(), Duration::from_millis(100));
+        site.tick_n(3, DT);
         let q = inv.telemetry(&site).reactive_power_var.unwrap();
         assert!(
             (q - 1000.0).abs() < 1.0,
@@ -422,41 +347,40 @@ mod tests {
         );
 
         // Past the augmentation's lifetime the caps band alone
-        // applies. Sleep to the expiry instant plus a small margin,
-        // not a flat interval — whatever the assertions above already
-        // consumed comes off this wait.
-        let spent = (chrono::Utc::now() - armed_at)
-            .to_std()
-            .unwrap_or(Duration::ZERO);
-        std::thread::sleep(LIFETIME.saturating_sub(spent) + Duration::from_millis(100));
+        // applies.
+        site.tick_n(20, DT);
         cfg.eval("(set-reactive-power 2 3000.0 30000)")
             .expect("3 kVAr fits the rated band again once the augmentation expires");
     }
 
     /// The reactive axis carries the same gateway shape as the active
     /// one. An inverter's battery child exposes no Q bounds (reactive
-    /// power terminates at the inverter), so
-    /// `reactive_setpoint_envelope` is `None` and the gateway falls
-    /// through to the component's own band — which still rejects an
-    /// out-of-band request, with the same wording the active arm uses.
+    /// power terminates at the inverter), so the gateway reports no
+    /// child envelope and falls through to the component's own band —
+    /// which still rejects an out-of-band request, with the same
+    /// wording the active arm uses.
     #[test]
     fn reactive_gateway_mirrors_active() {
         let (cfg, _dir) = config_with(REACTIVE_SITE);
         let site = cfg.site();
+        let gw = site.gateway();
         // The active side has a combined envelope: the battery child
         // reports DC bounds and they get summed in.
         assert!(
-            site.active_setpoint_envelope(2).is_some(),
+            gw.child_envelope(2, SetpointAxis::Active).is_some(),
             "the battery child reports active bounds, so P has a combined envelope"
         );
         // The reactive side has none: no child reports Q bounds.
         assert!(
-            site.aggregate_child_reactive_bounds(2).is_none(),
+            gw.child_envelope(2, SetpointAxis::Reactive).is_none(),
             "a battery exposes no reactive bounds"
         );
-        assert!(
-            site.reactive_setpoint_envelope(2).is_none(),
-            "with no Q-reporting child there is no combined Q envelope"
+        assert_eq!(
+            gw.setpoint_envelope(2, SetpointAxis::Reactive)
+                .unwrap()
+                .to_string(),
+            "[-5000, 5000]",
+            "with no Q-reporting child the envelope is the inverter's own band"
         );
         // With no gateway envelope, the component's own band decides,
         // and the error reads like the active arm's.
@@ -479,7 +403,6 @@ mod tests {
     /// clamped Q is published instead of zeroed by the no-sink rule.
     #[test]
     fn reactive_gateway_rejects_outside_the_child_intersection() {
-        use std::time::Duration;
         let (cfg, _dir) = config_with(
             // Battery inverter: ±5 kVAr at P = 0. Its child solar
             // inverter carries a 1 kVA cap -> ±1 kVAr, so the
@@ -498,7 +421,8 @@ mod tests {
         );
         let site = cfg.site();
         let envelope = site
-            .reactive_setpoint_envelope(2)
+            .gateway()
+            .setpoint_envelope(2, SetpointAxis::Reactive)
             .expect("the solar child reports Q bounds, so there is a combined envelope");
         assert_eq!(envelope.0.len(), 1, "expected one band, got {envelope}");
         assert_eq!(envelope.0[0].lower, Some(-1000.0));
@@ -519,7 +443,7 @@ mod tests {
         // CLAMP pulls it into the combined envelope instead.
         cfg.eval("(set-reactive-power 2 3000.0 30000 t)").unwrap();
         let inv = site.get(2).unwrap();
-        inv.tick(&site, chrono::Utc::now(), Duration::from_millis(100));
+        site.tick_n(3, DT);
         let q = inv.telemetry(&site).reactive_power_var.unwrap();
         assert!(
             (q - 1000.0).abs() < 1.0,
@@ -527,38 +451,77 @@ mod tests {
         );
     }
 
-    /// A Q augmentation disjoint from the caps band leaves zero
-    /// headroom: the live envelope normalizes to the single (0, 0)
-    /// band. CLAMP then pulls any request to 0, which the park rule
-    /// always accepts; without CLAMP the request is rejected outright.
+    /// A Q augmentation that fit the caps band when P was idle is
+    /// disjoint from it once P sits at the kVA rim: zero headroom.
+    /// CLAMP then pulls any request to 0, which the park rule always
+    /// accepts; without CLAMP the request is refused.
     #[test]
     fn set_reactive_power_clamps_to_zero_at_zero_headroom() {
-        use crate::sim::bounds::VecBounds;
-        use std::time::Duration;
         let (cfg, _dir) = config_with(REACTIVE_SITE);
         let site = cfg.site();
         let inv = site.get(2).unwrap();
-        // ±5 kVAr caps band ∩ [20 kVAr, 30 kVAr] is empty, which
-        // `or_zero_band` reports as "zero headroom", not "absent".
-        inv.augment_reactive_bounds(
-            chrono::Utc::now(),
-            VecBounds::single(20_000.0, 30_000.0),
-            Duration::from_secs(30),
-        );
-        let band = inv
-            .reactive_bounds()
+        cfg.eval("(augment-reactive-bounds 2 '(-4000 -3000) 60000)")
+            .unwrap();
+        cfg.eval("(set-active-power 2 5000.0 60000)").unwrap();
+        site.tick_n(5, DT);
+        assert!((inv.aggregate_power_w(&site) - 5000.0).abs() < 1.0);
+        let band = site
+            .bounds_of(2, SetpointAxis::Reactive)
             .expect("the inverter publishes Q bounds");
-        assert_eq!(band.0.len(), 1, "expected one normalized band, got {band}");
-        assert_eq!(band.0[0].lower, Some(0.0));
-        assert_eq!(band.0[0].upper, Some(0.0));
-
-        // Without CLAMP nothing non-zero fits.
+        assert_eq!(band.to_string(), "[0, 0]");
         assert!(cfg.eval("(set-reactive-power 2 3000.0 30000)").is_err());
-        // With CLAMP the request is pulled to 0 and applied.
         cfg.eval("(set-reactive-power 2 3000.0 nil t)").unwrap();
-        inv.tick(&site, chrono::Utc::now(), Duration::from_millis(100));
+        site.tick_n(3, DT);
         let q = inv.telemetry(&site).reactive_power_var.unwrap();
         assert!(q.abs() < 1.0, "expected clamp to 0 VAr, got {q}");
+    }
+
+    /// A non-finite value is refused by the gateway, which names it
+    /// as such.
+    #[test]
+    fn a_non_finite_value_is_refused_as_non_finite() {
+        let (cfg, _dir) = config_with(REACTIVE_SITE);
+        let err = cfg
+            .eval("(set-reactive-power 2 (/ 0.0 0.0) 30000)")
+            .unwrap_err();
+        assert!(err.contains("non-finite"), "{err}");
+    }
+
+    /// A request whose lifetime is 0 never shows: the next physics
+    /// step expires it before the component ticks.
+    #[test]
+    fn a_zero_lifetime_expires_on_the_next_step() {
+        let (cfg, _dir) = config_with(REACTIVE_SITE);
+        let site = cfg.site();
+        cfg.eval("(set-active-power 2 1500.0 0)").unwrap();
+        assert_eq!(
+            site.gateway().remaining_lifetime(2, SetpointAxis::Active),
+            None
+        );
+        site.tick_n(3, DT);
+        assert!(site.get(2).unwrap().aggregate_power_w(&site).abs() < 1.0);
+    }
+
+    /// A 150 ms lifetime armed after `tick_n` is stamped on the same
+    /// clock the ticks advance: it survives one more 100 ms tick and
+    /// is gone once a second has passed.
+    #[test]
+    fn a_short_lifetime_armed_after_tick_n_runs_on_the_tick_clock() {
+        let (cfg, _dir) = config_with(REACTIVE_SITE);
+        let site = cfg.site();
+        site.tick_n(10, DT);
+        cfg.eval("(set-active-power 2 1500.0 150)").unwrap();
+        site.tick_n(1, DT);
+        assert!(
+            site.gateway()
+                .remaining_lifetime(2, SetpointAxis::Active)
+                .is_some()
+        );
+        site.tick_n(1, DT);
+        assert_eq!(
+            site.gateway().remaining_lifetime(2, SetpointAxis::Active),
+            None
+        );
     }
 
     /// Unknown ids and components without a reactive axis (a meter)
