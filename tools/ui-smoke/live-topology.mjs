@@ -1303,6 +1303,29 @@ const emptyText = await waitFor(async () => {
 check("e2e: an unplugged charger says so", /no EV/i.test(emptyText ?? ""), emptyText);
 await page.selectOption("#ev-preset", "city");
 await page.fill("#ev-soc", "20");
+await page.focus("#ev-soc");
+// Any eval bumps the topology version, and the refresh re-renders the
+// inspector; the half-filled form must come through it untouched, or
+// a refresh landing between the typing and the click (the unplug's
+// own, say) plugs the default car instead.
+const appliesBeforeEvRefresh = await getApplyCount();
+const evRefreshEval = await evalMg("(+ 1 1)");
+const evRefreshed = await waitFor(async () => (await getApplyCount()) > appliesBeforeEvRefresh, 5000).catch(() => null);
+await new Promise((r) => setTimeout(r, 300));
+const formAfterRefresh = await page.evaluate(() => ({
+  preset: document.getElementById("ev-preset")?.value,
+  soc: document.getElementById("ev-soc")?.value,
+  focus: document.activeElement?.id,
+}));
+check(
+  "e2e: a topology refresh keeps the half-filled plug form",
+  evRefreshEval.ok &&
+    evRefreshed &&
+    formAfterRefresh.preset === "city" &&
+    formAfterRefresh.soc === "20" &&
+    formAfterRefresh.focus === "ev-soc",
+  JSON.stringify({ evRefreshEval, evRefreshed, formAfterRefresh }),
+);
 await page.click("#ev-plug");
 const pluggedText = await waitFor(async () => {
   const t = await evText();

@@ -449,6 +449,7 @@ async function refreshEvCard(id) {
     // body in it here would make the memo below swallow the repaint
     // that recovers from this error.
     evHtml = "";
+    evHtmlId = null;
     return;
   }
   // Re-read the element rather than trusting one captured before the
@@ -464,6 +465,7 @@ async function refreshEvCard(id) {
   const html = evBodyHtml(info);
   if (html === evHtml) return;
   evHtml = html;
+  evHtmlId = id;
   body.innerHTML = html;
   // The inputs commit through this button, not on Enter or a wheel,
   // so the numeric fields need none of the knob rows' spinner/wheel
@@ -491,10 +493,14 @@ async function refreshEvCard(id) {
 // on its await (see aliveToken).
 let evTimer = null;
 let evHtml = "";
+// The charger whose body `evHtml` is, so a re-render of that same
+// charger can keep the body instead of starting from "loading…".
+let evHtmlId = null;
 function stopEvTimer() {
   if (evTimer) clearInterval(evTimer);
   evTimer = null;
   evHtml = "";
+  evHtmlId = null;
   evAlive.bump();
 }
 
@@ -1265,11 +1271,20 @@ let showGen = 0;
 export function showComponent(d) {
   if (!d) return;
   const gen = ++showGen;
+  // Any eval bumps the topology version, and the refresh re-renders
+  // the inspector through here. For the charger already on screen,
+  // keep its EV body: a half-filled plug form survives, and the card
+  // does not flash back to "loading…". Read before openPanel runs the
+  // teardown, which forgets the memo.
+  const keptEvCard =
+    d.category === "ev-charger" && evHtmlId === d.id
+      ? { body: document.getElementById("ev-body"), html: evHtml, focused: document.activeElement }
+      : null;
   // The three clears below are the node panel's whole teardown —
   // side-panel.js runs the previously registered one before
   // renderNode paints, so re-selecting a node tears the old node's
   // charts, store subscription, and timers down first.
-  openPanel("node", () => renderNode(d, gen), () => {
+  openPanel("node", () => renderNode(d, gen, keptEvCard), () => {
     // The bump IS the teardown for any chart build still parked on
     // its await (see aliveToken).
     chartsAlive.bump();
@@ -1280,7 +1295,7 @@ export function showComponent(d) {
   });
 }
 
-async function renderNode(d, gen) {
+async function renderNode(d, gen, keptEvCard) {
   // vis-network's getConnectedNodes(id, direction) returns the
   // ids on either side of the selected node — cheaper than walking
   // /api/topology for the disconnect buttons. Display labels get
@@ -1291,6 +1306,14 @@ async function renderNode(d, gen) {
 
   stopEvTimer();
   if (d.category === "ev-charger") {
+    if (keptEvCard?.body) {
+      document.getElementById("ev-body")?.replaceWith(keptEvCard.body);
+      // Moving the body out and back drops focus; a field the user
+      // was typing in gets it back.
+      if (keptEvCard.body.contains(keptEvCard.focused)) keptEvCard.focused.focus();
+      evHtml = keptEvCard.html;
+      evHtmlId = d.id;
+    }
     refreshEvCard(d.id);
     evTimer = setInterval(() => refreshEvCard(d.id), 2000);
   }
