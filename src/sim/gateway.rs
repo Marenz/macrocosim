@@ -15,13 +15,15 @@
 //! gateway only while holding no registry guard. The lock is never
 //! held across an `.await`.
 
-use std::{fmt, time::Duration};
+use std::{collections::HashMap, fmt, time::Duration};
 
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    AugmentError, MicrogridSite, SetpointError, SimulatedComponent, bounds::VecBounds,
+    AugmentError, MicrogridSite, SetpointError, SimulatedComponent,
+    bounds::VecBounds,
+    gateway_axis::{GatewayAxis, GatewayAxisConfig},
 };
 use crate::timeout_tracker::{SetpointAxis, TimeoutTracker, deadline_after};
 
@@ -96,12 +98,15 @@ pub struct MicrogridGateway {
 struct GatewayState {
     /// Request lifetimes, on the site clock.
     lifetimes: TimeoutTracker,
+    /// One axis per controllable component and axis.
+    axes: HashMap<(u64, SetpointAxis), GatewayAxis>,
 }
 
 impl GatewayState {
     /// Drop everything held for `id`.
     fn forget(&mut self, id: u64) {
         self.lifetimes.remove_component(id);
+        self.axes.retain(|(cid, _), _| *cid != id);
     }
 }
 
@@ -112,13 +117,33 @@ impl MicrogridGateway {
 
     /// Drop every command, lifetime and augmentation (a site reset).
     pub(crate) fn clear(&self) {
-        self.state.lock().lifetimes.clear();
+        let mut st = self.state.lock();
+        st.lifetimes.clear();
+        st.axes.clear();
     }
 
-    /// Set up a component that has just been (re-)registered,
-    /// dropping whatever an earlier occupant of its id left behind.
+    /// Set up a component that has just been (re-)registered: drop
+    /// whatever an earlier occupant of its id left, then create an
+    /// axis for every axis it takes a command on, its ramp starting
+    /// at the component's initial value.
     pub(crate) fn on_register(&self, c: &dyn SimulatedComponent) {
-        self.state.lock().forget(c.id());
+        let id = c.id();
+        let mut st = self.state.lock();
+        st.forget(id);
+        let settings = c.gateway_settings().unwrap_or_default();
+        for axis in [SetpointAxis::Active, SetpointAxis::Reactive] {
+            if c.has_axis(axis) {
+                st.axes.insert(
+                    (id, axis),
+                    GatewayAxis::new(GatewayAxisConfig {
+                        command_delay: settings.delay(axis),
+                        ramp_rate_per_s: settings.ramp_rate(axis),
+                        initial: c.initial_value(axis),
+                        unit: axis.unit(),
+                    }),
+                );
+            }
+        }
     }
 
     /// Drop what is held for a removed component.
@@ -197,9 +222,20 @@ impl<'a> Gateway<'a> {
             }
             Mode::Clamp => clamp_into(value, self.setpoint_envelope_locked(&st, id, axis)),
         };
+        let now = self.site.now();
+        if let Some(ax) = st.axes.get(&(id, axis)) {
+            let base = self.base_of(c.as_ref(), axis);
+            ax.check(value, &base, now)
+                .map_err(|e| GatewayError::OutOfEnvelope(e.to_string()))?;
+            let deadline = st.lifetimes.actuate_and_arm(id, axis, now, lifetime, || {
+                ax.accept(value);
+                Ok::<(), GatewayError>(())
+            })?;
+            return Ok(Applied { value, deadline });
+        }
         let deadline = st
             .lifetimes
-            .actuate_and_arm(id, axis, self.site.now(), lifetime, || match axis {
+            .actuate_and_arm(id, axis, now, lifetime, || match axis {
                 SetpointAxis::Active => c.set_active_setpoint(value),
                 SetpointAxis::Reactive => c.set_reactive_setpoint(value),
             })
@@ -218,13 +254,28 @@ impl<'a> Gateway<'a> {
         bounds: VecBounds,
         lifetime: Duration,
     ) -> Result<DateTime<Utc>, AugmentError> {
-        let _st = self.gw.state.lock();
+        let mut st = self.gw.state.lock();
         if self.site.run_generation() != generation {
             return Err(AugmentError::SiteReset);
         }
         let c = self.site.get(id).ok_or(AugmentError::NotFound(id))?;
         let now = self.site.now();
-        c.try_augment_bounds(axis, now, bounds, lifetime)?;
+        match st.axes.get_mut(&(id, axis)) {
+            Some(ax) => {
+                bounds
+                    .check_augmentation_shape()
+                    .map_err(AugmentError::Malformed)?;
+                let base = self.base_of(c.as_ref(), axis);
+                let physical = if c.augment_checks_physical_band(axis) {
+                    c.physical_band(axis, self.site.physics_tick())
+                } else {
+                    None
+                };
+                ax.try_augment(&base, physical.as_ref(), now, bounds, lifetime)
+                    .map_err(AugmentError::Disjoint)?;
+            }
+            None => c.try_augment_bounds(axis, now, bounds, lifetime)?,
+        }
         Ok(deadline_after(now, lifetime))
     }
 
@@ -232,8 +283,12 @@ impl<'a> Gateway<'a> {
     pub fn reset(&self, id: u64, axis: SetpointAxis) {
         let st = self.gw.state.lock();
         st.lifetimes.remove(id, axis);
-        if let Some(c) = self.site.get(id) {
-            c.reset_setpoint_axis(axis);
+        let Some(c) = self.site.get(id) else {
+            return;
+        };
+        match st.axes.get(&(id, axis)) {
+            Some(ax) => ax.reset(c.park_value(axis)),
+            None => c.reset_setpoint_axis(axis),
         }
     }
 
@@ -253,17 +308,26 @@ impl<'a> Gateway<'a> {
     /// Expire every lifetime at or before `now` and reset its axis.
     pub(crate) fn expire(&self, now: DateTime<Utc>) {
         let st = self.gw.state.lock();
+        let expired = self.expire_locked(&st, now);
+        drop(st);
+        log_expired(&expired);
+    }
+
+    /// Expire every lifetime at or before `now`: an owned axis ramps to
+    /// its park value, a façade one is reset through the component.
+    /// Returns what expired, for logging once the lock is released.
+    fn expire_locked(&self, st: &GatewayState, now: DateTime<Utc>) -> Vec<(u64, SetpointAxis)> {
         let mut expired = Vec::new();
         st.lifetimes.reset_expired_with(now, |id, axis| {
             if let Some(c) = self.site.get(id) {
-                c.reset_setpoint_axis(axis);
+                match st.axes.get(&(id, axis)) {
+                    Some(ax) => ax.reset(c.park_value(axis)),
+                    None => c.reset_setpoint_axis(axis),
+                }
             }
             expired.push((id, axis));
         });
-        drop(st);
-        for (id, axis) in expired {
-            log::info!("Request timeout for component {id} ({axis:?}) — resetting that axis");
-        }
+        expired
     }
 
     /// What every consumer reports as `id`'s bounds on `axis`; `None`
@@ -291,22 +355,61 @@ impl<'a> Gateway<'a> {
 
     /// True while a live augmentation narrows `id`'s `axis`.
     pub fn augmented(&self, id: u64, axis: SetpointAxis) -> bool {
-        let _st = self.gw.state.lock();
-        self.site
-            .get(id)
-            .is_some_and(|c| c.augmentation_active(axis, self.site.now()))
+        let st = self.gw.state.lock();
+        let now = self.site.now();
+        match st.axes.get(&(id, axis)) {
+            Some(ax) => ax.augmented(now),
+            None => self
+                .site
+                .get(id)
+                .is_some_and(|c| c.augmentation_active(axis, now)),
+        }
     }
 
     fn bounds_of_locked(
         &self,
-        _st: &GatewayState,
+        st: &GatewayState,
         id: u64,
         axis: SetpointAxis,
     ) -> Option<VecBounds> {
         let c = self.site.get(id)?;
+        if let Some(ax) = st.axes.get(&(id, axis)) {
+            let env = ax.validation_envelope(&self.base_of(c.as_ref(), axis), self.site.now());
+            return Some(match axis {
+                SetpointAxis::Active if c.advertises_physical_band(axis) => {
+                    match c.physical_band(axis, self.site.physics_tick()) {
+                        Some(p) => env.intersect(&p),
+                        None => env,
+                    }
+                }
+                SetpointAxis::Active => env,
+                // Zero headroom is a present (0, 0) band to a reader,
+                // not an absent one.
+                SetpointAxis::Reactive => env.or_zero_band(),
+            });
+        }
         match axis {
             SetpointAxis::Active => c.effective_active_bounds(),
             SetpointAxis::Reactive => c.reactive_bounds(),
+        }
+    }
+
+    /// The static shape `c` supplies for `axis`: its rated band, or
+    /// its reactive capability at its live P (the last tick's
+    /// measured active power).
+    fn base_of(&self, c: &dyn SimulatedComponent, axis: SetpointAxis) -> VecBounds {
+        match axis {
+            SetpointAxis::Active => c
+                .rated_active_bounds()
+                .map(|(lo, hi)| VecBounds::single(lo, hi))
+                .unwrap_or_default(),
+            SetpointAxis::Reactive => c
+                .reactive_capability()
+                .map(|cap| {
+                    let (lo, hi) = cap.q_bounds_at(c.active_power_w(self.site).unwrap_or(0.0));
+                    VecBounds::single(lo, hi)
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -400,6 +503,13 @@ impl<'a> Gateway<'a> {
     }
 }
 
+/// One info line per expired request.
+fn log_expired(expired: &[(u64, SetpointAxis)]) {
+    for (id, axis) in expired {
+        log::info!("Request timeout for component {id} ({axis:?}) — resetting that axis");
+    }
+}
+
 /// `value` pulled into `envelope`; 0 and a missing envelope leave it
 /// alone.
 fn clamp_into(value: f32, envelope: Option<VecBounds>) -> f32 {
@@ -411,7 +521,9 @@ fn clamp_into(value: f32, envelope: Option<VecBounds>) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::test_stubs::{Cmd, put, sim_site};
+    use std::sync::Arc;
+
+    use super::test_stubs::{Cmd, Hw, put, sim_site};
     use super::*;
     use crate::sim::sim_clock::headless_base;
 
@@ -782,5 +894,193 @@ mod tests {
         );
         let grid = site.telemetry_of(site.get(9).unwrap().as_ref());
         assert!(grid.active_power_bounds.is_none());
+    }
+
+    /// An owned axis validates against rated ∩ augmentations, and the
+    /// gateway, not the component, holds the command until a step.
+    #[test]
+    fn an_owned_axis_validates_against_rated_and_augmentations() {
+        let site = MicrogridSite::new();
+        let hw = put(&site, Arc::new(Hw::new(1)));
+        let gw = site.gateway();
+        let g = site.run_generation();
+        assert!(gw.command(1, SetpointAxis::Active, 500.0).is_ok());
+        assert_eq!(hw.last(), None, "the command waits for the step");
+        let e = gw.command(1, SetpointAxis::Active, 5_000.0).unwrap_err();
+        assert!(e.to_string().contains("out of bounds [-1000, 1000]"), "{e}");
+        gw.augment(
+            1,
+            g,
+            SetpointAxis::Active,
+            VecBounds::single(0.0, 300.0),
+            HOUR,
+        )
+        .unwrap();
+        assert!(gw.command(1, SetpointAxis::Active, 500.0).is_err());
+        assert_eq!(
+            gw.bounds_of(1, SetpointAxis::Active).unwrap().to_string(),
+            "[0, 300]"
+        );
+        assert!(gw.augmented(1, SetpointAxis::Active));
+        let e = gw.command(1, SetpointAxis::Reactive, 10.0).unwrap_err();
+        assert!(matches!(e, GatewayError::NoAxis { .. }));
+        let e = gw
+            .augment(
+                1,
+                g,
+                SetpointAxis::Reactive,
+                VecBounds::single(-1.0, 1.0),
+                HOUR,
+            )
+            .unwrap_err();
+        assert!(matches!(e, AugmentError::Unsupported));
+    }
+
+    #[test]
+    fn clamp_on_an_owned_axis_pulls_into_the_envelope() {
+        let site = MicrogridSite::new();
+        put(&site, Arc::new(Hw::new(1)));
+        let applied = site
+            .gateway()
+            .set_active_power(1, site.run_generation(), 5_000.0, HOUR, Mode::Clamp)
+            .unwrap();
+        assert_eq!(applied.value, 1_000.0);
+    }
+
+    #[test]
+    fn reset_on_an_owned_axis_clears_the_lifetime() {
+        let site = MicrogridSite::new();
+        put(&site, Arc::new(Hw::new(1)));
+        site.gateway()
+            .command(1, SetpointAxis::Active, 500.0)
+            .unwrap();
+        site.gateway().reset(1, SetpointAxis::Active);
+        assert_eq!(
+            site.gateway().remaining_lifetime(1, SetpointAxis::Active),
+            None
+        );
+    }
+
+    /// The augmentation emptiness check includes the physical band
+    /// only for a component that asks for it.
+    #[test]
+    fn augment_checks_the_physical_band_only_when_asked() {
+        let site = MicrogridSite::new();
+        let pv = put(&site, Arc::new(Hw::new(1)));
+        *pv.physical.lock() = Some(VecBounds::single(0.0, 200.0));
+        let boiler = put(
+            &site,
+            Arc::new(Hw {
+                checks_physical: true,
+                ..Hw::new(2)
+            }),
+        );
+        *boiler.physical.lock() = Some(VecBounds::single(0.0, 200.0));
+        let gw = site.gateway();
+        let g = site.run_generation();
+        assert!(
+            gw.augment(
+                1,
+                g,
+                SetpointAxis::Active,
+                VecBounds::single(500.0, 900.0),
+                HOUR
+            )
+            .is_ok()
+        );
+        let e = gw
+            .augment(
+                2,
+                g,
+                SetpointAxis::Active,
+                VecBounds::single(500.0, 900.0),
+                HOUR,
+            )
+            .unwrap_err();
+        assert!(e.to_string().contains("current envelope [0, 200]"), "{e}");
+    }
+
+    /// `bounds_of` includes the physical band only where the
+    /// component advertises it.
+    #[test]
+    fn bounds_of_includes_the_physical_band_only_when_advertised() {
+        let site = MicrogridSite::new();
+        let quiet = put(&site, Arc::new(Hw::new(1)));
+        *quiet.physical.lock() = Some(VecBounds::single(0.0, 200.0));
+        let loud = put(
+            &site,
+            Arc::new(Hw {
+                advertises: true,
+                ..Hw::new(2)
+            }),
+        );
+        *loud.physical.lock() = Some(VecBounds::single(0.0, 200.0));
+        assert_eq!(
+            site.bounds_of(1, SetpointAxis::Active).unwrap().to_string(),
+            "[-1000, 1000]"
+        );
+        assert_eq!(
+            site.bounds_of(2, SetpointAxis::Active).unwrap().to_string(),
+            "[0, 200]"
+        );
+    }
+
+    /// Two threads racing mutually disjoint augmentations: exactly
+    /// one wins and the envelope never goes empty.
+    #[test]
+    fn concurrent_disjoint_augments_leave_exactly_one_winner() {
+        for i in 0..50 {
+            let site = MicrogridSite::new();
+            put(&site, Arc::new(Hw::new(1)));
+            let g = site.run_generation();
+            let (s1, s2) = (site.clone(), site.clone());
+            let h1 = std::thread::spawn(move || {
+                s1.gateway()
+                    .augment(
+                        1,
+                        g,
+                        SetpointAxis::Active,
+                        VecBounds::single(500.0, 800.0),
+                        HOUR,
+                    )
+                    .is_ok()
+            });
+            let h2 = std::thread::spawn(move || {
+                s2.gateway()
+                    .augment(
+                        1,
+                        g,
+                        SetpointAxis::Active,
+                        VecBounds::single(-800.0, -500.0),
+                        HOUR,
+                    )
+                    .is_ok()
+            });
+            let wins = u8::from(h1.join().unwrap()) + u8::from(h2.join().unwrap());
+            assert_eq!(wins, 1, "iteration {i}");
+            let b = site.bounds_of(1, SetpointAxis::Active).unwrap();
+            assert_eq!(b.0.len(), 1, "iteration {i}: {b}");
+        }
+    }
+
+    /// A component re-registered under the same id starts with fresh
+    /// axes: no augmentation and no lifetime carried over.
+    #[test]
+    fn a_reregistered_component_starts_with_fresh_axes() {
+        let site = MicrogridSite::new();
+        put(&site, Arc::new(Hw::new(1)));
+        let gw = site.gateway();
+        gw.command(1, SetpointAxis::Active, 500.0).unwrap();
+        gw.augment(
+            1,
+            site.run_generation(),
+            SetpointAxis::Active,
+            VecBounds::single(0.0, 600.0),
+            HOUR,
+        )
+        .unwrap();
+        put(&site, Arc::new(Hw::new(1)));
+        assert!(!gw.augmented(1, SetpointAxis::Active));
+        assert_eq!(gw.remaining_lifetime(1, SetpointAxis::Active), None);
     }
 }
