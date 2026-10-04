@@ -9,6 +9,7 @@ use crate::proto::common::microgrid::electrical_components::{
 
 #[allow(
     clippy::doc_lazy_continuation,
+    clippy::double_must_use,
     clippy::module_inception,
     dead_code,
     clippy::enum_variant_names
