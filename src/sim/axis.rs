@@ -49,9 +49,11 @@ pub enum IdleTarget {
 pub struct StepCtx<'a> {
     /// The OTHER axis's live value (P for a Q axis). Ignored when `caps` is None.
     pub other_axis: f32,
-    /// Extra per-tick envelope from the component (EV SoC derate,
-    /// solar sunlight floor). Intersected into the tracking envelope
-    /// only — never into validation.
+    /// Extra per-tick envelope from the component (solar sunlight
+    /// floor, boiler heat need). Intersected into the tracking
+    /// envelope only — never into validation — and the published
+    /// output is held inside it without waiting on the ramp. It must
+    /// contain 0, or a ramp toward 0 is held at its edge.
     pub dynamic: Option<&'a VecBounds>,
     pub idle: IdleTarget,
 }
@@ -256,7 +258,18 @@ impl PowerAxis {
             self.ramp.set_target(tracked);
         }
 
-        let actual = self.ramp.advance(dt);
+        let mut actual = self.ramp.advance(dt);
+        // The dynamic band is physical (the sun a PV array gets, the
+        // heat a boiler can take): the ramp climbs toward it, but the
+        // output never sits outside it, so a narrowing band cuts the
+        // output at once.
+        if let Some(band) = ctx.dynamic
+            && actual != 0.0
+            && !band.contains(actual)
+        {
+            actual = band.clamp(actual);
+            self.ramp.set_actual(actual);
+        }
         *self.published.lock() = actual;
         actual
     }
@@ -709,6 +722,39 @@ mod tests {
             ),
             -2_000.0
         );
+    }
+
+    /// The dynamic band is a physical limit: when it narrows (a cloud
+    /// cuts the sun a PV array gets) the output drops to it at once,
+    /// while a widening band is still climbed at the ramp rate.
+    #[test]
+    fn output_never_sits_outside_the_dynamic_band() {
+        let ax = PowerAxis::new(AxisConfig {
+            rated: Some((-30_000.0, 0.0)),
+            caps: None,
+            command_delay: Duration::ZERO,
+            ramp_rate_per_s: 2_000.0,
+            unit: "W",
+        });
+        let t0 = Utc::now();
+        let sun = |avail: f32, ax: &PowerAxis| {
+            let band = VecBounds::single(avail, 0.0);
+            ax.step(
+                t0,
+                Duration::from_millis(100),
+                StepCtx {
+                    other_axis: 0.0,
+                    dynamic: Some(&band),
+                    idle: IdleTarget::Value(avail),
+                },
+            )
+        };
+        for _ in 0..160 {
+            sun(-30_000.0, &ax);
+        }
+        assert_eq!(sun(-30_000.0, &ax), -30_000.0);
+        assert_eq!(sun(-6_000.0, &ax), -6_000.0);
+        assert_eq!(sun(-30_000.0, &ax), -6_200.0);
     }
 
     #[test]

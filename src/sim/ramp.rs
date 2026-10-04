@@ -179,6 +179,16 @@ impl Ramp {
         s.actual = value;
     }
 
+    /// Move `actual` without touching the target, for an output a
+    /// physical limit has cut short of where the slew put it.
+    pub fn set_actual(&self, value: f32) {
+        if value.is_nan() {
+            log::warn!("Ramp::set_actual ignored NaN");
+            return;
+        }
+        self.state.lock().actual = value;
+    }
+
     pub fn actual(&self) -> f32 {
         self.state.lock().actual
     }

@@ -1,8 +1,9 @@
 //! Solar (PV) inverter. Active-side: produces a negative power
 //! proportional to `sunlight_pct`, slewed by the ramp + command-delay
-//! pair. Reactive-side: a second [`PowerAxis`], the same one the
-//! battery inverter uses — a real PV smart inverter (IEEE 1547-2018)
-//! does Volt/VAR control alongside its real-power output.
+//! pair; less sun cuts it at once, as it would a real array.
+//! Reactive-side: a second [`PowerAxis`], the same one the battery
+//! inverter uses — a real PV smart inverter (IEEE 1547-2018) does
+//! Volt/VAR control alongside its real-power output.
 
 use std::{
     fmt,

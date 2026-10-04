@@ -216,7 +216,11 @@ UI").
   own. Both axes re-clamp their armed target to the live envelope every
   tick, so a narrowing bound (a tightening augmentation on any of
   them) actually slews the output down rather than waiting for the
-  next command; a battery inverter still clips a narrowing SoC band
+  next command. A component's per-tick dynamic band (the PV sun
+  limit, the boiler's heat need) is a physical limit instead: the
+  output is held inside it every tick, so a narrowing band cuts the
+  output at once, while a widening one is still climbed at the ramp
+  rate. A battery inverter still clips a narrowing SoC band
   by scaling the published value (`dc_accept_ratio`), not by
   re-clamping the armed target — todo.org d5b keeps that question
   open. The EV charger's axis produces the *limit* it offers the

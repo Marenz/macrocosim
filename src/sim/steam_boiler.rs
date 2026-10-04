@@ -876,6 +876,25 @@ mod tests {
         }
     }
 
+    /// The heat need is a physical limit: when the steam demand
+    /// drops, the electric draw drops to the new need in the same
+    /// tick instead of slewing down at the ramp rate.
+    #[test]
+    fn a_falling_demand_cuts_the_draw_at_once() {
+        let (w, b) = sited(slewing_boiler());
+        assert!(b.set_steam_demand_kg_h(100.0)); // 62_700 W equivalent
+        b.set_active_setpoint(200_000.0).unwrap();
+        tick_n(&w, &b, 7);
+        assert!((b.aggregate_power_w(&w) - 62_700.0).abs() < 1.0);
+        assert!(b.set_steam_demand_kg_h(10.0)); // 6_270 W equivalent
+        tick_n(&w, &b, 1);
+        assert!(
+            (b.aggregate_power_w(&w) - 6_270.0).abs() < 1.0,
+            "the draw follows the need down in one tick, got {}",
+            b.aggregate_power_w(&w),
+        );
+    }
+
     /// An errored or standby boiler is electrically offline: zero
     /// draw, the command gone, recovery waiting for a re-dispatch —
     /// while the gas burner keeps pressure at target throughout.
