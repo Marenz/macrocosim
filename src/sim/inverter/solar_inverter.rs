@@ -195,6 +195,14 @@ pub struct SolarInverter {
     reactive: PowerAxis,
 }
 
+/// What an array of `cfg.array_peak_w` produces at `pct` % sunlight
+/// (negative), floored at the AC rating. Sunlight below 0 %, or NaN,
+/// is no sun.
+fn available_w(cfg: &SolarInverterConfig, pct: f32) -> f32 {
+    let pct = pct.max(0.0);
+    (-cfg.array_peak_w * pct / 100.0).max(cfg.rated_lower_w)
+}
+
 impl SolarInverter {
     pub fn new(id: u64, interval: Duration, cfg: SolarInverterConfig) -> Self {
         let source = match cfg.sunlight_pct {
@@ -213,10 +221,10 @@ impl SolarInverter {
         });
         // A fresh PV inverter is already generating from whatever sun
         // it has — it does not slew up from zero on its first tick.
-        // Same array-clamp shape as `min_avail_w`: an oversized array
+        // The same `available_w` as every tick: an oversized array
         // flat-tops at the AC rating from the very first sample, not
         // just from the first tick onward.
-        active.snap_output((-cfg.array_peak_w * init_pct / 100.0).max(cfg.rated_lower_w));
+        active.snap_output(available_w(&cfg, init_pct));
         // A Q axis has no rated band of its own — its static shape is
         // the PF/kVA capability evaluated at the live P.
         let reactive = PowerAxis::new(AxisConfig {
@@ -318,8 +326,10 @@ impl SolarInverter {
         self.sunlight_cache.store(pct.to_bits(), Ordering::Release);
     }
 
+    /// The most the array can produce now (negative), floored at the
+    /// AC rating.
     fn min_avail_w(&self) -> f32 {
-        (-self.cfg.array_peak_w * self.sunlight_pct() / 100.0).max(self.cfg.rated_lower_w)
+        available_w(&self.cfg, self.sunlight_pct())
     }
 
     /// The Follow lag used when no `:weather-lag-s` was given: a
@@ -782,6 +792,31 @@ mod tests {
         // 50% sun: 22.5 kW — inside the rating, no clamp.
         SolarInverter::set_sunlight_pct(&oversized, 50.0);
         assert!((oversized.min_avail_w() - (-22_500.0)).abs() < 1e-3);
+    }
+
+    /// Sunlight below 0 %, or NaN, means no sun, not a sun that draws
+    /// power: the available output stays at 0 rather than going
+    /// positive, from the first sample on.
+    #[test]
+    fn negative_or_nan_sunlight_gives_no_output() {
+        let w = MicrogridSite::new();
+        for pct in [-20.0, f32::NAN] {
+            let inv = SolarInverter::new(1, Duration::from_secs(1), cfg_with_sun(pct));
+            assert_eq!(inv.min_avail_w(), 0.0, "sunlight {pct}");
+            assert_eq!(
+                inv.telemetry(&w).active_power_w,
+                Some(0.0),
+                "first sample at sunlight {pct}"
+            );
+        }
+    }
+
+    /// +inf sunlight clips at the AC rating, as any sunlight does
+    /// once the array's output reaches it.
+    #[test]
+    fn infinite_sunlight_clips_at_the_ac_rating() {
+        let inv = SolarInverter::new(1, Duration::from_secs(1), cfg_with_sun(f32::INFINITY));
+        assert_eq!(inv.min_avail_w(), -10_000.0);
     }
 
     /// The initial output snapped at construction uses the same

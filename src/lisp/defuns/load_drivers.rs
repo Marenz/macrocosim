@@ -282,11 +282,25 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                     "set-solar-sunlight: component {id} not found"
                 )));
             };
+            // A non-finite sunlight is a scripting mistake (NaN would
+            // read as no sun, +inf as full output), so say so
+            // instead. Checked as the f32 the inverter stores: a
+            // huge f64 like 1e300 overflows to +inf in the cast.
+            let pct = if value.numberp() {
+                let pct = f64::try_from(&value)? as f32;
+                if !pct.is_finite() {
+                    return Err(Error::invalid_argument(format!(
+                        "set-solar-sunlight: sunlight must be finite, got {value}"
+                    )));
+                }
+                Some(pct)
+            } else {
+                None
+            };
             w.scenario_snapshot_knob(id as u64, KnobKind::Sunlight);
-            if value.numberp() {
-                let pct = f64::try_from(&value)?;
-                let _ = c.set_sunlight_pct(pct as f32);
-                w.note_knob_changed(id as u64, "solar-sunlight", Some(pct as f32), None, None);
+            if let Some(pct) = pct {
+                let _ = c.set_sunlight_pct(pct);
+                w.note_knob_changed(id as u64, "solar-sunlight", Some(pct), None, None);
             } else if let Some(scalar) =
                 crate::sim::dynamic_scalar::DynamicScalar::from_lisp(&value, 100.0)
             {
@@ -658,6 +672,29 @@ mod tests {
             (p - (-2000.0)).abs() < 1.0,
             "expected sunlight-clipped -2000 W, got {p}",
         );
+    }
+
+    /// A non-finite sunlight is refused at the door, and the sunlight
+    /// already set stands.
+    #[test]
+    fn set_solar_sunlight_rejects_a_non_finite_number() {
+        let (cfg, _dir) =
+            config_with("(%make-solar-inverter :id 8 :rated-lower -8000.0 :rated-upper 0.0)");
+        cfg.eval("(set-solar-sunlight 8 25.0)").unwrap();
+        for bad in ["(/ 0.0 0.0)", "1e300"] {
+            let err = cfg
+                .eval(&format!("(set-solar-sunlight 8 {bad})"))
+                .expect_err("a non-finite sunlight must be refused");
+            assert!(err.contains("finite"), "{bad}: unexpected error: {err}");
+        }
+        // The 25 % still stands: a setpoint past its floor clips to
+        // 25 % of -8000 W.
+        let inv = cfg.site().get(8).unwrap();
+        inv.set_active_setpoint(-5000.0).expect("within rated");
+        cfg.site()
+            .tick_once(chrono::Utc::now(), std::time::Duration::from_millis(100));
+        let p = inv.telemetry(&cfg.site()).active_power_w.unwrap();
+        assert!((p - (-2000.0)).abs() < 1.0, "expected -2000 W, got {p}");
     }
 
     /// `(set-meter-power id V)` broadcasts a `KnobChanged` on the
