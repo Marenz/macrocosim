@@ -27,6 +27,7 @@ use crate::sim::{
 };
 use crate::timeout_tracker::{SetpointAxis, TimeoutTracker, deadline_after};
 
+mod step;
 #[cfg(test)]
 mod test_stubs;
 
@@ -226,7 +227,7 @@ impl<'a> Gateway<'a> {
         if let Some(ax) = st.axes.get(&(id, axis)) {
             let base = self.base_of(c.as_ref(), axis);
             ax.check(value, &base, now)
-                .map_err(|e| GatewayError::OutOfEnvelope(e.to_string()))?;
+                .map_err(|e| GatewayError::from_setpoint(id, axis, e))?;
             let deadline = st.lifetimes.actuate_and_arm(id, axis, now, lifetime, || {
                 ax.accept(value);
                 Ok::<(), GatewayError>(())
@@ -297,12 +298,6 @@ impl<'a> Gateway<'a> {
     pub fn remaining_lifetime(&self, id: u64, axis: SetpointAxis) -> Option<Duration> {
         let st = self.gw.state.lock();
         st.lifetimes.remaining(id, axis, self.site.now())
-    }
-
-    /// One physics tick of the API rules, run by
-    /// `MicrogridSite::tick_once` before the components tick.
-    pub fn step(&self, now: DateTime<Utc>, _dt: Duration) {
-        self.expire(now);
     }
 
     /// Expire every lifetime at or before `now` and reset its axis.
@@ -525,7 +520,7 @@ mod tests {
 
     use super::test_stubs::{Cmd, Hw, put, sim_site};
     use super::*;
-    use crate::sim::sim_clock::headless_base;
+    use crate::sim::{component::GatewaySettings, sim_clock::headless_base};
 
     const HOUR: Duration = Duration::from_secs(3600);
 
@@ -947,18 +942,37 @@ mod tests {
         assert_eq!(applied.value, 1_000.0);
     }
 
+    /// A reset on an owned axis clears the lifetime and ramps the
+    /// axis toward the component's park value.
     #[test]
     fn reset_on_an_owned_axis_clears_the_lifetime() {
         let site = MicrogridSite::new();
-        put(&site, Arc::new(Hw::new(1)));
+        let hw = put(
+            &site,
+            Arc::new(Hw {
+                park: -100.0,
+                settings: GatewaySettings {
+                    ramp_rate_w_per_s: 1_000.0,
+                    ..GatewaySettings::default()
+                },
+                ..Hw::new(1)
+            }),
+        );
+        let dt = Duration::from_millis(100);
         site.gateway()
             .command(1, SetpointAxis::Active, 500.0)
             .unwrap();
+        site.tick_n(10, dt);
+        assert_eq!(hw.last(), Some(500.0));
         site.gateway().reset(1, SetpointAxis::Active);
         assert_eq!(
             site.gateway().remaining_lifetime(1, SetpointAxis::Active),
             None
         );
+        site.tick_n(1, dt);
+        assert_eq!(hw.last(), Some(400.0), "heads down at 1 kW/s");
+        site.tick_n(10, dt);
+        assert_eq!(hw.last(), Some(-100.0), "settles on the park value");
     }
 
     /// The augmentation emptiness check includes the physical band
