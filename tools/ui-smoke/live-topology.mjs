@@ -470,7 +470,10 @@ const getEdges = () =>
     const { topology } = await import("/assets/topology.js");
     return topology.debugLiveEdges();
   });
-const hasValues = (ms) => ms.some((m) => m.hero);
+// A power value on some node. The grid node's frequency hero does not
+// count: it lands from its own stream and says nothing about power.
+const powerHero = (m) => m.hero && /-?\d+(\.\d+)? (W|kW|MW)/.test(m.hero.text);
+const hasPowerValues = (ms) => ms.some(powerHero);
 const isLive = (e) => e.direction === "import" || e.direction === "export";
 const hasLive = (es) => es.some(isLive);
 // A rest edge is either never styled (null: the vis defaults) or
@@ -518,14 +521,18 @@ check("e2e: Ctrl+Z posts the server's undo endpoint", undoPosts > 0, `${undoPost
 await page.unroute("**/api/mg/*/undo");
 
 // Values land on the next 1 Hz flush; edge flow rides the same flush
-// but need a power sample for the child first.
-const models = await waitFor(async () => {
-  const ms = await getModels();
-  return hasValues(ms) ? ms : null;
-});
-check("e2e: some node shows a power hero", models.some((m) => m.hero && /-?\d+(\.\d+)? (W|kW|MW)/.test(m.hero.text)), JSON.stringify(models));
-check("e2e: battery shows DC power hero and SoC aux", models.some((m) => /^bat-\d+$/.test(m.fullName) && m.hero && m.aux?.kind === "soc"), JSON.stringify(models));
-check("e2e: inverter shows reactive aux", models.some((m) => /^inv-/.test(m.fullName) && m.aux?.kind === "reactive" && /VAr/.test(m.aux.text)), JSON.stringify(models));
+// but need a power sample for the child first. Wait for what the
+// checks below read, not just the grid node's frequency.
+const batteryWithSoc = (m) => /^bat-\d+$/.test(m.fullName) && m.hero && m.aux?.kind === "soc";
+const inverterWithQ = (m) => /^inv-/.test(m.fullName) && m.aux?.kind === "reactive" && /VAr/.test(m.aux.text);
+const models =
+  (await waitFor(async () => {
+    const ms = await getModels();
+    return hasPowerValues(ms) && ms.some(batteryWithSoc) && ms.some(inverterWithQ) ? ms : null;
+  }).catch(() => null)) ?? (await getModels());
+check("e2e: some node shows a power hero", hasPowerValues(models), JSON.stringify(models));
+check("e2e: battery shows DC power hero and SoC aux", models.some(batteryWithSoc), JSON.stringify(models));
+check("e2e: inverter shows reactive aux", models.some(inverterWithQ), JSON.stringify(models));
 check("e2e: every node carries its #id", models.every((m) => m.idText === `#${m.id}`), JSON.stringify(models));
 // The grid node (id 1) reads the site's grid_frequency stream, one
 // frame a second; the grid component samples no power of its own.
@@ -636,7 +643,7 @@ check("e2e: no-op eval accepted", evalRes === 200, `status ${evalRes}`);
 // pass against the pre-refresh DataSets.
 await waitFor(async () => (await getApplyCount()) > appliesBefore);
 const afterRefresh = { models: await getModels(), edges: await getEdges() };
-check("e2e: values survive a topology refresh", hasValues(afterRefresh.models), JSON.stringify(afterRefresh.models));
+check("e2e: values survive a topology refresh", hasPowerValues(afterRefresh.models), JSON.stringify(afterRefresh.models));
 check("e2e: edge flow survives a topology refresh", hasLive(afterRefresh.edges), JSON.stringify(afterRefresh.edges));
 
 // ── e2e: zoom tiers ───────────────────────────────────────────────
@@ -1504,7 +1511,7 @@ const off = await waitFor(async () => {
     const { topology } = await import("/assets/topology.js");
     return { models: topology.debugNodeModels(), edges: topology.debugLiveEdges(), on: topology.valuesOn() };
   });
-  return st.on === false && !hasValues(st.models) ? st : null;
+  return st.on === false && !hasPowerValues(st.models) ? st : null;
 });
 check("e2e: toggle off clears row 2", off.models.every((m) => !m.hero && !m.aux && m.valuesOn === false), JSON.stringify(off.models));
 const offHeights = await waitFor(
@@ -1590,9 +1597,9 @@ await page.mouse.move(5, 5);
 await page.click("#topology-controls .values-btn");
 const backOn = await waitFor(async () => {
   const ms = await getModels();
-  return hasValues(ms) ? ms : null;
+  return hasPowerValues(ms) ? ms : null;
 });
-check("e2e: toggle on restores row 2", hasValues(backOn));
+check("e2e: toggle on restores row 2", hasPowerValues(backOn));
 await page.click("#topology-controls .values-btn"); // back off for the reload test below
 await page.reload({ waitUntil: "networkidle" });
 await page.click(DEMO_CARD).catch(() => {});
