@@ -259,6 +259,46 @@ impl MicrogridRuntimes {
         log::info!("Microgrid #{id} gRPC listening on {bound}");
         Ok(Some(bound))
     }
+
+    /// Start every registered microgrid, then keep starting each one
+    /// the Lisp layer announces. Subscribes before reading the
+    /// registry, so none is missed; returns once the first pass is
+    /// done.
+    pub async fn spawn_registration_listener(&self) -> JoinHandle<()> {
+        let Some(inner) = self.inner.clone() else {
+            return tokio::spawn(async {});
+        };
+        let mut rx = inner.config.subscribe_microgrid_registered();
+        self.start_all(&inner).await;
+        let me = self.clone();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(id) => {
+                        if let Err(e) = me.start(id).await {
+                            log::error!("Microgrid #{id}: {e}");
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        log::warn!("runtime listener lagged {n} registrations; re-snapshotting");
+                        me.start_all(&inner).await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        })
+    }
+
+    /// `start` every id in the registry, lowest first, logging each
+    /// error.
+    async fn start_all(&self, inner: &Inner) {
+        let ids: Vec<u64> = inner.config.microgrids().lock().keys().copied().collect();
+        for id in ids {
+            if let Err(e) = self.start(id).await {
+                log::error!("Microgrid #{id}: {e}");
+            }
+        }
+    }
 }
 
 fn set_status(inner: &Inner, id: u64, generation: u64, status: Status) {
@@ -471,6 +511,25 @@ mod tests {
         let rt = MicrogridRuntimes::inert();
         assert_eq!(rt.start(1).await.unwrap(), None);
         assert!(rt.status(1).is_none());
+    }
+
+    /// A microgrid registered by an eval after the listener runs gets
+    /// a runtime without anyone calling start.
+    #[tokio::test]
+    async fn the_listener_starts_microgrids_registered_later() {
+        let (cfg, _d) = config_with_mg(48, free_v6_port());
+        let rt = MicrogridRuntimes::new(cfg.clone(), opts(true)).unwrap();
+        let _listener = rt.spawn_registration_listener().await;
+        assert_eq!(rt.status(48).unwrap().status, RuntimeStatus::Running);
+        cfg.eval(&mg_decl(49, free_v6_port())).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while rt.status(49).map(|v| v.status) != Some(RuntimeStatus::Running) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "microgrid 49 never started"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 
     /// The address is fixed after the first bind: under ephemeral
