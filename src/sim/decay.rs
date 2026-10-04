@@ -8,8 +8,8 @@
 pub struct SocProtect {
     pub soc_lower_pct: f32,
     pub soc_upper_pct: f32,
-    /// Width (in % points) of the band where rated bounds taper toward
-    /// zero. `0.0` disables the taper entirely.
+    /// Width (in % points) of the band where rated bounds taper
+    /// toward zero. `0.0` disables the taper; the limits still hold.
     pub margin_pct: f32,
 }
 
@@ -73,9 +73,10 @@ pub fn integrate_soc_pct(
 
 /// Apply the smooth taper near both SoC limits to a `(rated_lower,
 /// rated_upper)` pair, returning the SoC-protected bounds at the
-/// current `soc`. Charge (positive) tapers near `soc_upper`; discharge
-/// (negative) tapers near `soc_lower`. With margin = 0 the rated pair
-/// is returned verbatim.
+/// current `soc`. Charge (positive) tapers near `soc_upper`;
+/// discharge (negative) tapers near `soc_lower`. With margin = 0
+/// there is no taper: the rated pair holds inside the band, and each
+/// side closes to 0 once SoC reaches its limit.
 pub fn soc_protected_bounds(
     rated_lower: f32,
     rated_upper: f32,
@@ -83,7 +84,17 @@ pub fn soc_protected_bounds(
     p: SocProtect,
 ) -> (f32, f32) {
     if p.margin_pct <= 0.0 {
-        return (rated_lower, rated_upper);
+        let upper = if soc >= p.soc_upper_pct {
+            0.0
+        } else {
+            rated_upper
+        };
+        let lower = if soc <= p.soc_lower_pct {
+            0.0
+        } else {
+            rated_lower
+        };
+        return (lower, upper);
     }
 
     let upper = if p.soc_upper_pct - soc < p.margin_pct {
@@ -186,6 +197,30 @@ mod tests {
         assert!(
             lo > -30000.0 && lo < 0.0,
             "expected derated lower, got {lo}"
+        );
+    }
+
+    /// Margin 0 drops the taper, not the limits: the rated pair holds
+    /// strictly inside the band, and the side that would push SoC
+    /// past a limit closes once SoC reaches it.
+    #[test]
+    fn zero_margin_still_closes_at_the_limits() {
+        let p = SocProtect::new(10.0, 90.0, 0.0);
+        assert_eq!(
+            soc_protected_bounds(-30000.0, 30000.0, 89.9, p),
+            (-30000.0, 30000.0)
+        );
+        assert_eq!(
+            soc_protected_bounds(-30000.0, 30000.0, 90.0, p),
+            (-30000.0, 0.0)
+        );
+        assert_eq!(
+            soc_protected_bounds(-30000.0, 30000.0, 10.0, p),
+            (0.0, 30000.0)
+        );
+        assert_eq!(
+            soc_protected_bounds(-30000.0, 30000.0, 5.0, p),
+            (0.0, 30000.0)
         );
     }
 

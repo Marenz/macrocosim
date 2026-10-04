@@ -71,10 +71,10 @@ struct BatteryState {
     /// published power (see `SimulatedComponent::dc_accept_ratio`).
     accept_ratio: f32,
     /// State of charge in % [0, 100]. Updated each tick from
-    /// `power_w * dt`. Clamped at the boundaries — without this,
-    /// configs that disable the SoC-protect taper (margin = 0)
-    /// could pump charge in past 100% indefinitely, then need to
-    /// "discharge" the unphysical surplus before SoC moves back.
+    /// `power_w * dt`. Clamped at the boundaries — the SoC bounds
+    /// close at the limits, but a tick's step can still overshoot
+    /// one, and an unclamped surplus would need "discharging" before
+    /// SoC moved back.
     soc_pct: f32,
     /// Cached effective DC bounds — recomputed every tick from SoC,
     /// then read by `effective_active_bounds` and the inverter.
