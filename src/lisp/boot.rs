@@ -254,6 +254,7 @@ impl Config {
             ),
             None => crate::sim::sim_clock::NowSource::wall(),
         };
+        site.set_now_source(now.clone());
 
         defuns::register_runtime(
             &mut ctx,
@@ -276,6 +277,7 @@ impl Config {
             loading.clone(),
             metadata.clone(),
             port_pins.clone(),
+            now.clone(),
         );
         defuns::register_frequency(&mut ctx, grid_frequency.clone());
 
@@ -1759,6 +1761,32 @@ mod tests {
             "t",
             "meter energy should integrate on sim-time in a stepped run",
         );
+    }
+
+    /// A headless config's microgrid sites read the sim clock, so a
+    /// request lifetime there runs on sim time.
+    #[test]
+    fn headless_sites_read_the_sim_clock() {
+        use std::time::Duration;
+        let body = "(make-microgrid :id 9 :grpc-port 18911 :topology (lambda () nil))";
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "macrocosim-headless-clock-{}-{}",
+            std::process::id(),
+            next_unique(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.lisp");
+        std::fs::write(&path, body).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (cfg, _clock) = rt
+            .block_on(async { Config::new_headless(path.to_str().unwrap()) })
+            .expect("headless config builds");
+        std::mem::forget(rt);
+        let base = crate::sim::sim_clock::headless_base();
+        assert_eq!(cfg.site().now(), base);
+        cfg.sim_run(Duration::from_secs(5), Duration::from_secs(1));
+        assert_eq!(cfg.site().now(), base + chrono::Duration::seconds(5));
     }
 
     /// The shipped demo script boots cleanly and its scenarios

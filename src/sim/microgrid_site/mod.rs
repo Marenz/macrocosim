@@ -37,6 +37,7 @@ use crate::sim::runtime::{CommandMode, ComponentRuntime, Health, TelemetryMode};
 use crate::sim::scenario::ScenarioJournal;
 use crate::sim::scenario_csv::CsvSinks;
 use crate::sim::setpoints::{SetpointEvent, SetpointLog, SetpointOutcome};
+use crate::sim::sim_clock::NowSource;
 use crate::timeout_tracker::TimeoutTracker;
 
 mod history;
@@ -83,6 +84,17 @@ impl MicrogridSite {
     /// the inner state, so pointer identity is site identity.
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    /// Point this site's clock at `now`. `Config` does this for its
+    /// bootstrap site and `make-microgrid` for every site it creates.
+    pub fn set_now_source(&self, now: NowSource) {
+        *self.inner.now.write() = now;
+    }
+
+    /// The current time on this site's clock.
+    pub fn now(&self) -> DateTime<Utc> {
+        self.inner.now.read().now()
     }
 }
 
@@ -182,6 +194,10 @@ struct MicrogridSiteInner {
     /// Broadcast bus for live UI subscribers. Senders are cheap to
     /// clone; receivers are obtained via `subscribe_events`.
     events: broadcast::Sender<SiteEvent>,
+    /// The clock request lifetimes are stamped and judged on: wall
+    /// time unless the creator installs another (the sim clock of a
+    /// headless run).
+    now: RwLock<NowSource>,
     /// Per-component setpoint expiry deadlines. Both the gRPC
     /// `SetElectricalComponentPower` handler and the `(set-power …)`
     /// Lisp defun add to this; a single tokio task in
@@ -285,6 +301,7 @@ impl MicrogridSite {
                 run_generation: AtomicU64::new(0),
                 structural_version: AtomicU64::new(0),
                 events: broadcast::channel(EVENT_BUS_CAPACITY).0,
+                now: RwLock::new(NowSource::wall()),
                 timeout_tracker: TimeoutTracker::new(),
                 scenario: RwLock::new(ScenarioJournal::default()),
                 scenario_knob_baseline: RwLock::new(BTreeMap::new()),
@@ -411,64 +428,49 @@ impl MicrogridSite {
     // axis's command keeps running.
 
     /// Actuate `f` (the setpoint write on `id`'s `axis`) and, only if
-    /// it succeeds, arm a deadline for it at `now + lifetime` — both
-    /// under the tracker's lock, so a concurrent expiry sweep can
-    /// never observe the setpoint applied but the deadline unarmed
-    /// (or vice versa). Replaces any previously-scheduled deadline for
-    /// that (id, axis) — "latest set wins" per axis. A failed `f`
-    /// arms nothing, matching [`crate::timeout_tracker::TimeoutTracker::actuate_and_arm`].
-    ///
-    /// Lock order: tracker → components-map → axis mutexes. `f` is
-    /// expected to be a bare actuation on an already-resolved
-    /// component — it must not call back into `self.get` (components
-    /// map) or another tracker method while this lock is held.
+    /// it succeeds, arm a deadline for it at `now + lifetime` on this
+    /// site's clock — both under the tracker's lock. Returns the
+    /// deadline. Replaces any previously-scheduled deadline for that
+    /// (id, axis). Lock order: tracker → components map → component
+    /// locks; `f` must not call back into `self.get`.
     pub fn actuate_and_arm<E>(
         &self,
         id: u64,
         axis: crate::timeout_tracker::SetpointAxis,
         lifetime: Duration,
         f: impl FnOnce() -> Result<(), E>,
-    ) -> Result<(), E> {
+    ) -> Result<DateTime<Utc>, E> {
         self.inner
             .timeout_tracker
-            .actuate_and_arm(id, axis, lifetime, f)
+            .actuate_and_arm(id, axis, self.now(), lifetime, f)
     }
 
-    /// Atomically drain every elapsed deadline and reset its axis.
-    /// Called by `Config`'s timeout loop once per tick. Looks up the
-    /// component (`self.get`, the components-map lock) and calls
-    /// `reset_setpoint_axis` (an axis mutex) from inside the
-    /// tracker's lock — safe under the tracker → components-map →
-    /// axis mutexes order since both are acquired strictly after the
-    /// tracker lock, never independently before it elsewhere in this
-    /// codebase. Expired (id, axis) pairs are only collected while
-    /// the lock is held; the `log::info!` for each fires afterward,
-    /// once the lock has been released, so logging never happens
-    /// while holding the tracker mutex.
+    /// Atomically drain every deadline at or before this site's `now`
+    /// and reset its axis. The `log::info!` per expired pair fires
+    /// after the tracker lock is released.
     pub fn reset_expired_setpoints(&self) {
         let mut expired = Vec::new();
-        self.inner.timeout_tracker.reset_expired_with(|id, axis| {
-            if let Some(c) = self.get(id) {
-                c.reset_setpoint_axis(axis);
-            }
-            expired.push((id, axis));
-        });
+        self.inner
+            .timeout_tracker
+            .reset_expired_with(self.now(), |id, axis| {
+                if let Some(c) = self.get(id) {
+                    c.reset_setpoint_axis(axis);
+                }
+                expired.push((id, axis));
+            });
         for (id, axis) in expired {
             log::info!("Request timeout for component {id} ({axis:?}) — resetting that axis");
         }
     }
 
-    /// Time left before `id`'s `axis` setpoint expires — `None` when
-    /// that axis isn't tracked (a persistent setpoint set with no
-    /// lifetime) or its deadline already passed. Read-only mirror of
-    /// [`Self::actuate_and_arm`]/[`Self::reset_expired_setpoints`] for
-    /// the `/api/component` snapshot's `remaining_ms` field.
+    /// Time left on this site's clock before `id`'s `axis` setpoint
+    /// expires — `None` when untracked or already due.
     pub fn setpoint_remaining(
         &self,
         id: u64,
         axis: crate::timeout_tracker::SetpointAxis,
     ) -> Option<Duration> {
-        self.inner.timeout_tracker.remaining(id, axis)
+        self.inner.timeout_tracker.remaining(id, axis, self.now())
     }
 
     // ─── Version counter + event broadcast bus ────────────────────────
@@ -2011,6 +2013,44 @@ mod tests {
         arm(&w, 1);
         w.register(Stub::new(1));
         assert_clear(&w, 1, "register_arc");
+    }
+
+    /// Request lifetimes are stamped and judged on the site's own
+    /// clock: a sim clock that has not moved never expires a
+    /// deadline, however much wall time passes, and one that has
+    /// moved past it does.
+    #[test]
+    fn site_clock_stamps_and_expires_request_lifetimes() {
+        use crate::sim::sim_clock::{NowSource, headless_base};
+        use crate::timeout_tracker::SetpointAxis;
+
+        let clock = Arc::new(tulisp_async::ManualClock::new());
+        let w = MicrogridSite::new();
+        w.set_now_source(NowSource::sim(headless_base(), clock.clone()));
+        w.register(Stub::new(1));
+
+        let deadline = w
+            .actuate_and_arm(1, SetpointAxis::Active, Duration::from_secs(10), || {
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        assert_eq!(deadline, headless_base() + chrono::Duration::seconds(10));
+        assert_eq!(
+            w.setpoint_remaining(1, SetpointAxis::Active),
+            Some(Duration::from_secs(10))
+        );
+
+        clock.advance(Duration::from_secs(9));
+        w.reset_expired_setpoints();
+        assert_eq!(
+            w.setpoint_remaining(1, SetpointAxis::Active),
+            Some(Duration::from_secs(1)),
+            "sim time short of the deadline expires nothing"
+        );
+
+        clock.advance(Duration::from_secs(1));
+        w.reset_expired_setpoints();
+        assert_eq!(w.setpoint_remaining(1, SetpointAxis::Active), None);
     }
 
     #[test]

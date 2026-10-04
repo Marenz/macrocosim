@@ -54,6 +54,7 @@ pub(in crate::lisp) fn register(
     loading: crate::sim::microgrids::LoadingSlot,
     metadata: Arc<parking_lot::RwLock<crate::lisp::Metadata>>,
     port_pins: crate::sim::microgrids::PortPins,
+    now: crate::sim::sim_clock::NowSource,
 ) {
     // `(current-source-file)` — the file whose load is in flight, or
     // nil outside a load (a REPL eval). Scripts use it to resolve
@@ -300,6 +301,9 @@ pub(in crate::lisp) fn register(
                         // so their `frequency_hz` reads all return the same
                         // OU value (one AC grid → one frequency).
                         site.set_grid_frequency(grid_frequency.clone());
+                        // Same clock as the rest of the config: wall
+                        // time live, the sim clock headless.
+                        site.set_now_source(now.clone());
                         (grpc_port, site, false)
                     }
                 };
