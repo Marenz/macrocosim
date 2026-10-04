@@ -12,6 +12,7 @@ pub mod ev_charger;
 pub mod ev_presets;
 pub mod events;
 pub mod frequency;
+pub mod gateway_axis;
 pub mod graph_adapter;
 pub mod grid;
 pub mod history;
