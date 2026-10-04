@@ -1,7 +1,8 @@
-//! EV charger — an AC charging point. Its power axis (command delay,
-//! slew, rated band + TTL augmentations) produces the *limit* the
-//! charger offers; the connected car, if any, decides what it draws
-//! within that limit. See `ev_presets` for the car and the draw law.
+//! EV charger — an AC charging point. The gateway drives the *limit*
+//! the charger offers (its command, delayed by the device and clamped
+//! to the rated band); the connected car, if any, decides what it
+//! draws within that limit. See `ev_presets` for the car and the draw
+//! law.
 
 use std::{fmt, str::FromStr, time::Duration};
 
@@ -9,14 +10,15 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    AugmentError, Category, MicrogridSite, SetpointError, SimulatedComponent, Telemetry,
-    axis::{AxisConfig, IdleTarget, PowerAxis, StepCtx},
+    Category, MicrogridSite, SimulatedComponent, Telemetry,
     bounds::VecBounds,
-    component::{KnobKind, KnobSnapshot},
+    component::{GatewaySettings, KnobKind, KnobSnapshot},
     decay::sanitize_soc_pct,
+    device_axis::DeviceAxis,
     ev_presets::{ConnectedEv, EvDrawState, EvInfo, offered_current_a},
     runtime::Health,
 };
+use crate::timeout_tracker::SetpointAxis;
 
 /// What the charger offers when no command stands (or a TTL expired).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -58,14 +60,15 @@ pub struct EvChargerConfig {
     pub command_delay: Duration,
     pub ramp_rate_w_per_s: f32,
     pub stream_jitter_pct: f32,
-    /// Keep the armed command through a health fault and ramp back on
-    /// recovery, like the solar inverter; off, the fault clears the
-    /// command and recovery waits for a new one, like the battery
-    /// inverter. A setpoint TTL that expires while the charger is
-    /// faulted still clears the command — expiry is a control event,
-    /// independent of health — so a fault outlasting the request's
-    /// lifetime does not resume either way.
+    /// Keep the standing command through a health fault and ramp back
+    /// to it on recovery, like the solar inverter; off, the fault
+    /// clears the command and recovery waits for a new one, like the
+    /// battery inverter. A request lifetime that runs out while the
+    /// charger is faulted still clears the command.
     pub resume_on_recovery: bool,
+    /// Time a command takes to reach the offered limit once the
+    /// charger has it; default 100 ms.
+    pub device_delay: Duration,
 }
 
 impl EvChargerConfig {
@@ -90,6 +93,7 @@ impl Default for EvChargerConfig {
             ramp_rate_w_per_s: f32::INFINITY,
             stream_jitter_pct: 0.0,
             resume_on_recovery: false,
+            device_delay: Duration::from_millis(100),
         }
     }
 }
@@ -101,6 +105,7 @@ pub fn instant() -> EvChargerConfig {
     EvChargerConfig {
         command_delay: Duration::ZERO,
         ramp_rate_w_per_s: f32::INFINITY,
+        device_delay: Duration::ZERO,
         ..Default::default()
     }
 }
@@ -111,9 +116,9 @@ pub struct EvCharger {
     interval: Duration,
     cfg: EvChargerConfig,
     state: Mutex<EvState>,
-    /// Active (P) control path. Its `actual()` is the limit offered to
-    /// the car, not the draw — the draw lives in `EvState::draw_w`.
-    active: PowerAxis,
+    /// The offered limit: the command handed in through
+    /// `set_command`, delayed and clamped to the rated band.
+    limit: DeviceAxis,
 }
 
 #[derive(Debug, Clone)]
@@ -128,24 +133,17 @@ struct EvState {
 
 impl EvCharger {
     pub fn new(id: u64, interval: Duration, cfg: EvChargerConfig) -> Self {
-        let active = PowerAxis::new(AxisConfig {
-            rated: Some((cfg.rated_lower_w, cfg.rated_upper_w)),
-            caps: None,
-            command_delay: cfg.command_delay,
-            ramp_rate_per_s: cfg.ramp_rate_w_per_s,
-            unit: "W",
-        });
         Self {
             id,
             name: format!("ev-charger-{id}"),
             interval,
+            limit: DeviceAxis::new(cfg.device_delay, 0.0),
             cfg,
             state: Mutex::new(EvState {
                 ev: None,
                 draw_w: 0.0,
                 last: EvDrawState::Paused,
             }),
-            active,
         }
     }
 }
@@ -241,35 +239,20 @@ impl SimulatedComponent for EvCharger {
     }
 
     fn tick(&self, world: &MicrogridSite, now: DateTime<Utc>, dt: Duration) {
-        // 1. Own-health gate: a faulted or standby charger is offline.
-        //    By default the command is cleared too, so recovery waits
-        //    for a re-dispatch; with resume_on_recovery the offer
-        //    collapses but the command survives.
+        // 1. Own-health gate: a faulted or standby charger is offline
+        //    — no offer, nothing left in the delay line. Whether the
+        //    command survives is the gateway's business.
         if world.runtime_of(self.id).health != Health::Ok {
-            if self.cfg.resume_on_recovery {
-                self.active.snap_output(0.0);
-            } else {
-                self.active.trip();
-            }
+            self.limit.trip();
             let mut s = self.state.lock();
             s.draw_w = 0.0;
             s.last = EvDrawState::Tripped;
             return;
         }
 
-        // 2. The axis's output is the limit the charger offers: rated ∩
-        //    augmentations, command delay, slew. With no command it
-        //    idles at 0 (paused) or the full rating.
-        let idle = IdleTarget::Value(self.cfg.idle_w());
-        let limit_w = self.active.step(
-            now,
-            dt,
-            StepCtx {
-                other_axis: 0.0,
-                dynamic: None,
-                idle,
-            },
-        );
+        // 2. The offer: the delayed command, clamped to the rating.
+        let rated = VecBounds::single(self.cfg.rated_lower_w, self.cfg.rated_upper_w);
+        let limit_w = self.limit.tick(now, Some(&rated));
 
         // 3. The car decides what it takes within the offer.
         let mut s = self.state.lock();
@@ -297,10 +280,6 @@ impl SimulatedComponent for EvCharger {
 
     fn telemetry(&self, site: &MicrogridSite) -> Telemetry {
         let grid = site.grid_state();
-        // Resolve the axis-derived bounds BEFORE taking the state
-        // lock: the state lock is never held across the axis's own
-        // locks, in either direction.
-        let bounds = self.effective_active_bounds();
         let s = self.state.lock();
         Telemetry {
             id: self.id,
@@ -314,7 +293,6 @@ impl SimulatedComponent for EvCharger {
             soc_pct: s.ev.as_ref().map(|ev| ev.soc_pct),
             per_phase_voltage_v: Some(grid.voltage_per_phase),
             frequency_hz: Some(grid.frequency_hz),
-            active_power_bounds: bounds,
             component_state: Some(if s.draw_w > 0.0 { "charging" } else { "ready" }),
             cable_states: if s.ev.is_some() {
                 &[
@@ -326,39 +304,6 @@ impl SimulatedComponent for EvCharger {
             },
             ..Default::default()
         }
-    }
-
-    fn set_active_setpoint(&self, power_w: f32) -> Result<(), SetpointError> {
-        // The limit is validated against rated ∩ augmentations; the car
-        // never narrows the charger's envelope.
-        self.active.accept(power_w, Utc::now(), 0.0)
-    }
-
-    fn try_augment_active_bounds(
-        &self,
-        ts: DateTime<Utc>,
-        bounds: VecBounds,
-        lifetime: Duration,
-    ) -> Result<(), AugmentError> {
-        self.active
-            .try_augment(ts, bounds, lifetime, 0.0, None)
-            .map_err(AugmentError::Disjoint)
-    }
-
-    fn augmentation_active(
-        &self,
-        axis: crate::timeout_tracker::SetpointAxis,
-        now: DateTime<Utc>,
-    ) -> bool {
-        use crate::timeout_tracker::SetpointAxis;
-        match axis {
-            SetpointAxis::Active => self.active.augmented(now),
-            SetpointAxis::Reactive => false,
-        }
-    }
-
-    fn reset_setpoint(&self) {
-        self.active.reset(self.cfg.idle_w());
     }
 
     fn active_power_w(&self, _site: &MicrogridSite) -> Option<f32> {
@@ -373,8 +318,36 @@ impl SimulatedComponent for EvCharger {
         Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
     }
 
-    fn effective_active_bounds(&self) -> Option<VecBounds> {
-        Some(self.active.effective_static())
+    fn has_axis(&self, axis: SetpointAxis) -> bool {
+        axis == SetpointAxis::Active
+    }
+
+    fn set_command(&self, axis: SetpointAxis, value: f32) {
+        if axis == SetpointAxis::Active {
+            self.limit.set_command(value);
+        }
+    }
+
+    /// With no command the charger offers nothing (`'paused`) or its
+    /// full rating (`'full`).
+    fn idle_value(&self, _axis: SetpointAxis) -> Option<f32> {
+        Some(self.cfg.idle_w())
+    }
+
+    fn park_value(&self, _axis: SetpointAxis) -> f32 {
+        self.cfg.idle_w()
+    }
+
+    fn keeps_command_through_fault(&self, _axis: SetpointAxis) -> bool {
+        self.cfg.resume_on_recovery
+    }
+
+    fn gateway_settings(&self) -> Option<GatewaySettings> {
+        Some(GatewaySettings {
+            command_delay: self.cfg.command_delay,
+            ramp_rate_w_per_s: self.cfg.ramp_rate_w_per_s,
+            ..GatewaySettings::default()
+        })
     }
 
     fn make_fn(&self) -> &'static str {
@@ -417,8 +390,11 @@ impl SimulatedComponent for EvCharger {
 mod tests {
     use super::*;
     use crate::proto::common::metrics::Bounds;
+    use crate::sim::AugmentError;
     use crate::sim::ev_presets::{EvOverrides, preset, test_car};
+    use crate::sim::gateway::{Applied, GatewayError, Mode};
     use crate::sim::runtime::Health;
+    use crate::timeout_tracker::SetpointAxis;
     use std::sync::Arc;
 
     /// A 22 kW three-phase charger with no delay and no ramp, sited
@@ -430,19 +406,23 @@ mod tests {
         (w, ev)
     }
 
-    fn tick_n(w: &MicrogridSite, ev: &Arc<dyn SimulatedComponent>, n: usize) {
-        for _ in 0..n {
-            ev.tick(w, Utc::now(), Duration::from_secs(1));
-        }
+    /// `n` one-second ticks of the whole site.
+    fn tick_n(w: &MicrogridSite, n: usize) {
+        w.tick_n(n, Duration::from_secs(1));
+    }
+
+    /// Command charger 7 through the gateway.
+    fn cmd(w: &MicrogridSite, watts: f32) -> Result<Applied, GatewayError> {
+        w.gateway().command(7, SetpointAxis::Active, watts)
     }
 
     #[test]
     fn empty_charger_draws_nothing_and_still_advertises_its_rating() {
         let (w, ev) = sited(instant());
-        ev.set_active_setpoint(22_000.0).unwrap();
-        tick_n(&w, &ev, 3);
+        cmd(&w, 22_000.0).unwrap();
+        tick_n(&w, 3);
         assert_eq!(ev.aggregate_power_w(&w), 0.0);
-        let b = ev.effective_active_bounds().unwrap();
+        let b = w.bounds_of(7, SetpointAxis::Active).unwrap();
         assert_eq!(b.0[0].upper, Some(22_000.0), "bounds are the charger's own");
         assert!(ev.ev_info().is_none());
     }
@@ -451,8 +431,8 @@ mod tests {
     fn plugged_car_draws_within_the_limit_on_its_own_phases() {
         let (w, ev) = sited(instant());
         ev.plug_ev(test_car("city", Some(30.0))).unwrap(); // 1 ph, 32 A
-        ev.set_active_setpoint(22_000.0).unwrap();
-        tick_n(&w, &ev, 2);
+        cmd(&w, 22_000.0).unwrap();
+        tick_n(&w, 2);
         // 22 kW over the charger's three phases is 31.9 A; the car takes
         // that on its single phase: 7.33 kW.
         let p = ev.aggregate_power_w(&w);
@@ -467,12 +447,12 @@ mod tests {
     fn limit_under_six_amps_pauses() {
         let (w, ev) = sited(instant());
         ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
-        ev.set_active_setpoint(4_000.0).unwrap(); // 5.8 A on 3 phases
-        tick_n(&w, &ev, 2);
+        cmd(&w, 4_000.0).unwrap(); // 5.8 A on 3 phases
+        tick_n(&w, 2);
         assert_eq!(ev.aggregate_power_w(&w), 0.0);
         assert_eq!(ev.ev_info().unwrap().state, EvDrawState::Paused);
-        ev.set_active_setpoint(4_200.0).unwrap(); // 6.09 A
-        tick_n(&w, &ev, 2);
+        cmd(&w, 4_200.0).unwrap(); // 6.09 A
+        tick_n(&w, 2);
         assert!(ev.aggregate_power_w(&w) > 4_100.0);
     }
 
@@ -480,7 +460,7 @@ mod tests {
     fn idle_paused_draws_nothing_and_idle_full_draws_the_cap() {
         let (w, ev) = sited(instant());
         ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
-        tick_n(&w, &ev, 2);
+        tick_n(&w, 2);
         assert_eq!(ev.aggregate_power_w(&w), 0.0, "no command, paused idle");
 
         let (w, ev) = sited(EvChargerConfig {
@@ -488,7 +468,7 @@ mod tests {
             ..instant()
         });
         ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
-        tick_n(&w, &ev, 2);
+        tick_n(&w, 2);
         let p = ev.aggregate_power_w(&w);
         assert!((p - 3.0 * 230.0 * 16.0).abs() < 1.0, "11 kW cap, got {p}");
     }
@@ -509,9 +489,9 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        ev.set_active_setpoint(22_000.0).unwrap();
+        cmd(&w, 22_000.0).unwrap();
         // ~4 A after the taper on a 13 kWh pack: 0.1 % takes ~50 s.
-        tick_n(&w, &ev, 90);
+        tick_n(&w, 90);
         assert_eq!(ev.ev_info().unwrap().state, EvDrawState::Done);
         assert_eq!(ev.aggregate_power_w(&w), 0.0);
         assert!(ev.unplug_ev());
@@ -528,7 +508,7 @@ mod tests {
     fn plugging_clears_the_previous_session_state() {
         let (w, ev) = sited(instant());
         w.set_health(7, Health::Error).unwrap();
-        tick_n(&w, &ev, 1);
+        tick_n(&w, 1);
         assert_eq!(ev.ev_info().map(|i| i.state), None, "nothing plugged yet");
         w.set_health(7, Health::Ok).unwrap();
         ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
@@ -552,15 +532,20 @@ mod tests {
     fn health_trip_still_zeroes_and_clears_the_command() {
         let (w, ev) = sited(instant());
         ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
-        ev.set_active_setpoint(22_000.0).unwrap();
-        tick_n(&w, &ev, 2);
+        cmd(&w, 22_000.0).unwrap();
+        tick_n(&w, 2);
         assert!(ev.aggregate_power_w(&w) > 10_000.0);
         w.set_health(7, Health::Error).unwrap();
-        tick_n(&w, &ev, 1);
+        tick_n(&w, 1);
+        assert_eq!(
+            w.gateway().remaining_lifetime(7, SetpointAxis::Active),
+            None,
+            "the lifetime goes with the command"
+        );
         assert_eq!(ev.aggregate_power_w(&w), 0.0);
         assert_eq!(ev.ev_info().unwrap().state, EvDrawState::Tripped);
         w.set_health(7, Health::Ok).unwrap();
-        tick_n(&w, &ev, 3);
+        tick_n(&w, 3);
         assert_eq!(
             ev.aggregate_power_w(&w),
             0.0,
@@ -575,11 +560,11 @@ mod tests {
             ..instant()
         });
         ev.plug_ev(test_car("van", Some(30.0))).unwrap(); // 3 ph 32 A = 22 kW cap
-        ev.set_active_setpoint(22_000.0).unwrap();
-        tick_n(&w, &ev, 25);
+        cmd(&w, 22_000.0).unwrap();
+        tick_n(&w, 25);
         assert!((ev.aggregate_power_w(&w) - 22_000.0).abs() < 100.0);
-        ev.reset_setpoint();
-        tick_n(&w, &ev, 1);
+        w.gateway().reset(7, SetpointAxis::Active);
+        tick_n(&w, 1);
         let p = ev.aggregate_power_w(&w);
         assert!(p > 20_000.0 && p < 22_000.0, "one tick of slew, got {p}");
     }
@@ -588,8 +573,8 @@ mod tests {
     fn energy_matches_the_integrated_draw() {
         let (w, ev) = sited(instant());
         ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
-        ev.set_active_setpoint(22_000.0).unwrap();
-        tick_n(&w, &ev, 10);
+        cmd(&w, 22_000.0).unwrap();
+        tick_n(&w, 10);
         let info = ev.ev_info().unwrap();
         // First tick has no draw yet (limit promoted this tick), so nine
         // seconds at 11 040 W.
@@ -653,8 +638,8 @@ mod tests {
     /// With `:resume-on-recovery` the fault still zeroes the draw,
     /// but the armed command survives it and charging ramps back when
     /// health returns — the way the solar inverter keeps its
-    /// curtailment, and unlike the default charger below.
-    /// Killing mutation: `snap_output(0.0)` → `trip()` in that branch.
+    /// curtailment, and unlike the default charger below. Killing
+    /// mutation: `keeps_command_through_fault` → `false`.
     #[test]
     fn resume_on_recovery_keeps_the_command_through_the_fault() {
         let (w, ev) = sited(EvChargerConfig {
@@ -662,17 +647,23 @@ mod tests {
             ..instant()
         });
         ev.plug_ev(test_car("van", Some(30.0))).unwrap(); // 3 ph 32 A: takes the whole offer
-        ev.set_active_setpoint(22_000.0).unwrap();
-        tick_n(&w, &ev, 2);
+        cmd(&w, 22_000.0).unwrap();
+        tick_n(&w, 2);
         assert!((ev.aggregate_power_w(&w) - 22_000.0).abs() < 100.0);
 
         w.set_health(7, Health::Error).unwrap();
-        tick_n(&w, &ev, 3);
+        tick_n(&w, 3);
+        assert!(
+            w.gateway()
+                .remaining_lifetime(7, SetpointAxis::Active)
+                .is_some(),
+            "the lifetime stays with the command"
+        );
         assert_eq!(ev.aggregate_power_w(&w), 0.0, "stays off while faulted");
         assert_eq!(ev.ev_info().unwrap().state, EvDrawState::Tripped);
 
         w.set_health(7, Health::Ok).unwrap();
-        tick_n(&w, &ev, 2);
+        tick_n(&w, 2);
         let p = ev.aggregate_power_w(&w);
         assert!(
             (p - 22_000.0).abs() < 100.0,
@@ -689,24 +680,24 @@ mod tests {
     fn standby_trips_like_an_error_and_awaits_redispatch() {
         let (w, ev) = sited(instant());
         ev.plug_ev(test_car("van", Some(30.0))).unwrap();
-        ev.set_active_setpoint(22_000.0).unwrap();
-        tick_n(&w, &ev, 2);
+        cmd(&w, 22_000.0).unwrap();
+        tick_n(&w, 2);
         assert!(ev.aggregate_power_w(&w) > 10_000.0);
 
         w.set_health(7, Health::Standby).unwrap();
-        tick_n(&w, &ev, 1);
+        tick_n(&w, 1);
         assert_eq!(ev.aggregate_power_w(&w), 0.0, "standby is offline too");
         assert_eq!(ev.ev_info().unwrap().state, EvDrawState::Tripped);
 
         w.set_health(7, Health::Ok).unwrap();
-        tick_n(&w, &ev, 3);
+        tick_n(&w, 3);
         assert_eq!(
             ev.aggregate_power_w(&w),
             0.0,
             "waking up awaits a re-dispatch",
         );
-        ev.set_active_setpoint(22_000.0).unwrap();
-        tick_n(&w, &ev, 2);
+        cmd(&w, 22_000.0).unwrap();
+        tick_n(&w, 2);
         assert!(
             ev.aggregate_power_w(&w) > 10_000.0,
             "a new command resumes charging",
@@ -715,33 +706,34 @@ mod tests {
 
     /// An augmentation narrows what the charger OFFERS, and the car
     /// draws within the narrowed offer — so a TTL narrowing reaches
-    /// the draw even though the car, not the axis, decides it. It
+    /// the draw even though the car, not the gateway, decides it. It
     /// tightens the validation envelope in the same breath.
-    /// Killing mutation: drop the `try_augment_active_bounds`
-    /// override, so the trait default answers `Unsupported`.
     #[test]
     fn augmentation_narrows_the_offer_and_the_draw_follows() {
         let (w, ev) = sited(instant());
         ev.plug_ev(test_car("van", Some(30.0))).unwrap();
-        ev.set_active_setpoint(22_000.0).unwrap();
-        tick_n(&w, &ev, 2);
+        cmd(&w, 22_000.0).unwrap();
+        tick_n(&w, 2);
         assert!((ev.aggregate_power_w(&w) - 22_000.0).abs() < 100.0);
 
-        ev.try_augment_active_bounds(
-            Utc::now(),
-            VecBounds(vec![Bounds {
-                lower: Some(0.0),
-                upper: Some(7_000.0),
-            }]),
-            Duration::from_secs(60),
-        )
-        .unwrap();
-        let eff = ev.effective_active_bounds().unwrap();
+        w.gateway()
+            .augment(
+                7,
+                w.run_generation(),
+                SetpointAxis::Active,
+                VecBounds(vec![Bounds {
+                    lower: Some(0.0),
+                    upper: Some(7_000.0),
+                }]),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        let eff = w.bounds_of(7, SetpointAxis::Active).unwrap();
         assert_eq!(eff.0[0].upper, Some(7_000.0), "the offer is narrowed");
 
         // 7 kW over three phases is 10.1 A — above the 6 A floor, so
         // the car tracks the narrowed offer down rather than pausing.
-        tick_n(&w, &ev, 2);
+        tick_n(&w, 2);
         let p = ev.aggregate_power_w(&w);
         assert!(
             (p - 7_000.0).abs() < 50.0,
@@ -750,8 +742,8 @@ mod tests {
 
         // And the narrowing is the validation envelope too.
         assert!(matches!(
-            ev.set_active_setpoint(10_000.0),
-            Err(SetpointError::OutOfBounds { .. })
+            cmd(&w, 10_000.0),
+            Err(GatewayError::OutOfEnvelope(_))
         ));
     }
 
@@ -759,15 +751,17 @@ mod tests {
     /// stored: accepting it would compose an empty envelope and park
     /// the charger at 0 W for the augmentation's whole lifetime. The
     /// rejection changes nothing — rated and the live draw survive.
-    /// Killing mutation: swallow the axis's `Err` and return `Ok(())`.
+    /// Killing mutation: the gateway swallowing the axis's `Err`.
     #[test]
     fn an_augmentation_disjoint_from_rated_is_rejected() {
         let (w, ev) = sited(instant());
         ev.plug_ev(test_car("van", Some(30.0))).unwrap();
-        ev.set_active_setpoint(22_000.0).unwrap();
+        cmd(&w, 22_000.0).unwrap();
         assert!(matches!(
-            ev.try_augment_active_bounds(
-                Utc::now(),
+            w.gateway().augment(
+                7,
+                w.run_generation(),
+                SetpointAxis::Active,
                 VecBounds(vec![Bounds {
                     lower: Some(30_000.0),
                     upper: Some(40_000.0),
@@ -777,43 +771,57 @@ mod tests {
             Err(AugmentError::Disjoint(_))
         ));
         assert_eq!(
-            ev.effective_active_bounds().unwrap().0[0].upper,
+            w.bounds_of(7, SetpointAxis::Active).unwrap().0[0].upper,
             Some(22_000.0),
             "rated survives a rejected augmentation",
         );
-        tick_n(&w, &ev, 2);
+        tick_n(&w, 2);
         assert!(
             (ev.aggregate_power_w(&w) - 22_000.0).abs() < 100.0,
             "and the car still charges",
         );
     }
 
-    /// The charger is a single-axis (P-only) component, so the
-    /// timeout tracker must be told the Q axis is never augmented —
-    /// there is no reactive axis to narrow.
-    /// Killing mutation: `SetpointAxis::Reactive => false` → `true`.
+    /// The charger is a single-axis (P-only) component: Q is never
+    /// augmented, and a Q augmentation or command is refused. Killing
+    /// mutation: `has_axis` → `true` for every axis.
     #[test]
     fn augmentation_active_reports_only_the_active_axis() {
-        use crate::timeout_tracker::SetpointAxis;
-        let (_w, ev) = sited(instant());
-        let now = Utc::now();
-        assert!(!ev.augmentation_active(SetpointAxis::Active, now));
-        assert!(!ev.augmentation_active(SetpointAxis::Reactive, now));
+        let (w, _ev) = sited(instant());
+        assert!(!w.gateway().augmented(7, SetpointAxis::Active));
+        assert!(!w.gateway().augmented(7, SetpointAxis::Reactive));
 
-        ev.try_augment_active_bounds(
-            now,
-            VecBounds(vec![Bounds {
-                lower: Some(0.0),
-                upper: Some(7_000.0),
-            }]),
-            Duration::from_secs(60),
-        )
-        .unwrap();
-        assert!(ev.augmentation_active(SetpointAxis::Active, now));
+        w.gateway()
+            .augment(
+                7,
+                w.run_generation(),
+                SetpointAxis::Active,
+                VecBounds(vec![Bounds {
+                    lower: Some(0.0),
+                    upper: Some(7_000.0),
+                }]),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        assert!(w.gateway().augmented(7, SetpointAxis::Active));
         assert!(
-            !ev.augmentation_active(SetpointAxis::Reactive, now),
+            !w.gateway().augmented(7, SetpointAxis::Reactive),
             "the charger has no reactive axis to narrow",
         );
+        assert!(matches!(
+            w.gateway().augment(
+                7,
+                w.run_generation(),
+                SetpointAxis::Reactive,
+                VecBounds::single(-1_000.0, 1_000.0),
+                Duration::from_secs(60),
+            ),
+            Err(AugmentError::Unsupported)
+        ));
+        assert!(matches!(
+            w.gateway().command(7, SetpointAxis::Reactive, 0.0),
+            Err(GatewayError::NoAxis { .. })
+        ));
     }
 
     /// A P-only AC component still advertises an EXPLICIT zero Q, so
@@ -859,22 +867,22 @@ mod tests {
         );
 
         ev.plug_ev(test_car("van", Some(30.0))).unwrap();
-        tick_n(&w, &ev, 2);
+        tick_n(&w, 2);
         assert_eq!(
             ev.telemetry(&w).component_state,
             Some("ready"),
             "plugged but no command: paused, so still ready",
         );
 
-        ev.set_active_setpoint(22_000.0).unwrap();
-        tick_n(&w, &ev, 2);
+        cmd(&w, 22_000.0).unwrap();
+        tick_n(&w, 2);
         assert!(ev.aggregate_power_w(&w) > 0.0);
         assert_eq!(ev.telemetry(&w).component_state, Some("charging"));
 
         // Below the 6 A floor the car pauses, and the state goes back
         // to ready with the cable still locked.
-        ev.set_active_setpoint(4_000.0).unwrap();
-        tick_n(&w, &ev, 2);
+        cmd(&w, 4_000.0).unwrap();
+        tick_n(&w, 2);
         assert_eq!(ev.aggregate_power_w(&w), 0.0);
         assert_eq!(ev.telemetry(&w).component_state, Some("ready"));
         assert_eq!(
@@ -903,19 +911,114 @@ mod tests {
         ev.plug_ev(test_car("van", Some(30.0))).unwrap(); // a 3 ph, 32 A car
         // 7 360 W on one phase is 32 A — the car's cap, on the single
         // phase the charger has.
-        ev.set_active_setpoint(7_360.0).unwrap();
-        tick_n(&w, &ev, 2);
+        cmd(&w, 7_360.0).unwrap();
+        tick_n(&w, 2);
         let p = ev.aggregate_power_w(&w);
         assert!((p - 7_360.0).abs() < 1.0, "one phase at 32 A, got {p}");
 
         // Commanding the full 22 kW rating changes nothing: the offer
         // is 95 A on the one phase, but the car takes only its 32 A.
-        ev.set_active_setpoint(22_000.0).unwrap();
-        tick_n(&w, &ev, 2);
+        cmd(&w, 22_000.0).unwrap();
+        tick_n(&w, 2);
         let p = ev.aggregate_power_w(&w);
         assert!(
             (p - 7_360.0).abs() < 1.0,
             "still one phase of 32 A, not 22 kW, got {p}"
         );
+    }
+
+    /// A charger idling at its full rating parks there when its
+    /// command is reset, instead of at 0.
+    #[test]
+    fn a_full_idle_charger_parks_at_its_rating() {
+        let (w, ev) = sited(EvChargerConfig {
+            idle: EvIdle::Full,
+            ..instant()
+        });
+        ev.plug_ev(test_car("van", Some(30.0))).unwrap();
+        cmd(&w, 7_000.0).unwrap();
+        tick_n(&w, 2);
+        assert!((ev.aggregate_power_w(&w) - 7_000.0).abs() < 50.0);
+        w.gateway().reset(7, SetpointAxis::Active);
+        tick_n(&w, 2);
+        assert!((ev.aggregate_power_w(&w) - 22_000.0).abs() < 100.0);
+    }
+
+    /// Command charger 7 with a request lifetime of `secs`.
+    fn cmd_for(w: &MicrogridSite, watts: f32, secs: u64) {
+        w.gateway()
+            .set_power(
+                SetpointAxis::Active,
+                7,
+                w.run_generation(),
+                watts,
+                Duration::from_secs(secs),
+                Mode::Reject,
+            )
+            .unwrap();
+    }
+
+    /// A lifetime that runs out on the site clock slews the offer
+    /// back to idle at the ramp rate, and the draw follows it down.
+    #[test]
+    fn a_lapsed_lifetime_slews_the_limit_and_the_draw_follows() {
+        let (w, ev) = sited(EvChargerConfig {
+            ramp_rate_w_per_s: 1_000.0,
+            ..instant()
+        });
+        ev.plug_ev(test_car("van", Some(30.0))).unwrap();
+        cmd_for(&w, 22_000.0, 30);
+        tick_n(&w, 29);
+        assert!((ev.aggregate_power_w(&w) - 22_000.0).abs() < 100.0);
+        tick_n(&w, 3);
+        assert_eq!(
+            w.gateway().remaining_lifetime(7, SetpointAxis::Active),
+            None
+        );
+        let p = ev.aggregate_power_w(&w);
+        assert!(p > 18_000.0 && p < 21_500.0, "a few ticks of slew, got {p}");
+        tick_n(&w, 30);
+        assert_eq!(ev.aggregate_power_w(&w), 0.0, "parked at the idle 0");
+    }
+
+    /// A kept command still goes when its lifetime runs out while the
+    /// charger is faulted: recovery then finds nothing to resume.
+    #[test]
+    fn a_lifetime_lapsing_in_a_fault_clears_a_kept_command() {
+        let (w, ev) = sited(EvChargerConfig {
+            resume_on_recovery: true,
+            ..instant()
+        });
+        ev.plug_ev(test_car("van", Some(30.0))).unwrap();
+        cmd_for(&w, 22_000.0, 5);
+        tick_n(&w, 2);
+        assert!((ev.aggregate_power_w(&w) - 22_000.0).abs() < 100.0);
+        w.set_health(7, Health::Error).unwrap();
+        tick_n(&w, 10);
+        w.set_health(7, Health::Ok).unwrap();
+        tick_n(&w, 3);
+        assert_eq!(ev.aggregate_power_w(&w), 0.0, "nothing to resume");
+    }
+
+    /// A command still in the device delay line when the charger
+    /// trips does not replay on recovery. Killing mutation: drop
+    /// `self.limit.trip()` from the health gate.
+    #[test]
+    fn a_trip_does_not_replay_a_pre_trip_command() {
+        let (w, ev) = sited(EvChargerConfig {
+            device_delay: Duration::from_secs(2),
+            ..instant()
+        });
+        ev.plug_ev(test_car("van", Some(30.0))).unwrap();
+        cmd(&w, 22_000.0).unwrap();
+        tick_n(&w, 1);
+        assert_eq!(ev.aggregate_power_w(&w), 0.0, "still in the delay line");
+        w.set_health(7, Health::Error).unwrap();
+        tick_n(&w, 1);
+        w.set_health(7, Health::Ok).unwrap();
+        for _ in 0..3 {
+            tick_n(&w, 1);
+            assert_eq!(ev.aggregate_power_w(&w), 0.0, "nothing replays");
+        }
     }
 }
