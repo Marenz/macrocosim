@@ -70,6 +70,11 @@
   --cat-breaker: #8a94a3;
 }
 
+/* `hidden` always hides. The UA's own `[hidden] { display: none }`
+   loses to any class or id rule that sets `display`, so a styled
+   element given `hidden` would quietly stay on screen. */
+[hidden] { display: none !important; }
+
 html,
 body {
   margin: 0;
@@ -125,7 +130,6 @@ header strong {
   border: 1px solid rgba(96, 200, 120, 0.35);
   cursor: pointer;
 }
-.active-scenarios[hidden] { display: none; }
 .active-scenarios:hover { border-color: var(--good, #6bd97b); }
 
 /* Every <dialog> in the app is a themed modal with the same
@@ -424,15 +428,6 @@ body[data-mode="microgrids"][data-mg-view="selected"] #microgrid-list { display:
 body[data-mode="microgrids"][data-mg-view="selected"][data-subview="topology"]  #dispatches { display: none; }
 body[data-mode="microgrids"][data-mg-view="selected"][data-subview="dispatches"] #topology { display: none; }
 
-#microgrid-list,
-#mg-header,
-#scenarios {
-  /* `display: block` defeats the inline `hidden` attribute's UA
-     `[hidden] { display: none }`. The body[data-mode] rules
-     above re-hide whichever pane shouldn't show right now. */
-  display: block;
-}
-
 #scenarios {
   padding: 16px 20px;
   overflow: auto;
@@ -671,10 +666,6 @@ body[data-mg-empty="1"][data-mg-view="selected"][data-subview="topology"] #topol
   font-size: 15px;
 }
 #snapshots-list { list-style: none; padding: 0; margin: 0; }
-/* Both need to out-specify `#snapshots-dialog #snapshot-save-form`
-   above, or the blocked state would still render the save row. */
-#snapshots-dialog #snapshots-blocked[hidden],
-#snapshots-dialog #snapshot-save-form[hidden] { display: none; }
 
 /* The create-microgrid form: one field per row, matching the
    snapshot dialog's field styling so the two dialogs read alike. */
@@ -706,7 +697,6 @@ body[data-mg-empty="1"][data-mg-view="selected"][data-subview="topology"] #topol
   font-size: 14px;
   color: var(--bad);
 }
-.dialog-error[hidden] { display: none; }
 
 /* The load dialog's collision offer: the file names an id something
    else already loaded, so the row carries the reason and (for a
@@ -723,7 +713,6 @@ body[data-mg-empty="1"][data-mg-view="selected"][data-subview="topology"] #topol
   border-radius: 4px;
   background: rgba(217, 196, 107, 0.12);
 }
-.collision-bar[hidden] { display: none; }
 
 /* File-state chips on a microgrid card and in its header. */
 .mg-chip {
@@ -1861,10 +1850,6 @@ body[data-mode="microgrids"][data-mg-view="selected"][data-subview="topology"] #
   color: var(--accent);
   border: 1px solid var(--accent);
 }
-/* The class's own display beats the UA's [hidden] rule (same trap
-   the other [hidden] re-asserts in this file guard against). */
-#inspect .knob-expr-chip[hidden],
-#inspect .knob-resolved[hidden] { display: none; }
 
 /* An expression-driven knob's resolved per-tick value, shown beneath
    the printed source (paintResolved in inspect.js) — the source alone
@@ -2287,12 +2272,6 @@ body[data-density="compact"] main { height: calc(100vh - 41px - 22px); }
    Read-only table of dispatches the dispatch API holds for the selected
    microgrid; a padded pane with its own scroll. */
 #dispatches {
-  /* `display: block` defeats the inline `hidden` attribute's
-     `[hidden] { display: none }` (same trick #microgrid-list and
-     #scenarios use above); the body[data-subview] rules above re-hide
-     it when another sub-tab is active. Without this the pane never
-     shows and the Dispatches tab looks empty. */
-  display: block;
   padding: 16px;
   overflow-y: auto;
   align-content: start;

@@ -49,7 +49,7 @@
       <span class="pulse-clock" id="pulse-clock">--:--:--</span>
     </section>
     <main id="app">
-      <div id="microgrid-list" hidden>
+      <div id="microgrid-list">
         <header class="mglist-header">
           <h2>Microgrids</h2>
           <p class="hint">Pick a microgrid to drill into its topology + dispatches.</p>
@@ -57,7 +57,7 @@
         <div id="mglist-grid" class="mglist-grid"></div>
         <input id="import-files" type="file" accept=".json,application/json" multiple hidden />
       </div>
-      <header id="mg-header" hidden>
+      <header id="mg-header">
         <button type="button" id="mg-back" class="hdr-btn" title="Back to microgrid list">← Microgrids</button>
         <span id="mg-breadcrumb-name" class="mg-name"></span>
         <span id="mg-breadcrumb-tso" class="muted"></span>
@@ -71,7 +71,7 @@
         </nav>
       </header>
       <div id="topology"></div>
-      <div id="topology-empty-hint" hidden>
+      <div id="topology-empty-hint">
         <h3>Empty microgrid</h3>
         <p>This microgrid has no components yet. Add a grid connection point first:</p>
         <ol>
@@ -81,7 +81,7 @@
         </ol>
         <p class="hint">Wire it up via Ctrl/Cmd+drag once it's on the canvas.</p>
       </div>
-      <div id="scenarios" hidden>
+      <div id="scenarios">
         <header class="scenarios-header">
           <h2 class="scenarios-title">Scenarios</h2>
           <span id="sc-count" class="muted"></span>
@@ -103,7 +103,7 @@
           <section id="sc-run-csv" class="sc-run-csv" aria-label="recorded csvs"></section>
         </section>
       </div>
-      <div id="dispatches" hidden>
+      <div id="dispatches">
         <header class="dispatches-header">
           <div>
             <h2>Dispatches</h2>

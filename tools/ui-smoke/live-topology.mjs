@@ -2434,6 +2434,37 @@ await page.click("#density-toggle");
 check("e2e: compact density shrinks the pulse bar", compactPulse < roomyPulse, JSON.stringify({ roomyPulse, compactPulse }));
 check("e2e: the density chip turns compact off again", (await pulseHeight()) === roomyPulse);
 
+// ── e2e: hidden always hides ───────────────────────────────────────
+// Every element carrying `hidden` is actually hidden: a class's own
+// `display` must not beat the attribute.
+const shownButHidden = () =>
+  page.evaluate(() =>
+    [...document.querySelectorAll("[hidden]")]
+      .filter((el) => getComputedStyle(el).display !== "none")
+      .map((el) => el.id || el.className || el.tagName),
+  );
+check("e2e: [hidden] hides everything on the topology view", (await shownButHidden()).length === 0, JSON.stringify(await shownButHidden()));
+// The body flags, not `hidden`, show the empty-microgrid hint.
+const emptyHint = await page.evaluate(() => {
+  const was = document.body.dataset.mgEmpty;
+  document.body.dataset.mgEmpty = "1";
+  const shown = getComputedStyle(document.getElementById("topology-empty-hint")).display;
+  if (was === undefined) delete document.body.dataset.mgEmpty;
+  else document.body.dataset.mgEmpty = was;
+  return shown;
+});
+check("e2e: an empty microgrid shows its hint", emptyHint !== "none", emptyHint);
+await page.click('#mode-toggle .mode-btn[data-mode="scenarios"]');
+const onScenarios = await waitFor(async () => page.evaluate(() => document.body.dataset.mode === "scenarios"), 5000).catch(
+  () => false,
+);
+check(
+  "e2e: [hidden] hides everything on the scenarios page",
+  onScenarios && (await shownButHidden()).length === 0,
+  JSON.stringify({ onScenarios, shown: await shownButHidden() }),
+);
+await openDemoTopology();
+
 // ── e2e: charts without uPlot ─────────────────────────────────────
 // uPlot is a classic <script>, not a module: when it does not load
 // (a blocked asset, a bad vendor bump, its own load-time throw on an
