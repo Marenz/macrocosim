@@ -130,6 +130,7 @@ fn create_core(
     // be free, an omitted one is allocated. Both are still valid when
     // the load below inserts the entry, because the create lock keeps
     // any other create out in between.
+    let reserved = config.reserved_ports();
     let registry = config.microgrids();
     let def = {
         let r = registry.lock();
@@ -157,9 +158,15 @@ fn create_core(
                         format!("gRPC port {p} is already bound by microgrid {other}"),
                     ));
                 }
+                if reserved.contains(&p) {
+                    return Err((
+                        StatusCode::CONFLICT,
+                        format!("gRPC port {p} is reserved for the assets or dispatch server"),
+                    ));
+                }
                 p
             }
-            None => next_free_port_in(&r),
+            None => next_free_port_in(&r, &reserved),
         };
         MicrogridDef {
             id,

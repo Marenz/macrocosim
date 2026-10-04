@@ -40,6 +40,10 @@ tulisp::AsPlist! {
 /// (whose body's make-* calls then register into the new site
 /// via the router's per-call dispatch), and finally restores the
 /// previous pointer.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one installer wires every shared handle"
+)]
 pub(in crate::lisp) fn register(
     ctx: &mut TulispContext,
     registry: crate::sim::microgrids::SharedMicrogrids,
@@ -48,6 +52,7 @@ pub(in crate::lisp) fn register(
     registered_tx: Arc<broadcast::Sender<u64>>,
     grid_frequency: crate::sim::frequency::SharedFrequency,
     loading: crate::sim::microgrids::LoadingSlot,
+    metadata: Arc<parking_lot::RwLock<crate::lisp::Metadata>>,
 ) {
     // `(current-source-file)` — the file whose load is in flight, or
     // nil outside a load (a REPL eval). Scripts use it to resolve
@@ -200,6 +205,9 @@ pub(in crate::lisp) fn register(
             // reuse check, AND the insert — separate acquisitions let
             // a concurrent /api/microgrids/create hand out the same
             // id or port between our probe and our insert.
+            // The assets and dispatch ports, read before the registry
+            // lock so the two locks never nest.
+            let reserved = crate::lisp::reserved_ports_of(&metadata.read());
             let (id, reused) = {
                 let mut reg = registry.lock();
                 let id = match a.id {
@@ -268,9 +276,15 @@ pub(in crate::lisp) fn register(
                                          bound by microgrid {other}"
                                     )));
                                 }
+                                if reserved.contains(&p) {
+                                    return Err(tulisp::Error::invalid_argument(format!(
+                                        "make-microgrid #{id}: :grpc-port {p} is reserved \
+                                         for the assets or dispatch server"
+                                    )));
+                                }
                                 p
                             }
-                            None => next_free_port_in(&reg),
+                            None => next_free_port_in(&reg, &reserved),
                         };
                         // Fresh site per microgrid that shares the
                         // enterprise's id allocator with the bootstrap site
@@ -342,6 +356,28 @@ pub(in crate::lisp) fn register(
 #[cfg(test)]
 mod tests {
     use super::super::super::test_support::config_with;
+
+    /// The assets and dispatch servers' ports, read from their
+    /// socket addresses.
+    fn server_ports(cfg: &crate::lisp::Config) -> [u16; 2] {
+        [cfg.assets_socket_addr(), cfg.dispatch_socket_addr()]
+            .map(|a| a.parse::<std::net::SocketAddr>().unwrap().port())
+    }
+
+    /// An explicit :grpc-port on the assets or dispatch server's port
+    /// is refused, as another microgrid's would be.
+    #[test]
+    fn make_microgrid_refuses_a_reserved_port() {
+        let (cfg, _dir) = config_with("nil");
+        for port in server_ports(&cfg) {
+            let err = cfg
+                .eval(&format!(
+                    "(make-microgrid :id 77 :grpc-port {port} :topology (lambda () nil))"
+                ))
+                .expect_err("a reserved port must be refused");
+            assert!(err.contains("reserved"), "unexpected error: {err}");
+        }
+    }
 
     /// A second FILE claiming an id another file already loaded is a
     /// hard error, and the message names the owning file so the

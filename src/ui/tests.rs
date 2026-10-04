@@ -1587,6 +1587,28 @@ async fn concurrent_creates_get_distinct_microgrids() {
     assert_eq!(config.microgrids().lock().len(), 3);
 }
 
+/// An explicit port on the assets or dispatch server's port is
+/// refused, as another microgrid's would be.
+#[tokio::test]
+async fn create_refuses_a_reserved_port() {
+    let config = config_with("nil").await;
+    let ports = [config.assets_socket_addr(), config.dispatch_socket_addr()]
+        .map(|a| a.parse::<std::net::SocketAddr>().unwrap().port());
+    for port in ports {
+        let (st, body) = call(
+            config.clone(),
+            post_json(
+                "/api/microgrids/create",
+                &format!(r#"{{"name":"r","grpc_port":{port}}}"#),
+            ),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT);
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("reserved"), "unexpected error: {body}");
+    }
+}
+
 /// Create takes an explicit id and port, and refuses either when it
 /// is already claimed — the create dialog turns that into an inline
 /// error rather than quietly picking something else.

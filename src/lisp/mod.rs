@@ -47,6 +47,17 @@ pub use boot::{LoadAsError, LoadError};
 pub use snapshots::SnapshotError;
 pub use undo::UndoDepths;
 
+/// The ports of the enterprise's assets and dispatch sockets. An
+/// address that does not parse contributes nothing; the binary
+/// validates it when it binds.
+pub(crate) fn reserved_ports_of(m: &Metadata) -> Vec<u16> {
+    [&m.assets_socket_addr, &m.dispatch_socket_addr]
+        .into_iter()
+        .filter_map(|a| a.parse::<std::net::SocketAddr>().ok())
+        .map(|a| a.port())
+        .collect()
+}
+
 /// Enterprise-level gateway settings the Lisp config can override.
 /// Per-microgrid identity (id, name, grpc_port, TSO) lives in the
 /// `sim::microgrids` registry — each `(make-microgrid …)` form
@@ -399,6 +410,12 @@ impl Config {
 
     pub fn dispatch_socket_addr(&self) -> String {
         self.metadata.read().dispatch_socket_addr.clone()
+    }
+
+    /// The ports of the enterprise's assets and dispatch sockets; an
+    /// address that does not parse contributes nothing.
+    pub fn reserved_ports(&self) -> Vec<u16> {
+        reserved_ports_of(&self.metadata.read())
     }
 
     /// Resolve the site the ambient scope points at. Follows

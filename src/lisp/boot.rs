@@ -273,6 +273,7 @@ impl Config {
             microgrid_registered.clone(),
             grid_frequency.clone(),
             loading.clone(),
+            metadata.clone(),
         );
         defuns::register_frequency(&mut ctx, grid_frequency.clone());
 
@@ -712,6 +713,7 @@ impl Config {
             .map_err(|e| format!("{}: {e}", resolved.display()))?;
         // Id check and port pick under one registry lock, so the port
         // we write is free as of the same instant the id was.
+        let reserved = self.reserved_ports();
         let free_port = {
             let reg = self.microgrids.lock();
             if reg.contains_key(&new_id) {
@@ -719,7 +721,7 @@ impl Config {
                     "microgrid {new_id} is already registered"
                 )));
             }
-            crate::sim::microgrids::next_free_port_in(&reg)
+            crate::sim::microgrids::next_free_port_in(&reg, &reserved)
         };
         // A head with no `:grpc-port` comes back unchanged — the
         // loader allocates one for it anyway.

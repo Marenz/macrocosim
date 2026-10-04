@@ -120,19 +120,23 @@ pub fn snapshot(registry: &SharedMicrogrids) -> Vec<MicrogridView> {
     registry.lock().values().map(MicrogridView::from).collect()
 }
 
-/// Smallest port not currently claimed by any registered microgrid,
-/// starting at `DEFAULT_GRPC_PORT`. Used by the create-microgrid
-/// HTTP endpoint when the caller didn't pin a port explicitly.
-pub fn next_free_port(registry: &SharedMicrogrids) -> u16 {
-    next_free_port_in(&registry.lock())
+/// Smallest port not claimed by a registered microgrid or listed in
+/// `reserved`, starting at `DEFAULT_GRPC_PORT` and stepping by 10.
+pub fn next_free_port(registry: &SharedMicrogrids, reserved: &[u16]) -> u16 {
+    next_free_port_in(&registry.lock(), reserved)
 }
 
 /// Like [`next_free_port`] but operates on an already-locked map.
 /// Lets the create-microgrid handler pick id + port + insert under
-/// one critical section so two concurrent creates can't both pick
-/// the same port.
-pub fn next_free_port_in(entries: &BTreeMap<u64, MicrogridEntry>) -> u16 {
-    let mut ports: Vec<u16> = entries.values().map(|e| e.def.grpc_port).collect();
+/// one critical section so two concurrent creates can't both pick the
+/// same port. `reserved` holds the enterprise's assets and dispatch
+/// ports.
+pub fn next_free_port_in(entries: &BTreeMap<u64, MicrogridEntry>, reserved: &[u16]) -> u16 {
+    let mut ports: Vec<u16> = entries
+        .values()
+        .map(|e| e.def.grpc_port)
+        .chain(reserved.iter().copied())
+        .collect();
     ports.sort_unstable();
     let mut candidate = DEFAULT_GRPC_PORT;
     for p in ports {
@@ -374,16 +378,26 @@ mod tests {
     fn next_free_port_increments_by_10_skipping_gaps() {
         let reg = new_registry();
         // Empty registry -> default port.
-        assert_eq!(next_free_port(&reg), DEFAULT_GRPC_PORT);
+        assert_eq!(next_free_port(&reg, &[]), DEFAULT_GRPC_PORT);
         // Add 8800; next is 8810.
         reg.lock().insert(2200, entry(2200, 8800));
-        assert_eq!(next_free_port(&reg), 8810);
+        assert_eq!(next_free_port(&reg, &[]), 8810);
         // Add 8810 too; next is 8820.
         reg.lock().insert(2201, entry(2201, 8810));
-        assert_eq!(next_free_port(&reg), 8820);
+        assert_eq!(next_free_port(&reg, &[]), 8820);
         // Add 8830 (gap); next slot is still 8820.
         reg.lock().insert(2202, entry(2202, 8830));
-        assert_eq!(next_free_port(&reg), 8820);
+        assert_eq!(next_free_port(&reg, &[]), 8820);
+    }
+
+    /// Reserved ports (the assets and dispatch sockets) are never
+    /// handed out: the walk steps over them like a taken port.
+    #[test]
+    fn next_free_port_skips_reserved_ports() {
+        let reg = new_registry();
+        assert_eq!(next_free_port(&reg, &[DEFAULT_GRPC_PORT]), 8810);
+        assert_eq!(next_free_port(&reg, &[8810]), DEFAULT_GRPC_PORT);
+        assert_eq!(next_free_port(&reg, &[DEFAULT_GRPC_PORT, 8810]), 8820);
     }
 
     #[test]
