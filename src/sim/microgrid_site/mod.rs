@@ -101,6 +101,29 @@ impl MicrogridSite {
     pub fn gateway(&self) -> Gateway<'_> {
         Gateway::new(self, &self.inner.gateway)
     }
+
+    /// What every consumer reports as `id`'s bounds on `axis`.
+    pub fn bounds_of(
+        &self,
+        id: u64,
+        axis: crate::timeout_tracker::SetpointAxis,
+    ) -> Option<crate::sim::bounds::VecBounds> {
+        self.gateway().bounds_of(id, axis)
+    }
+
+    /// `c`'s telemetry with its bounds taken from `bounds_of`. Bounds
+    /// ride the power value they bound, so a snapshot with neither an
+    /// AC nor a DC power value is left as the component built it.
+    pub fn telemetry_of(&self, c: &dyn SimulatedComponent) -> crate::sim::Telemetry {
+        use crate::timeout_tracker::SetpointAxis;
+        let mut t = c.telemetry(self);
+        if t.active_power_w.is_some() || t.dc_power_w.is_some() {
+            let gw = self.gateway();
+            t.active_power_bounds = gw.bounds_of(c.id(), SetpointAxis::Active);
+            t.reactive_power_bounds = gw.bounds_of(c.id(), SetpointAxis::Reactive);
+        }
+        t
+    }
 }
 
 struct MicrogridSiteInner {
@@ -805,7 +828,7 @@ impl MicrogridSite {
     /// static-topology conservative and does not widen while a
     /// parallel parent is faulted. `None` when no child exposes an
     /// envelope.
-    fn sum_child_bounds(
+    pub(crate) fn sum_child_bounds(
         &self,
         parent: u64,
         bounds_of: impl Fn(&dyn SimulatedComponent) -> Option<crate::sim::bounds::VecBounds>,

@@ -192,24 +192,10 @@ impl<'a> Gateway<'a> {
         }
         let value = match mode {
             Mode::Reject => {
-                self.site
-                    .gate_setpoint(id, axis, value)
-                    .map_err(GatewayError::OutOfEnvelope)?;
+                self.gate_locked(&st, id, axis, value)?;
                 value
             }
-            Mode::Clamp => {
-                let envelope = match axis {
-                    SetpointAxis::Active => self
-                        .site
-                        .active_setpoint_envelope(id)
-                        .or_else(|| c.effective_active_bounds()),
-                    SetpointAxis::Reactive => self
-                        .site
-                        .reactive_setpoint_envelope(id)
-                        .or_else(|| c.reactive_bounds()),
-                };
-                clamp_into(value, envelope)
-            }
+            Mode::Clamp => clamp_into(value, self.setpoint_envelope_locked(&st, id, axis)),
         };
         let deadline = st
             .lifetimes
@@ -278,6 +264,107 @@ impl<'a> Gateway<'a> {
         for (id, axis) in expired {
             log::info!("Request timeout for component {id} ({axis:?}) — resetting that axis");
         }
+    }
+
+    /// What every consumer reports as `id`'s bounds on `axis`; `None`
+    /// for a component with none on that axis.
+    pub fn bounds_of(&self, id: u64, axis: SetpointAxis) -> Option<VecBounds> {
+        let st = self.gw.state.lock();
+        self.bounds_of_locked(&st, id, axis)
+    }
+
+    /// The envelope a setpoint for `id` on `axis` must respect: its
+    /// own bounds ∩ the summed bounds of every child that reports
+    /// them (each divided by its parent count), or its own bounds
+    /// alone when no child reports any.
+    pub fn setpoint_envelope(&self, id: u64, axis: SetpointAxis) -> Option<VecBounds> {
+        let st = self.gw.state.lock();
+        self.setpoint_envelope_locked(&st, id, axis)
+    }
+
+    /// The summed bounds of `id`'s children on `axis`, each divided by
+    /// its parent count; `None` when no child reports any.
+    pub fn child_envelope(&self, id: u64, axis: SetpointAxis) -> Option<VecBounds> {
+        let st = self.gw.state.lock();
+        self.child_envelope_locked(&st, id, axis)
+    }
+
+    /// True while a live augmentation narrows `id`'s `axis`.
+    pub fn augmented(&self, id: u64, axis: SetpointAxis) -> bool {
+        let _st = self.gw.state.lock();
+        self.site
+            .get(id)
+            .is_some_and(|c| c.augmentation_active(axis, self.site.now()))
+    }
+
+    fn bounds_of_locked(
+        &self,
+        _st: &GatewayState,
+        id: u64,
+        axis: SetpointAxis,
+    ) -> Option<VecBounds> {
+        let c = self.site.get(id)?;
+        match axis {
+            SetpointAxis::Active => c.effective_active_bounds(),
+            SetpointAxis::Reactive => c.reactive_bounds(),
+        }
+    }
+
+    fn child_envelope_locked(
+        &self,
+        st: &GatewayState,
+        id: u64,
+        axis: SetpointAxis,
+    ) -> Option<VecBounds> {
+        self.site
+            .sum_child_bounds(id, |child| self.bounds_of_locked(st, child.id(), axis))
+    }
+
+    /// Own ∩ children; `None` when no child reports bounds.
+    fn combined_envelope_locked(
+        &self,
+        st: &GatewayState,
+        id: u64,
+        axis: SetpointAxis,
+    ) -> Option<VecBounds> {
+        let children = self.child_envelope_locked(st, id, axis)?;
+        Some(match self.bounds_of_locked(st, id, axis) {
+            Some(own) => own.intersect(&children),
+            None => children,
+        })
+    }
+
+    fn setpoint_envelope_locked(
+        &self,
+        st: &GatewayState,
+        id: u64,
+        axis: SetpointAxis,
+    ) -> Option<VecBounds> {
+        self.combined_envelope_locked(st, id, axis)
+            .or_else(|| self.bounds_of_locked(st, id, axis))
+    }
+
+    /// The children gate: 0 always passes; any other value must sit
+    /// inside the combined envelope when there is one.
+    fn gate_locked(
+        &self,
+        st: &GatewayState,
+        id: u64,
+        axis: SetpointAxis,
+        value: f32,
+    ) -> Result<(), GatewayError> {
+        if value == 0.0 {
+            return Ok(());
+        }
+        if let Some(env) = self.combined_envelope_locked(st, id, axis)
+            && !env.contains(value)
+        {
+            return Err(GatewayError::OutOfEnvelope(format!(
+                "set-point {value} {} exceeds combined envelope {env}",
+                axis.unit()
+            )));
+        }
+        Ok(())
     }
 
     /// Actuate `f` and arm a lifetime for it under the gateway lock.
@@ -546,5 +633,154 @@ mod tests {
             .unwrap();
         site.tick_n(1, Duration::from_millis(100));
         assert_eq!(site.get(2).unwrap().aggregate_power_w(&site), 3_000.0);
+    }
+
+    /// A battery behind a battery inverter, both ±`bat_w` / ±5 kW, no
+    /// delays, PF cap off and a 5 kVA cap so Q is ±5 kVAr at idle.
+    fn inverter_over_battery(bat_w: f32) -> MicrogridSite {
+        use crate::sim::{
+            Battery, BatteryInverter, battery::BatteryConfig,
+            inverter::battery_inverter::BatteryInverterConfig, reactive::ReactiveCapability,
+        };
+        let site = MicrogridSite::new();
+        site.register(Battery::new(
+            1,
+            Duration::from_secs(1),
+            BatteryConfig {
+                rated_lower_w: -bat_w,
+                rated_upper_w: bat_w,
+                soc_protect_margin_pct: 0.0,
+                ..Default::default()
+            },
+        ));
+        site.register(BatteryInverter::new(
+            2,
+            Duration::from_secs(1),
+            BatteryInverterConfig {
+                rated_lower_w: -5_000.0,
+                rated_upper_w: 5_000.0,
+                reactive: ReactiveCapability {
+                    pf_limit: None,
+                    apparent_va: Some(5_000.0),
+                },
+                ..Default::default()
+            },
+        ));
+        site.connect(2, 1);
+        site
+    }
+
+    /// Own bounds, children's sum, and the setpoint envelope built
+    /// from them, on both axes.
+    #[test]
+    fn reads_compose_own_and_child_bounds() {
+        let site = inverter_over_battery(30_000.0);
+        let gw = site.gateway();
+        gw.augment(
+            2,
+            site.run_generation(),
+            SetpointAxis::Active,
+            VecBounds::single(-3_000.0, 3_000.0),
+            HOUR,
+        )
+        .unwrap();
+        assert_eq!(
+            gw.bounds_of(2, SetpointAxis::Active).unwrap().to_string(),
+            "[-3000, 3000]"
+        );
+        assert_eq!(
+            gw.child_envelope(2, SetpointAxis::Active)
+                .unwrap()
+                .to_string(),
+            "[-30000, 30000]"
+        );
+        assert_eq!(
+            gw.setpoint_envelope(2, SetpointAxis::Active)
+                .unwrap()
+                .to_string(),
+            "[-3000, 3000]"
+        );
+        assert!(gw.augmented(2, SetpointAxis::Active));
+        assert!(!gw.augmented(2, SetpointAxis::Reactive));
+
+        assert_eq!(
+            gw.bounds_of(2, SetpointAxis::Reactive).unwrap().to_string(),
+            "[-5000, 5000]"
+        );
+        assert!(
+            gw.child_envelope(2, SetpointAxis::Reactive).is_none(),
+            "a battery reports no Q"
+        );
+        assert_eq!(
+            gw.setpoint_envelope(2, SetpointAxis::Reactive)
+                .unwrap()
+                .to_string(),
+            "[-5000, 5000]",
+            "with no Q-reporting child the envelope is the component's own"
+        );
+        assert_eq!(
+            gw.bounds_of(1, SetpointAxis::Active).unwrap().to_string(),
+            "[-30000, 30000]"
+        );
+        assert!(gw.bounds_of(1, SetpointAxis::Reactive).is_none());
+        assert!(gw.bounds_of(99, SetpointAxis::Active).is_none());
+    }
+
+    /// The children gate names the combined envelope; `Clamp` uses it.
+    #[test]
+    fn the_children_gate_names_the_combined_envelope() {
+        let site = inverter_over_battery(1_000.0);
+        let gw = site.gateway();
+        let e = gw.command(2, SetpointAxis::Active, 3_000.0).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("set-point 3000 W exceeds combined envelope [-1000, 1000]"),
+            "{e}"
+        );
+        let applied = gw
+            .set_active_power(2, site.run_generation(), 3_000.0, HOUR, Mode::Clamp)
+            .unwrap();
+        assert_eq!(applied.value, 1_000.0);
+        assert!(
+            gw.command(2, SetpointAxis::Active, 0.0).is_ok(),
+            "0 W always passes"
+        );
+    }
+
+    /// The telemetry overlay replaces bounds with `bounds_of` on a
+    /// snapshot that carries a power value, and leaves one without
+    /// power (the grid) alone.
+    #[test]
+    fn telemetry_of_overlays_bounds_on_power_carrying_snapshots() {
+        let site = inverter_over_battery(30_000.0);
+        site.register(crate::sim::Grid::new(
+            9,
+            100,
+            Some((-50_000.0, 50_000.0)),
+            0.0,
+        ));
+        site.gateway()
+            .augment(
+                2,
+                site.run_generation(),
+                SetpointAxis::Active,
+                VecBounds::single(-2_000.0, 2_000.0),
+                HOUR,
+            )
+            .unwrap();
+        let inv = site.get(2).unwrap();
+        let t = site.telemetry_of(inv.as_ref());
+        assert_eq!(t.active_power_bounds.unwrap().to_string(), "[-2000, 2000]");
+        assert_eq!(
+            t.reactive_power_bounds.unwrap().to_string(),
+            "[-5000, 5000]"
+        );
+        let bat = site.telemetry_of(site.get(1).unwrap().as_ref());
+        assert_eq!(
+            bat.active_power_bounds.unwrap().to_string(),
+            "[-30000, 30000]"
+        );
+        let grid = site.telemetry_of(site.get(9).unwrap().as_ref());
+        assert!(grid.active_power_bounds.is_none());
     }
 }
