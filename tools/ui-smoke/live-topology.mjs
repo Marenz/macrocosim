@@ -2415,6 +2415,25 @@ check("e2e: the fallback forgets the stale selection", staleLanding?.stored === 
 check("e2e: the fallback leaves no history entry behind", staleLanding?.history === historyBefore + 1, JSON.stringify({ historyBefore, staleLanding }));
 check("e2e: the fallback says why", await page.evaluate(() => [...document.querySelectorAll(".toast")].some((t) => /424242/.test(t.textContent))), "no toast naming the microgrid");
 
+// ── e2e: compact density ───────────────────────────────────────────
+// The pulse-bar chip turns compact density on: the pulse bar shrinks.
+// The checks from here on drive the Berlin demo's topology directly.
+async function openDemoTopology() {
+  await page.goto(`${BASE}/#microgrids/2200/topology`, { waitUntil: "networkidle" });
+  await waitFor(
+    async () => page.evaluate(async () => (await import("/assets/topology.js")).topology.debugNodeScreenRect(1) != null),
+    8000,
+  ).catch(() => null);
+}
+await openDemoTopology();
+const pulseHeight = () => page.evaluate(() => document.getElementById("pulse").getBoundingClientRect().height);
+const roomyPulse = await pulseHeight();
+await page.click("#density-toggle");
+const compactPulse = await pulseHeight();
+await page.click("#density-toggle");
+check("e2e: compact density shrinks the pulse bar", compactPulse < roomyPulse, JSON.stringify({ roomyPulse, compactPulse }));
+check("e2e: the density chip turns compact off again", (await pulseHeight()) === roomyPulse);
+
 // ── e2e: charts without uPlot ─────────────────────────────────────
 // uPlot is a classic <script>, not a module: when it does not load
 // (a blocked asset, a bad vendor bump, its own load-time throw on an

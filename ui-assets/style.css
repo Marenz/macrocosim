@@ -2268,20 +2268,20 @@ pre {
 }
 
 /* ─── Compact density ─────────────────────────────────────────────────────
-   `body.compact` class — toggled via the pulse-bar density chip and
-   localStorage-persisted. The 32" 4K target keeps the default layout
-   roomy; compact mode is for power users on long soak runs who want
-   more rows on screen at once. CSS-only — every pane responds via
-   class-scoped overrides below. */
+   `body[data-density="compact"]`, set by the pulse-bar density chip
+   (routing.js) and localStorage-persisted. The 32" 4K target keeps the
+   default layout roomy; compact mode is for power users on long soak
+   runs who want more rows on screen at once. CSS-only: the pulse bar
+   and the Dispatches pane respond via the scoped overrides below. */
 
-body.compact #pulse {
+body[data-density="compact"] #pulse {
   height: 22px;
   padding: 2px 8px;
   font-size: 13px;
 }
-body.compact #pulse-spark { width: 64px; height: 12px; }
+body[data-density="compact"] #pulse-spark { width: 64px; height: 12px; }
 /* Re-tighten the main grid since the pulse bar shrank 6 px. */
-body.compact main { height: calc(100vh - 41px - 22px); }
+body[data-density="compact"] main { height: calc(100vh - 41px - 22px); }
 
 /* ─── Dispatches (per-microgrid) ─────────────────────────────────────────
    Read-only table of dispatches the dispatch API holds for the selected
@@ -2343,7 +2343,7 @@ body.compact main { height: calc(100vh - 41px - 22px); }
 .disp-on  { color: var(--good); }
 .disp-off { color: var(--muted); }
 .disp-dry { color: var(--warn); }
-body.compact #dispatches { padding: 8px; }
+body[data-density="compact"] #dispatches { padding: 8px; }
 
 .disp-actions { white-space: nowrap; }
 .disp-actions .link-btn { margin-right: 8px; }
