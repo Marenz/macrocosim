@@ -1595,6 +1595,7 @@ mod tests {
             ev_presets::test_car,
             inverter::{BatteryInverter, SolarInverter},
         };
+        use crate::timeout_tracker::SetpointAxis;
 
         let w = MicrogridSite::new();
         let sec = Duration::from_secs(1);
@@ -1616,9 +1617,13 @@ mod tests {
         // let the PV free-run from default sunlight, then tick. The
         // charger only draws with a car plugged in, and only above the
         // 6 A per-phase floor — 11 kW on three phases is 16 A.
-        w.get(3).unwrap().set_active_setpoint(5_000.0).unwrap();
+        w.gateway()
+            .command(3, SetpointAxis::Active, 5_000.0)
+            .unwrap();
         w.get(2).unwrap().plug_ev(test_car("van", None)).unwrap();
-        w.get(2).unwrap().set_active_setpoint(11_000.0).unwrap();
+        w.gateway()
+            .command(2, SetpointAxis::Active, 11_000.0)
+            .unwrap();
         let mut now = Utc::now();
         for _ in 0..30 {
             now += chrono::Duration::milliseconds(100);
@@ -1790,12 +1795,12 @@ mod tests {
     }
 
     /// Two meters can list the same inverter as a successor and both
-    /// edges land in the connections graph (a parallel-meter
-    /// setup). `aggregate_child_bounds` from either parent finds its
-    /// own children independently — no double-counting at the bounds
-    /// layer.
+    /// edges land in the connections graph (a parallel-meter setup).
+    /// `child_envelope` from either parent finds its own children
+    /// independently — no double-counting at the bounds layer.
     #[test]
     fn shared_child_under_two_parents() {
+        use crate::timeout_tracker::SetpointAxis;
         let w = MicrogridSite::new();
         w.connect(2, 100);
         w.connect(3, 100);
@@ -1804,10 +1809,18 @@ mod tests {
         assert!(conns.contains(&(2, 100)));
         assert!(conns.contains(&(3, 100)));
         // No registered component for id 100 in this lightweight
-        // test, so aggregate_child_bounds returns None — we're
-        // checking the connection-graph shape, not the bounds math.
-        assert!(w.aggregate_child_bounds(2).is_none());
-        assert!(w.aggregate_child_bounds(3).is_none());
+        // test, so child_envelope returns None — we're checking the
+        // connection-graph shape, not the bounds math.
+        assert!(
+            w.gateway()
+                .child_envelope(2, SetpointAxis::Active)
+                .is_none()
+        );
+        assert!(
+            w.gateway()
+                .child_envelope(3, SetpointAxis::Active)
+                .is_none()
+        );
     }
 
     /// A registered child shared by two parents contributes HALF its
@@ -1817,6 +1830,7 @@ mod tests {
     #[test]
     fn shared_child_bounds_are_split_across_parents() {
         use crate::sim::{Battery, battery::BatteryConfig};
+        use crate::timeout_tracker::SetpointAxis;
         let w = MicrogridSite::new();
         w.register(Battery::new(
             100,
@@ -1825,13 +1839,13 @@ mod tests {
         ));
         w.connect(2, 100);
         w.connect(3, 100);
-        let full = w.get(100).unwrap().effective_active_bounds().unwrap();
-        let gate = w.aggregate_child_bounds(2).unwrap();
+        let full = w.bounds_of(100, SetpointAxis::Active).unwrap();
+        let gate = w.gateway().child_envelope(2, SetpointAxis::Active).unwrap();
         assert_eq!(gate.0.len(), 1);
         assert!((gate.0[0].lower.unwrap() - full.0[0].lower.unwrap() / 2.0).abs() < 1e-3);
         assert!((gate.0[0].upper.unwrap() - full.0[0].upper.unwrap() / 2.0).abs() < 1e-3);
         // The other parent sees the same halved envelope.
-        let gate3 = w.aggregate_child_bounds(3).unwrap();
+        let gate3 = w.gateway().child_envelope(3, SetpointAxis::Active).unwrap();
         assert_eq!(gate3.0[0].lower, gate.0[0].lower);
     }
 
@@ -1844,6 +1858,7 @@ mod tests {
             inverter::{SolarInverter, solar_inverter::SolarInverterConfig},
             reactive::ReactiveCapability,
         };
+        use crate::timeout_tracker::SetpointAxis;
         let w = MicrogridSite::new();
         w.register(SolarInverter::new(
             100,
@@ -1863,12 +1878,15 @@ mod tests {
         ));
         w.connect(2, 100);
         w.connect(3, 100);
-        let full = w.get(100).unwrap().reactive_bounds().unwrap();
+        let full = w.bounds_of(100, SetpointAxis::Reactive).unwrap();
         assert!(
             full.0[0].upper.unwrap() > 999.0,
             "the child's own Q band must be nonzero for this test, got {full}"
         );
-        let gate = w.aggregate_child_reactive_bounds(2).unwrap();
+        let gate = w
+            .gateway()
+            .child_envelope(2, SetpointAxis::Reactive)
+            .unwrap();
         assert_eq!(gate.0.len(), 1);
         assert!((gate.0[0].lower.unwrap() - full.0[0].lower.unwrap() / 2.0).abs() < 1e-3);
         assert!((gate.0[0].upper.unwrap() - full.0[0].upper.unwrap() / 2.0).abs() < 1e-3);

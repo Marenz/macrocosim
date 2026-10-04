@@ -1296,10 +1296,10 @@ mod tests {
         // zero so the next tick promotes it. Ramp default is
         // infinity so the actual jumps straight to the target,
         // floored at min_avail.
-        inv.set_active_setpoint(-5000.0)
+        site.gateway()
+            .command(11, crate::timeout_tracker::SetpointAxis::Active, -5000.0)
             .expect("setpoint within rated");
-        let now = chrono::Utc::now();
-        inv.tick(&site, now, Duration::from_millis(100));
+        site.tick_n(3, Duration::from_millis(100));
         let p = inv
             .telemetry(&site)
             .active_power_w
@@ -1328,10 +1328,10 @@ mod tests {
         // Demand the full AC rating; ramp is infinite by default so
         // the actual jumps straight to whatever the array/sun clamp
         // allows.
-        inv.set_active_setpoint(-10_000.0)
+        site.gateway()
+            .command(12, crate::timeout_tracker::SetpointAxis::Active, -10_000.0)
             .expect("setpoint within rated");
-        let now = chrono::Utc::now();
-        inv.tick(&site, now, Duration::from_millis(100));
+        site.tick_n(3, Duration::from_millis(100));
         let p = inv
             .telemetry(&site)
             .active_power_w

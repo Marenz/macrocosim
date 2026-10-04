@@ -638,7 +638,7 @@ mod tests {
         assert_eq!(q_sample.bounds[0].upper, Some(0.0));
     }
 
-    fn ev_states(w: &MicrogridSite, ev: &EvCharger) -> Vec<i32> {
+    fn ev_states(w: &MicrogridSite, ev: &dyn crate::sim::SimulatedComponent) -> Vec<i32> {
         let t = ev.telemetry(w);
         telemetry_to_proto(ev, &t, None, 0)
             .telemetry
@@ -667,13 +667,14 @@ mod tests {
         use crate::proto::common::microgrid::electrical_components::ElectricalComponentStateCode as C;
         use crate::sim::{ev_charger::instant, ev_presets::test_car};
         let w = MicrogridSite::new();
-        let ev = EvCharger::new(1, Duration::from_secs(1), instant());
+        w.register(EvCharger::new(1, Duration::from_secs(1), instant()));
+        let ev = w.get(1).unwrap();
         ev.plug_ev(test_car("sedan", None)).unwrap();
-        ev.set_active_setpoint(22_000.0).unwrap();
-        for _ in 0..2 {
-            ev.tick(&w, chrono::Utc::now(), Duration::from_secs(1));
-        }
-        let states = ev_states(&w, &ev);
+        w.gateway()
+            .command(1, crate::timeout_tracker::SetpointAxis::Active, 22_000.0)
+            .unwrap();
+        w.tick_n(2, Duration::from_secs(1));
+        let states = ev_states(&w, ev.as_ref());
         assert!(states.contains(&(C::Charging as i32)), "{states:?}");
         assert!(
             states.contains(&(C::EvChargingCableLockedAtEv as i32)),
@@ -688,7 +689,7 @@ mod tests {
             t.soc_pct.is_some(),
             "internal telemetry keeps the SoC for the UI"
         );
-        let metrics: Vec<i32> = telemetry_to_proto(&ev, &t, None, 0)
+        let metrics: Vec<i32> = telemetry_to_proto(ev.as_ref(), &t, None, 0)
             .telemetry
             .unwrap()
             .metric_samples

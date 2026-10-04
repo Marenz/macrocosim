@@ -158,7 +158,7 @@ impl MicrogridSite {
     /// and an effective-bounds file for each component that reports an
     /// active-power envelope (the ones a control app commands), plus
     /// an effective-reactive-bounds file for each component that
-    /// reports a Q envelope (`reactive_bounds().is_some()` — a
+    /// reports a Q envelope (`bounds_of(id, Reactive)` is `Some` — a
     /// different set: an inverter has one, the battery behind it
     /// doesn't). Returns the total file count opened. Existing sinks
     /// are dropped first so a re-call replaces (rather than appends
@@ -172,11 +172,17 @@ impl MicrogridSite {
         let mut reactive_bounds = CsvSinks::new();
         for c in components.iter() {
             telemetry.insert(c.id(), CsvSink::open(dir, c.id(), c.category())?);
-            if c.effective_active_bounds().is_some() {
+            if self
+                .bounds_of(c.id(), crate::timeout_tracker::SetpointAxis::Active)
+                .is_some()
+            {
                 setpoints.insert(c.id(), CsvSink::open_setpoints(dir, c.id())?);
                 bounds.insert(c.id(), CsvSink::open_bounds(dir, c.id())?);
             }
-            if c.reactive_bounds().is_some() {
+            if self
+                .bounds_of(c.id(), crate::timeout_tracker::SetpointAxis::Reactive)
+                .is_some()
+            {
                 reactive_bounds.insert(c.id(), CsvSink::open_reactive_bounds(dir, c.id())?);
             }
         }

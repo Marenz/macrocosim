@@ -154,10 +154,14 @@ async fn driver_run_aggregates_peak_charge_and_soc_stats() {
     }
 
     // Drive the simulation deterministically: tick + snapshot at
-    // explicit timestamps. 10 sim-seconds at +3600 W = 10 Wh
-    // charged into the battery.
+    // explicit timestamps. 10 sim-seconds at +3600 W = 10 Wh charged
+    // into the battery. Two short ticks carry the command across the
+    // gateway and device delays before the measured window starts.
     let mut now = chrono::Utc::now();
-    s.config.site().tick_once(now, Duration::from_millis(100));
+    for _ in 0..2 {
+        now += chrono::Duration::milliseconds(100);
+        s.config.site().tick_once(now, Duration::from_millis(100));
+    }
     s.config.site().record_history_snapshot(now);
     now += chrono::Duration::seconds(10);
     s.config.site().tick_once(now, Duration::from_secs(10));

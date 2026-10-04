@@ -1,6 +1,6 @@
-//! TimeoutTracker integration test. A setpoint with a short
-//! request-lifetime expires; the timeout loop calls reset_setpoint
-//! on the component and the ramp slews back to idle.
+//! TimeoutTracker integration test. A setpoint with a short request
+//! lifetime runs out; the gateway's physics step expires it and the
+//! ramp slews back to idle.
 
 mod common;
 
@@ -39,27 +39,33 @@ async fn short_lifetime_setpoint_resets_after_expiry() {
         .unwrap();
     assert!(r.status().is_success(), "set-active-power eval failed");
 
-    // Step 1: confirm the setpoint took effect by ticking once and
-    // reading active power back from the inverter's telemetry.
+    // Step 1: confirm the setpoint took effect. The command crosses
+    // the gateway and device delays, so poll against a deadline.
     let inv = s.config.site().get(200).unwrap();
-    s.config
-        .site()
-        .tick_once(chrono::Utc::now(), Duration::from_millis(100));
-    let p_before = inv
-        .telemetry(&s.config.site())
-        .active_power_w
-        .expect("active power present");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let p_before = loop {
+        s.config
+            .site()
+            .tick_once(chrono::Utc::now(), Duration::from_millis(100));
+        let p = inv
+            .telemetry(&s.config.site())
+            .active_power_w
+            .expect("active power present");
+        if (p - 3000.0).abs() < 1.0 || tokio::time::Instant::now() >= deadline {
+            break p;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     assert!(
         (p_before - 3000.0).abs() < 1.0,
         "expected 3000 W after setpoint, got {p_before}",
     );
 
-    // Step 2+3: wait for the timeout loop (100 ms poll cadence) to
-    // drain the expired entry and reset the setpoint, then tick so
-    // the ramp lands at 0. Polling with a deadline instead of one
-    // fixed sleep keeps a stalled CI machine from failing the test
-    // spuriously. With infinite default ramp-rate, one tick after
-    // the reset is enough.
+    // Step 2+3: wait for the gateway's physics step to expire the
+    // entry and reset the setpoint, then tick so the ramp lands at 0.
+    // Polling with a deadline instead of one fixed sleep keeps a
+    // stalled CI machine from failing the test spuriously. With
+    // infinite default ramp-rate, one tick after the reset is enough.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let p_after = loop {
         tokio::time::sleep(Duration::from_millis(50)).await;

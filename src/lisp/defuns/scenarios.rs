@@ -506,7 +506,9 @@ pub(super) fn register_lifecycle(
                     e.map(|v| v as f32),
                 )
             } else {
-                let v = w.get(id).and_then(|c| c.telemetry(&w).metric_value(metric));
+                let v = w
+                    .get(id)
+                    .and_then(|c| w.telemetry_of(c.as_ref()).metric_value(metric));
                 (v.is_some_and(|v| expectation.passes(v as f64)), v)
             };
             w.scenario_record_check(ScenarioCheck {
@@ -1237,11 +1239,15 @@ mod tests {
         cfg.eval("(scenario-start \"integrate\")").unwrap();
         // Push a charge setpoint of +3600 W for 10 sim-seconds.
         cfg.eval("(set-active-power 200 3600.0 60000)").unwrap();
-        // Advance physics enough to settle the ramp; default ramp
-        // is infinity so one tick is enough.
+        // Two short ticks carry the command across the gateway and
+        // device delays; default ramp is infinity, so that settles
+        // it.
         let mut now = Utc::now();
-        cfg.site()
-            .tick_once(now, std::time::Duration::from_millis(100));
+        for _ in 0..2 {
+            now += ChronoDuration::milliseconds(100);
+            cfg.site()
+                .tick_once(now, std::time::Duration::from_millis(100));
+        }
         // Snapshot pass at t0 — first one just seeds the cursor
         // (dt from start is small but non-zero — ignore the result).
         cfg.site().record_history_snapshot(now);
@@ -1261,8 +1267,11 @@ mod tests {
 
         // Now flip to discharging.
         cfg.eval("(set-active-power 200 -7200.0 60000)").unwrap();
-        cfg.site()
-            .tick_once(now, std::time::Duration::from_millis(100));
+        for _ in 0..2 {
+            now += ChronoDuration::milliseconds(100);
+            cfg.site()
+                .tick_once(now, std::time::Duration::from_millis(100));
+        }
         now += ChronoDuration::seconds(5);
         cfg.site().tick_once(now, std::time::Duration::from_secs(5));
         cfg.site().record_history_snapshot(now);

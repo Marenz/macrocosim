@@ -660,9 +660,11 @@ mod tests {
         let inv = cfg.site().get(8).unwrap();
         // Issue a setpoint below sunlight-derated min_avail so the
         // ramp clips — observable through telemetry's active_power.
-        inv.set_active_setpoint(-5000.0).expect("within rated");
         cfg.site()
-            .tick_once(chrono::Utc::now(), std::time::Duration::from_millis(100));
+            .gateway()
+            .command(8, crate::timeout_tracker::SetpointAxis::Active, -5000.0)
+            .expect("within rated");
+        cfg.site().tick_n(3, std::time::Duration::from_millis(100));
         let p = inv
             .telemetry(&cfg.site())
             .active_power_w
@@ -690,9 +692,11 @@ mod tests {
         // The 25 % still stands: a setpoint past its floor clips to
         // 25 % of -8000 W.
         let inv = cfg.site().get(8).unwrap();
-        inv.set_active_setpoint(-5000.0).expect("within rated");
         cfg.site()
-            .tick_once(chrono::Utc::now(), std::time::Duration::from_millis(100));
+            .gateway()
+            .command(8, crate::timeout_tracker::SetpointAxis::Active, -5000.0)
+            .expect("within rated");
+        cfg.site().tick_n(3, std::time::Duration::from_millis(100));
         let p = inv.telemetry(&cfg.site()).active_power_w.unwrap();
         assert!((p - (-2000.0)).abs() < 1.0, "expected -2000 W, got {p}");
     }

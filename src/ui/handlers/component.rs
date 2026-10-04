@@ -192,7 +192,8 @@ fn setpoints_for(site: &crate::sim::MicrogridSite, id: u64) -> Vec<ActiveSetpoin
             axis,
             value: ev.value,
             remaining_ms: site
-                .setpoint_remaining(id, timeout_axis)
+                .gateway()
+                .remaining_lifetime(id, timeout_axis)
                 .map(|d| d.as_millis() as u64),
         })
     })
@@ -217,35 +218,20 @@ fn component_state(
         .get(id)
         .ok_or((StatusCode::NOT_FOUND, format!("component {id} not found")))?;
 
-    let now = Utc::now();
     Ok(ComponentStateResponse {
         id,
         knobs: knobs_for(c.as_ref()),
         setpoints: setpoints_for(site, id),
         augmented: AxisFlags {
-            active: c.augmentation_active(SetpointAxis::Active, now),
-            reactive: c.augmentation_active(SetpointAxis::Reactive, now),
+            active: site.gateway().augmented(id, SetpointAxis::Active),
+            reactive: site.gateway().augmented(id, SetpointAxis::Reactive),
         },
         envelope: Envelope {
-            // The gateway's setpoint envelope is `None` whenever no
-            // CHILD exposes bounds on that axis (see
-            // `MicrogridSite::{active,reactive}_setpoint_envelope`) —
-            // for reactive power that's the common case, since Q
-            // terminates at the inverter and its battery children
-            // never report a Q band. Falling back to the component's
-            // OWN bounds keeps the inspector's graduation fed from
-            // the same window the WS stream already draws, instead
-            // of clobbering it to null on every snapshot re-fetch
-            // (every accepted setpoint, once a second under a
-            // control loop).
-            active: envelope_tuple(
-                site.active_setpoint_envelope(id)
-                    .or_else(|| c.effective_active_bounds()),
-            ),
-            reactive: envelope_tuple(
-                site.reactive_setpoint_envelope(id)
-                    .or_else(|| c.reactive_bounds()),
-            ),
+            // The gateway's setpoint envelope: own bounds ∩ the
+            // children's, or own bounds alone when no child reports
+            // any (the common case for Q, which ends at the inverter).
+            active: envelope_tuple(site.gateway().setpoint_envelope(id, SetpointAxis::Active)),
+            reactive: envelope_tuple(site.gateway().setpoint_envelope(id, SetpointAxis::Reactive)),
         },
         pressure_target_bar: c.pressure_target_bar(),
     })

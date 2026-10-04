@@ -2,12 +2,14 @@
 //!
 //! A scenario can already *perturb* the world (`set-meter-power`,
 //! `set-solar-sunlight`, …) and *actuate* a component
-//! (`set-active-power`), but until now it couldn't *sense* live state,
-//! so a scripted controller had to command blindly. These getters close
-//! that gap: a controller reads a component's current active power and
-//! its effective active-power bounds — rated ∩ live augmentations, i.e.
-//! exactly what a real EMS reads off the telemetry stream, including any
-//! cap a bounds-driving app has applied.
+//! (`set-active-power`), but until now it couldn't *sense* live
+//! state, so a scripted controller had to command blindly. These
+//! getters close that gap: a controller reads a component's current
+//! active power and the bounds the gateway reports (`site.bounds_of`)
+//! — rated ∩ live augmentations for an inverter, the SoC-throttled
+//! window for a battery — i.e. exactly what a real EMS reads off the
+//! telemetry stream, including any cap a bounds-driving app has
+//! applied.
 //!
 //! Paired with `(set-active-power … CLAMP)` and scheduled by `(every …)`
 //! / `(define-controller …)`, these turn the sim genuinely closed-loop.
@@ -15,6 +17,7 @@
 use tulisp::{Error, TulispContext};
 
 use crate::sim::microgrids::SharedSiteRouter;
+use crate::timeout_tracker::SetpointAxis;
 
 enum Edge {
     Lower,
@@ -25,14 +28,18 @@ enum Edge {
 /// bounds on the requested side, in watts.
 fn bound_edge(router: &SharedSiteRouter, id: i64, edge: Edge) -> Result<f64, Error> {
     let w = router.site();
-    let c = w.get(id as u64).ok_or_else(|| {
-        Error::invalid_argument(format!("component-bound: component {id} not found"))
-    })?;
-    let bounds = c.effective_active_bounds().ok_or_else(|| {
-        Error::invalid_argument(format!(
-            "component-bound: component {id} has no active bounds"
-        ))
-    })?;
+    if w.get(id as u64).is_none() {
+        return Err(Error::invalid_argument(format!(
+            "component-bound: component {id} not found"
+        )));
+    }
+    let bounds = w
+        .bounds_of(id as u64, SetpointAxis::Active)
+        .ok_or_else(|| {
+            Error::invalid_argument(format!(
+                "component-bound: component {id} has no active bounds"
+            ))
+        })?;
     let value = match edge {
         Edge::Lower => bounds.0.iter().filter_map(|b| b.lower).reduce(f32::min),
         Edge::Upper => bounds.0.iter().filter_map(|b| b.upper).reduce(f32::max),
@@ -53,16 +60,18 @@ fn bound_edge(router: &SharedSiteRouter, id: i64, edge: Edge) -> Result<f64, Err
 /// missing bounds.
 fn reactive_bound_edge(router: &SharedSiteRouter, id: i64, edge: Edge) -> Result<f64, Error> {
     let w = router.site();
-    let c = w.get(id as u64).ok_or_else(|| {
-        Error::invalid_argument(format!(
+    if w.get(id as u64).is_none() {
+        return Err(Error::invalid_argument(format!(
             "component-reactive-bound: component {id} not found"
-        ))
-    })?;
-    let bounds = c.reactive_bounds().ok_or_else(|| {
-        Error::invalid_argument(format!(
-            "component-reactive-bound: component {id} has no reactive envelope"
-        ))
-    })?;
+        )));
+    }
+    let bounds = w
+        .bounds_of(id as u64, SetpointAxis::Reactive)
+        .ok_or_else(|| {
+            Error::invalid_argument(format!(
+                "component-reactive-bound: component {id} has no reactive envelope"
+            ))
+        })?;
     let value = match edge {
         Edge::Lower => bounds.0.iter().filter_map(|b| b.lower).reduce(f32::min),
         Edge::Upper => bounds.0.iter().filter_map(|b| b.upper).reduce(f32::max),
@@ -154,10 +163,11 @@ mod tests {
         assert!((edge(&cfg, "(component-bound-lower 2)") + 4000.0).abs() < 1.0);
         // A bounds-driving app narrows the inverter to [-4 kW, +1 kW].
         cfg.site()
-            .get(2)
-            .unwrap()
-            .try_augment_active_bounds(
-                Utc::now(),
+            .gateway()
+            .augment(
+                2,
+                cfg.site().run_generation(),
+                crate::timeout_tracker::SetpointAxis::Active,
                 VecBounds::single(-4000.0, 1000.0),
                 Duration::from_secs(60),
             )
@@ -173,9 +183,7 @@ mod tests {
         let (cfg, _dir) = rig();
         cfg.eval("(set-active-power 2 2000.0 30000)").unwrap();
         let site = cfg.site();
-        site.get(2)
-            .unwrap()
-            .tick(&site, Utc::now(), Duration::from_millis(100));
+        site.tick_n(3, Duration::from_millis(100));
         let p: f64 = cfg
             .eval("(component-active-power 2)")
             .unwrap()
@@ -204,9 +212,7 @@ mod tests {
         // reads back the live value, mirroring the active-power test above.
         cfg.eval("(set-reactive-power 2 1500.0 30000)").unwrap();
         let site = cfg.site();
-        site.get(2)
-            .unwrap()
-            .tick(&site, Utc::now(), Duration::from_millis(100));
+        site.tick_n(3, Duration::from_millis(100));
         let q: f64 = cfg
             .eval("(component-reactive-power 2)")
             .unwrap()
@@ -252,25 +258,31 @@ mod tests {
                                        :reactive-ramp-rate 1e9
                                        :successors (list b1))",
         );
-        let inv = cfg.site().get(2).unwrap();
         // ±5 kVAr caps ∩ {[-2 kVAr, -0.5 kVAr], [0.5 kVAr, 2 kVAr]}
         // leaves two disjoint bands around a dead zone at zero.
-        inv.try_augment_reactive_bounds(
-            Utc::now(),
-            VecBounds(vec![
-                crate::proto::common::metrics::Bounds {
-                    lower: Some(-2000.0),
-                    upper: Some(-500.0),
-                },
-                crate::proto::common::metrics::Bounds {
-                    lower: Some(500.0),
-                    upper: Some(2000.0),
-                },
-            ]),
-            Duration::from_secs(60),
-        )
-        .unwrap();
-        let bands = inv.reactive_bounds().expect("the inverter publishes Q");
+        cfg.site()
+            .gateway()
+            .augment(
+                2,
+                cfg.site().run_generation(),
+                crate::timeout_tracker::SetpointAxis::Reactive,
+                VecBounds(vec![
+                    crate::proto::common::metrics::Bounds {
+                        lower: Some(-2000.0),
+                        upper: Some(-500.0),
+                    },
+                    crate::proto::common::metrics::Bounds {
+                        lower: Some(500.0),
+                        upper: Some(2000.0),
+                    },
+                ]),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        let bands = cfg
+            .site()
+            .bounds_of(2, crate::timeout_tracker::SetpointAxis::Reactive)
+            .expect("the inverter publishes Q");
         assert_eq!(bands.0.len(), 2, "expected two bands, got {bands}");
 
         let edge = |expr: &str| -> f64 { cfg.eval(expr).unwrap().parse().unwrap() };
@@ -297,21 +309,66 @@ mod tests {
         // One controller step: charge at whatever the upper bound allows.
         let step = "(set-active-power 2 (component-bound-upper 2) 30000 t)";
         cfg.eval(step).unwrap();
-        inv.tick(&site, Utc::now(), Duration::from_millis(100));
+        site.tick_n(3, Duration::from_millis(100));
         assert!((inv.aggregate_power_w(&site) - 4000.0).abs() < 1.0);
         // Cap drops to +1 kW; the next controller step tracks it.
-        inv.try_augment_active_bounds(
-            Utc::now(),
-            VecBounds::single(-4000.0, 1000.0),
-            Duration::from_secs(60),
-        )
-        .unwrap();
+        cfg.site()
+            .gateway()
+            .augment(
+                2,
+                cfg.site().run_generation(),
+                crate::timeout_tracker::SetpointAxis::Active,
+                VecBounds::single(-4000.0, 1000.0),
+                Duration::from_secs(60),
+            )
+            .unwrap();
         cfg.eval(step).unwrap();
-        inv.tick(&site, Utc::now(), Duration::from_millis(100));
+        site.tick_n(3, Duration::from_millis(100));
         let p = inv.aggregate_power_w(&site);
         assert!(
             (p - 1000.0).abs() < 1.0,
             "controller should track +1 kW cap, got {p}"
         );
+    }
+
+    /// The history ring, the Lisp bound queries and the telemetry
+    /// overlay read one source: an augmented inverter reports the
+    /// same upper edge through all three.
+    #[test]
+    fn history_and_lisp_bounds_agree_with_telemetry() {
+        use crate::sim::history::Metric;
+        use crate::timeout_tracker::SetpointAxis;
+        let (cfg, _dir) = rig();
+        let site = cfg.site();
+        site.gateway()
+            .augment(
+                2,
+                site.run_generation(),
+                SetpointAxis::Active,
+                VecBounds::single(-4000.0, 1500.0),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        let now = Utc::now();
+        site.record_history_snapshot(now);
+        let telemetry = site
+            .telemetry_of(site.get(2).unwrap().as_ref())
+            .active_power_bounds
+            .unwrap();
+        let history = site
+            .history_window(
+                2,
+                Metric::ActivePowerUpperBoundW,
+                now - chrono::Duration::seconds(1),
+            )
+            .unwrap();
+        let lisp: f64 = cfg
+            .eval("(component-bound-upper 2)")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(telemetry.0[0].upper, Some(1500.0));
+        assert_eq!(history.last().unwrap().value, 1500.0);
+        assert!((lisp - 1500.0).abs() < 1e-3);
     }
 }
