@@ -214,6 +214,7 @@ impl Config {
         // belt-and-suspenders — but a fresh subscriber spinning up
         // mid-burst still benefits from the extra slack.
         let microgrid_registered = Arc::new(broadcast::channel(1024).0);
+        let port_pins = crate::sim::microgrids::new_port_pins();
         // Enterprise-wide grid frequency state — one OU process drives
         // every MicrogridSite in the registry so they share the
         // physically-correct same frequency. The driver task is
@@ -274,6 +275,7 @@ impl Config {
             grid_frequency.clone(),
             loading.clone(),
             metadata.clone(),
+            port_pins.clone(),
         );
         defuns::register_frequency(&mut ctx, grid_frequency.clone());
 
@@ -361,6 +363,7 @@ impl Config {
             timer_handle: timer_handle.clone(),
             now,
             sim_clock,
+            port_pins,
         };
 
         // Enterprise-wide state (enterprise id, timezone, socket

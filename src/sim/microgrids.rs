@@ -72,6 +72,23 @@ pub struct MicrogridEntry {
     pub unsaved: bool,
 }
 
+/// Whether a microgrid's gRPC port is held by its runtime (starting,
+/// or bound at least once). Installed by `MicrogridRuntimes`; absent
+/// means nothing is pinned.
+pub type PortPinCheck = Arc<dyn Fn(u64) -> bool + Send + Sync>;
+/// The slot `Config` holds for the [`PortPinCheck`], set at most
+/// once.
+pub type PortPins = Arc<std::sync::OnceLock<PortPinCheck>>;
+
+pub fn new_port_pins() -> PortPins {
+    Arc::new(std::sync::OnceLock::new())
+}
+
+/// Ask the installed check; `false` when none is installed.
+pub fn port_pinned(pins: &PortPins, id: u64) -> bool {
+    pins.get().is_some_and(|check| check(id))
+}
+
 pub type SharedMicrogrids = Arc<Mutex<BTreeMap<u64, MicrogridEntry>>>;
 
 pub fn new_registry() -> SharedMicrogrids {

@@ -317,6 +317,10 @@ pub struct Config {
     /// the timer queue and `now`. `None` for a live `Config`, whose
     /// timers run on the wall clock and whose background loops tick it.
     pub(crate) sim_clock: Option<Arc<tulisp_async::ManualClock>>,
+    /// The check `make-microgrid` asks before adopting a changed
+    /// `:grpc-port` on a reload. See
+    /// [`crate::sim::microgrids::PortPins`].
+    pub(crate) port_pins: crate::sim::microgrids::PortPins,
 }
 
 impl Config {
@@ -360,6 +364,15 @@ impl Config {
     /// globally-unique component-id space as boot-time ones.
     pub fn enterprise_id_allocator(&self) -> Arc<std::sync::atomic::AtomicU64> {
         self.enterprise_id_allocator.clone()
+    }
+
+    pub fn port_pins(&self) -> crate::sim::microgrids::PortPins {
+        self.port_pins.clone()
+    }
+
+    /// A headless `Config` is stepped by `sim_step` on its own clock.
+    pub fn is_headless(&self) -> bool {
+        self.sim_clock.is_some()
     }
 
     /// Publish a `microgrid_registered` notification. Called by the

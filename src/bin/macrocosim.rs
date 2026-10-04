@@ -293,7 +293,7 @@ async fn main() {
     // endpoint (which only notifies; see handlers/microgrids.rs) —
     // broadcasts on the registered channel, and this listener boots
     // the same runtime set the boot loop below gives boot-time
-    // entries. Reused (reload) registrations don't notify and the
+    // entries. Reused (reload) registrations notify too and the
     // `spawned` set drops duplicates, so no path double-boots a
     // runtime.
     {

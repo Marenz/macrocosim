@@ -53,6 +53,7 @@ pub(in crate::lisp) fn register(
     grid_frequency: crate::sim::frequency::SharedFrequency,
     loading: crate::sim::microgrids::LoadingSlot,
     metadata: Arc<parking_lot::RwLock<crate::lisp::Metadata>>,
+    port_pins: crate::sim::microgrids::PortPins,
 ) {
     // `(current-source-file)` — the file whose load is in flight, or
     // nil outside a load (a REPL eval). Scripts use it to resolve
@@ -192,9 +193,9 @@ pub(in crate::lisp) fn register(
             // handle, and minting a fresh one would orphan every
             // runtime (the old site would keep ticking and serving
             // gRPC while the registry acts on a site that never
-            // ticks). Name / tso update live; the gRPC port is pinned
-            // by the listening server, so a changed :grpc-port is
-            // kept as-is with a warning.
+            // ticks). Name / tso update live; the gRPC port is kept
+            // while its runtime holds it (see `port_pinned`);
+            // otherwise a changed :grpc-port is adopted.
             //
             // Any OTHER claimant — a second file, or a REPL form — is
             // a hard error naming the owner, because silently merging
@@ -205,6 +206,7 @@ pub(in crate::lisp) fn register(
             // reuse check, AND the insert — separate acquisitions let
             // a concurrent /api/microgrids/create hand out the same
             // id or port between our probe and our insert.
+            //
             // The assets and dispatch ports, read before the registry
             // lock so the two locks never nest.
             let reserved = crate::lisp::reserved_ports_of(&metadata.read());
@@ -246,16 +248,36 @@ pub(in crate::lisp) fn register(
                                 "microgrid {id} is already loaded ({owner})"
                             )));
                         }
-                        if let Some(p) = a.grpc_port
-                            && p as u16 != bound_port
-                        {
-                            log::warn!(
-                                "make-microgrid #{id}: :grpc-port {p} ignored — the running \
-                                 gRPC server is bound to :{bound_port} (restart to move it)"
-                            );
-                        }
+                        let grpc_port = match a.grpc_port {
+                            Some(p) if p as u16 != bound_port => {
+                                let p = p as u16;
+                                if crate::sim::microgrids::port_pinned(&port_pins, id) {
+                                    log::warn!(
+                                        "make-microgrid #{id}: :grpc-port {p} ignored — its \
+                                         gRPC server holds :{bound_port} (restart to move it)"
+                                    );
+                                    bound_port
+                                } else if let Some((other, _)) = reg
+                                    .iter()
+                                    .find(|(oid, e)| **oid != id && e.def.grpc_port == p)
+                                {
+                                    return Err(tulisp::Error::invalid_argument(format!(
+                                        "make-microgrid #{id}: :grpc-port {p} is already \
+                                         bound by microgrid {other}"
+                                    )));
+                                } else if reserved.contains(&p) {
+                                    return Err(tulisp::Error::invalid_argument(format!(
+                                        "make-microgrid #{id}: :grpc-port {p} is reserved \
+                                         for the assets or dispatch server"
+                                    )));
+                                } else {
+                                    p
+                                }
+                            }
+                            Some(_) | None => bound_port,
+                        };
                         site.reset();
-                        (bound_port, site, true)
+                        (grpc_port, site, true)
                     }
                     None => {
                         let grpc_port = match a.grpc_port {
@@ -340,14 +362,10 @@ pub(in crate::lisp) fn register(
                 }
             }
             // Notify enterprise-wide subscribers (the WS event pump
-            // and the binary's runtime spawner) that a new microgrid
-            // landed. Reused entries skip this — their forwarders and
-            // runtimes already exist. send() returns Err when there
-            // are no live receivers — fine to ignore; it just means
-            // no UI session is open.
-            if !reused {
-                let _ = registered_tx.send(id);
-            }
+            // and the runtime listener). A reused registration is
+            // announced too, so a failed runtime gets another start;
+            // both subscribers ignore an id they already serve.
+            let _ = registered_tx.send(id);
             Ok(id as i64)
         },
     );
@@ -718,6 +736,81 @@ mod tests {
             e.site.get(1).is_some(),
             "grid-connection-point id=1 should be on the new site",
         );
+    }
+
+    /// A reload of its own file announces the microgrid again, so a
+    /// runtime that failed gets another start.
+    #[test]
+    fn a_reload_announces_the_microgrid_again() {
+        let (cfg, dir) =
+            config_with("(make-microgrid :id 31 :grpc-port 8931 :topology (lambda () nil))");
+        let mut rx = cfg.subscribe_microgrid_registered();
+        cfg.load_file(&dir.join("config.lisp")).unwrap();
+        assert_eq!(rx.try_recv().ok(), Some(31));
+    }
+
+    /// With no pin check installed (or one saying "not pinned"), a
+    /// reload adopts a changed :grpc-port.
+    #[test]
+    fn a_reload_adopts_a_new_port_when_not_pinned() {
+        let (cfg, dir) =
+            config_with("(make-microgrid :id 32 :grpc-port 8932 :topology (lambda () nil))");
+        let path = dir.join("config.lisp");
+        std::fs::write(
+            &path,
+            "(make-microgrid :id 32 :grpc-port 8942 :topology (lambda () nil))",
+        )
+        .unwrap();
+        cfg.load_file(&path).unwrap();
+        assert_eq!(cfg.microgrids().lock()[&32].def.grpc_port, 8942);
+    }
+
+    /// A reload cannot move a microgrid onto another microgrid's port
+    /// or a reserved one; the registry keeps the old port.
+    #[test]
+    fn a_reload_refuses_a_taken_or_reserved_port() {
+        let (cfg, dir) =
+            config_with("(make-microgrid :id 34 :grpc-port 8934 :topology (lambda () nil))");
+        let other = dir.join("other.lisp");
+        std::fs::write(
+            &other,
+            "(make-microgrid :id 35 :grpc-port 8935 :topology (lambda () nil))",
+        )
+        .unwrap();
+        cfg.load_file(&other).unwrap();
+        let path = dir.join("config.lisp");
+        let reserved = server_ports(&cfg).map(|p| (p, "reserved"));
+        for (port, words) in std::iter::once((8935, "already bound")).chain(reserved) {
+            std::fs::write(
+                &path,
+                format!("(make-microgrid :id 34 :grpc-port {port} :topology (lambda () nil))"),
+            )
+            .unwrap();
+            let err = format!("{:?}", cfg.load_file(&path).expect_err("must be refused"));
+            assert!(err.contains(words), "unexpected error: {err}");
+            assert_eq!(cfg.microgrids().lock()[&34].def.grpc_port, 8934);
+        }
+    }
+
+    /// When the pin check says pinned, the registry keeps the bound
+    /// port.
+    #[test]
+    fn a_reload_keeps_a_pinned_port() {
+        let (cfg, dir) =
+            config_with("(make-microgrid :id 33 :grpc-port 8933 :topology (lambda () nil))");
+        assert!(
+            cfg.port_pins()
+                .set(std::sync::Arc::new(|id| id == 33))
+                .is_ok()
+        );
+        let path = dir.join("config.lisp");
+        std::fs::write(
+            &path,
+            "(make-microgrid :id 33 :grpc-port 8943 :topology (lambda () nil))",
+        )
+        .unwrap();
+        cfg.load_file(&path).unwrap();
+        assert_eq!(cfg.microgrids().lock()[&33].def.grpc_port, 8933);
     }
 
     /// Re-running `(make-microgrid …)` for an id that's already
