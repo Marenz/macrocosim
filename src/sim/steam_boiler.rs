@@ -1,8 +1,9 @@
 //! Steam boiler — a hybrid gas/electric load. Electricity displaces
-//! (unmodelled) gas inside a per-tick dynamic band [0, need_w]; the
-//! implied gas burner holds pressure at the thermostat target, so
-//! pressure lives in [target, max]: above only via set-pressure /
-//! :initial-bar, decaying back at the steam-demand rate.
+//! (unmodelled) gas: the electric draw is the gateway's command, held
+//! by the heater inside a per-tick band [0, need_w]; the implied gas
+//! burner holds pressure at the thermostat target, so pressure lives
+//! in [target, max]: above only via set-pressure / :initial-bar,
+//! decaying back at the steam-demand rate.
 
 use std::{fmt, time::Duration};
 
@@ -10,13 +11,14 @@ use chrono::{DateTime, Utc};
 use parking_lot::{Mutex, RwLock};
 
 use crate::sim::{
-    AugmentError, Category, MicrogridSite, SetpointError, SimulatedComponent, Telemetry,
-    axis::{AxisConfig, IdleTarget, PowerAxis, StepCtx},
+    Category, MicrogridSite, SimulatedComponent, Telemetry,
     bounds::VecBounds,
-    component::{KnobKind, KnobSnapshot, ScalarReading},
+    component::{GatewaySettings, KnobKind, KnobSnapshot, ScalarReading},
+    device_axis::DeviceAxis,
     dynamic_scalar::DynamicScalar,
     runtime::Health,
 };
+use crate::timeout_tracker::SetpointAxis;
 
 #[derive(Clone, Debug)]
 pub struct SteamBoilerConfig {
@@ -36,6 +38,9 @@ pub struct SteamBoilerConfig {
     pub command_delay: Duration,
     pub ramp_rate_w_per_s: f32,
     pub stream_jitter_pct: f32,
+    /// Time a command takes to reach the heater once the boiler has
+    /// it; default 100 ms.
+    pub device_delay: Duration,
 }
 
 impl Default for SteamBoilerConfig {
@@ -53,6 +58,7 @@ impl Default for SteamBoilerConfig {
             command_delay: Duration::from_millis(500),
             ramp_rate_w_per_s: f32::INFINITY,
             stream_jitter_pct: 0.0,
+            device_delay: Duration::from_millis(100),
         }
     }
 }
@@ -67,17 +73,14 @@ pub struct SteamBoiler {
     /// numeric `:demand`) or a Lisp expression re-resolved each tick
     /// by `refresh_inputs`.
     demand_source: RwLock<DynamicScalar>,
-    /// Active (P) control path: rated band + TTL augmentations,
-    /// command delay, slew ramp. Its `published` slot is unused —
-    /// telemetry and aggregate_power_w both read `actual()`.
-    active: PowerAxis,
+    /// The electric heater: the command handed in through
+    /// `set_command`, delayed and held inside rated ∩ [0, need].
+    heater: DeviceAxis,
 }
 
 #[derive(Debug, Clone)]
 struct BoilerState {
     pressure_bar: f32,
-    /// Last tick's dynamic ceiling, for reported bounds.
-    effective_upper_w: f32,
 }
 
 impl SteamBoiler {
@@ -137,13 +140,7 @@ impl SteamBoiler {
             .initial_bar
             .unwrap_or(cfg.target_bar)
             .clamp(f32::MIN_POSITIVE, cfg.max_bar);
-        let active = PowerAxis::new(AxisConfig {
-            rated: Some((cfg.rated_lower_w, cfg.rated_upper_w)),
-            caps: None,
-            command_delay: cfg.command_delay,
-            ramp_rate_per_s: cfg.ramp_rate_w_per_s,
-            unit: "W",
-        });
+        let heater = DeviceAxis::new(cfg.device_delay, 0.0);
         let demand_kg_h = cfg.demand_kg_h;
         Self {
             id,
@@ -152,10 +149,9 @@ impl SteamBoiler {
             cfg,
             state: Mutex::new(BoilerState {
                 pressure_bar: init_bar,
-                effective_upper_w: 0.0,
             }),
             demand_source: RwLock::new(DynamicScalar::constant(demand_kg_h)),
-            active,
+            heater,
         }
     }
 
@@ -164,6 +160,39 @@ impl SteamBoiler {
     /// `SolarInverter::set_sunlight_source`.
     pub fn set_steam_demand_source(&self, scalar: DynamicScalar) {
         *self.demand_source.write() = scalar;
+    }
+
+    /// Steam demand in W (kg/h × Wh/kg); negative or non-finite reads
+    /// as 0.
+    fn demand_w(&self) -> f32 {
+        let raw = self.demand_source.read().get();
+        let kg_h = if raw.is_finite() { raw.max(0.0) } else { 0.0 };
+        kg_h * self.cfg.wh_per_kg
+    }
+
+    /// The electricity the boiler can take over a tick of `dt_s`
+    /// seconds: none above target; at or below it, the demand plus
+    /// whatever closes the pressure gap this tick, capped at the
+    /// rating.
+    fn need_w(&self, pressure: f32, demand_w: f32, dt_s: f32) -> f32 {
+        if pressure > self.cfg.target_bar {
+            return 0.0;
+        }
+        let recovery_w =
+            (self.cfg.target_bar - pressure) * self.cfg.capacity_wh_per_bar * 3600.0 / dt_s;
+        (demand_w + recovery_w).min(self.cfg.rated_upper_w)
+    }
+
+    /// `[0, need]` for a tick of `dt`, from the current pressure and
+    /// demand.
+    fn heat_band(&self, dt: Duration) -> VecBounds {
+        let dt_s = dt.as_secs_f32();
+        let need = if dt_s > 0.0 {
+            self.need_w(self.state.lock().pressure_bar, self.demand_w(), dt_s)
+        } else {
+            0.0
+        };
+        VecBounds::single(0.0, need)
     }
 }
 
@@ -199,61 +228,35 @@ impl SimulatedComponent for SteamBoiler {
         if dt_s <= 0.0 {
             return;
         }
-        // 1. Resolve demand (kg/h × Wh/kg = W exactly).
-        let raw = self.demand_source.read().get();
-        let demand_kg_h = if raw.is_finite() { raw.max(0.0) } else { 0.0 };
-        let demand_w = demand_kg_h * self.cfg.wh_per_kg;
-
-        // 2. Electric need from pressure: decline above target;
-        //    below/at target, demand plus whatever would close the
-        //    gap this tick (electricity gets first claim; the rated
-        //    band caps it naturally).
+        let demand_w = self.demand_w();
         let pressure = self.state.lock().pressure_bar;
-        let need_w = if pressure > self.cfg.target_bar {
-            0.0
-        } else {
-            let recovery_w =
-                (self.cfg.target_bar - pressure) * self.cfg.capacity_wh_per_bar * 3600.0 / dt_s;
-            (demand_w + recovery_w).min(self.cfg.rated_upper_w)
-        };
+        let need_w = self.need_w(pressure, demand_w, dt_s);
 
-        // 3. Step: allotment honored inside [0, need] ∩ rated ∩
-        //    augmentations; no command idles at 0 (gas holds). A
-        //    faulted or standby boiler trips like the battery
-        //    inverter: no draw, command cleared, recovery awaits a
-        //    re-dispatch. The steam side keeps going — the fault is
-        //    on the electric heater, so the gas burner still holds
-        //    pressure and an above-target excess still decays — and
-        //    the reported bounds keep tracking `need` as on the
-        //    healthy path (the trip does not narrow them), as the
-        //    battery inverter's stay rated-derived while tripped.
+        // A faulted or standby heater is offline: no draw, nothing
+        // left in the delay line. The steam side keeps going — the
+        // gas burner still holds pressure and an above-target excess
+        // still decays.
         let p = if world.runtime_of(self.id).health != Health::Ok {
-            self.active.trip();
+            self.heater.trip();
             0.0
         } else {
-            let band = VecBounds::single(0.0, need_w);
-            self.active.step(
-                now,
-                dt,
-                StepCtx {
-                    other_axis: 0.0,
-                    dynamic: Some(&band),
-                    idle: IdleTarget::Value(0.0),
-                },
-            )
+            let band = VecBounds::single(0.0, need_w).intersect(&VecBounds::single(
+                self.cfg.rated_lower_w,
+                self.cfg.rated_upper_w,
+            ));
+            self.heater.tick(now, Some(&band))
         };
 
-        // 4-5. Integrate, then let the implied gas burner floor the
-        //      result at target (ceiling guards ramp overshoot).
+        // Integrate, then let the implied gas burner floor the result
+        // at target (the ceiling guards overshoot).
         let mut s = self.state.lock();
         s.pressure_bar += (p - demand_w) * dt_s / 3600.0 / self.cfg.capacity_wh_per_bar;
         s.pressure_bar = s.pressure_bar.clamp(self.cfg.target_bar, self.cfg.max_bar);
-        s.effective_upper_w = need_w;
     }
 
     fn telemetry(&self, site: &MicrogridSite) -> Telemetry {
         let grid = site.grid_state();
-        let p = self.active.actual();
+        let p = self.heater.output();
         let s = self.state.lock().clone();
         Telemetry {
             id: self.id,
@@ -266,85 +269,59 @@ impl SimulatedComponent for SteamBoiler {
             pressure_bar: Some(s.pressure_bar),
             per_phase_voltage_v: Some(grid.voltage_per_phase),
             frequency_hz: Some(grid.frequency_hz),
-            active_power_bounds: self.effective_active_bounds(),
             component_state: Some(crate::sim::component::power_state(p)),
             ..Default::default()
         }
     }
 
-    fn set_active_setpoint(&self, power_w: f32) -> Result<(), SetpointError> {
-        // Validate against rated ∩ augmentations, not the per-tick
-        // [0, need] dynamic band — the same posture as
-        // `EvCharger::set_active_setpoint`: the dynamic hook stays
-        // silent so a standing command doesn't bounce accept/reject
-        // as pressure crosses target and `need` swings. Concretely,
-        // that band collapses to [0, 0] whenever pressure sits above
-        // target (see `tick`'s step 2), so a setpoint accepted here
-        // can be silently tracked to 0 W by `step` on the very next
-        // tick — expected behavior (the boiler declines electricity
-        // it doesn't need), not a bug, but worth a maintainer's
-        // notice since nothing about `accept` itself hints at it.
-        self.active.accept(power_w, Utc::now(), 0.0)
-    }
-
-    /// Unlike `set_active_setpoint` above, an augmentation IS gated on
-    /// the `[0, effective_upper]` demand band — the same piece
-    /// `effective_active_bounds` composes. A setpoint outside it is
-    /// silently tracked to 0 and recovers when pressure falls, but an
-    /// augmentation disjoint from it would leave the envelope empty
-    /// for the whole TTL. Concretely: at idle the band is `[0, 0]`, so
-    /// any strictly-positive augmentation is rejected rather than
-    /// ACKed-and-ignored. The state lock is released before entering
-    /// the axis's compose-check-insert section.
-    fn try_augment_active_bounds(
-        &self,
-        ts: DateTime<Utc>,
-        bounds: VecBounds,
-        lifetime: Duration,
-    ) -> Result<(), AugmentError> {
-        let need = {
-            let s = self.state.lock();
-            VecBounds::single(0.0, s.effective_upper_w)
-        };
-        self.active
-            .try_augment(ts, bounds, lifetime, 0.0, Some(&need))
-            .map_err(AugmentError::Disjoint)
-    }
-
-    fn augmentation_active(
-        &self,
-        axis: crate::timeout_tracker::SetpointAxis,
-        now: DateTime<Utc>,
-    ) -> bool {
-        use crate::timeout_tracker::SetpointAxis;
-        match axis {
-            SetpointAxis::Active => self.active.augmented(now),
-            // Single-axis component: no reactive axis to narrow.
-            SetpointAxis::Reactive => false,
-        }
-    }
-
-    fn reset_setpoint(&self) {
-        self.active.reset(0.0);
-    }
-
     fn active_power_w(&self, _site: &MicrogridSite) -> Option<f32> {
-        Some(self.active.actual())
+        Some(self.heater.output())
     }
 
     fn aggregate_power_w(&self, _world: &MicrogridSite) -> f32 {
-        self.active.actual()
+        self.heater.output()
     }
 
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
         Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
     }
 
-    fn effective_active_bounds(&self) -> Option<VecBounds> {
-        let s = self.state.lock();
-        let dyn_band = VecBounds::single(0.0, s.effective_upper_w);
-        drop(s);
-        Some(dyn_band.intersect(&self.active.effective_static()))
+    fn has_axis(&self, axis: SetpointAxis) -> bool {
+        axis == SetpointAxis::Active
+    }
+
+    fn set_command(&self, axis: SetpointAxis, value: f32) {
+        if axis == SetpointAxis::Active {
+            self.heater.set_command(value);
+        }
+    }
+
+    fn physical_band(&self, axis: SetpointAxis, dt: Duration) -> Option<VecBounds> {
+        (axis == SetpointAxis::Active).then(|| self.heat_band(dt))
+    }
+
+    /// No command: gas holds pressure, the heater draws nothing.
+    fn idle_value(&self, _axis: SetpointAxis) -> Option<f32> {
+        Some(0.0)
+    }
+
+    /// The need is part of the reported bounds.
+    fn advertises_physical_band(&self, _axis: SetpointAxis) -> bool {
+        true
+    }
+
+    /// An augmentation disjoint from the need would park the heater
+    /// at 0 W for its whole lifetime, so it is refused.
+    fn augment_checks_physical_band(&self, _axis: SetpointAxis) -> bool {
+        true
+    }
+
+    fn gateway_settings(&self) -> Option<GatewaySettings> {
+        Some(GatewaySettings {
+            command_delay: self.cfg.command_delay,
+            ramp_rate_w_per_s: self.cfg.ramp_rate_w_per_s,
+            ..GatewaySettings::default()
+        })
     }
 
     fn set_pressure_bar(&self, bar: f32) -> bool {
@@ -464,6 +441,7 @@ impl SimulatedComponent for SteamBoiler {
 mod tests {
     use super::*;
     use crate::sim::SimulatedComponent;
+    use crate::timeout_tracker::SetpointAxis;
     use chrono::Utc;
     use std::time::Duration;
 
@@ -473,6 +451,7 @@ mod tests {
             Duration::from_secs(1),
             SteamBoilerConfig {
                 command_delay: Duration::ZERO,
+                device_delay: Duration::ZERO,
                 ..cfg
             },
         )
@@ -491,7 +470,7 @@ mod tests {
         let b = boiler(SteamBoilerConfig::default());
         // 100 kg/h × 627 Wh/kg = 62_700 W
         assert!(b.set_steam_demand_kg_h(100.0));
-        assert!(b.set_active_setpoint(200_000.0).is_ok());
+        b.set_command(SetpointAxis::Active, 200_000.0);
         b.tick(&w, Utc::now(), dt());
         assert!((b.aggregate_power_w(&w) - 62_700.0).abs() < 1.0);
         let t = b.telemetry(&w);
@@ -506,14 +485,13 @@ mod tests {
         let w = crate::sim::MicrogridSite::new();
         let b = boiler(SteamBoilerConfig::default());
         b.set_steam_demand_kg_h(100.0); // 62.7 kW equivalent
-        assert!(b.set_active_setpoint(40_000.0).is_ok());
+        b.set_command(SetpointAxis::Active, 40_000.0);
         b.tick(&w, Utc::now(), dt());
         assert!((b.aggregate_power_w(&w) - 40_000.0).abs() < 1.0);
         assert_eq!(b.telemetry(&w).pressure_bar, Some(8.0));
     }
 
-    /// No command → IdleTarget::Value(0): zero electric draw, gas
-    /// holds pressure.
+    /// No command: zero electric draw, gas holds pressure.
     #[test]
     fn no_command_draws_nothing() {
         let w = crate::sim::MicrogridSite::new();
@@ -533,7 +511,7 @@ mod tests {
         let b = boiler(SteamBoilerConfig::default());
         b.set_steam_demand_kg_h(100.0); // 62_700 W draw
         assert!(b.set_pressure_bar(9.0));
-        assert!(b.set_active_setpoint(100_000.0).is_ok());
+        b.set_command(SetpointAxis::Active, 100_000.0);
         b.tick(&w, Utc::now(), dt());
         // Declined the allotment entirely.
         assert_eq!(b.aggregate_power_w(&w), 0.0);
@@ -563,7 +541,7 @@ mod tests {
             ..Default::default()
         });
         b.set_steam_demand_kg_h(100.0);
-        assert!(b.set_active_setpoint(250_000.0).is_ok());
+        b.set_command(SetpointAxis::Active, 250_000.0);
         b.tick(&w, Utc::now(), dt());
         // Burst: demand_w (62.7 kW) + recovery for 0.1 bar
         // (0.1 × 10_000 Wh × 3600 / 1 s = 3.6 MW, capped at rated
@@ -592,7 +570,7 @@ mod tests {
         let w = crate::sim::MicrogridSite::new();
         let b = boiler(SteamBoilerConfig::default());
         b.set_steam_demand_kg_h(-50.0);
-        b.set_active_setpoint(10_000.0).unwrap();
+        b.set_command(SetpointAxis::Active, 10_000.0);
         b.tick(&w, Utc::now(), dt());
         assert_eq!(b.aggregate_power_w(&w), 0.0, "negative demand is 0");
         assert_eq!(b.telemetry(&w).pressure_bar, Some(8.0));
@@ -603,7 +581,7 @@ mod tests {
         for raw in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let b = boiler(SteamBoilerConfig::default());
             b.set_steam_demand_kg_h(raw);
-            b.set_active_setpoint(10_000.0).unwrap();
+            b.set_command(SetpointAxis::Active, 10_000.0);
             b.tick(&w, Utc::now(), dt());
             assert_eq!(b.aggregate_power_w(&w), 0.0, "{raw} demand is 0");
             assert_eq!(b.telemetry(&w).pressure_bar, Some(8.0), "{raw}");
@@ -723,20 +701,38 @@ mod tests {
         assert_eq!(b.telemetry(&w).pressure_bar, Some(10.0), "NaN ignored");
     }
 
-    /// Effective bounds advertise the live dynamic ceiling: with
-    /// demand 0 at target the envelope is [0, 0]; with demand set it
-    /// is [0, demand_w].
+    /// The reported bounds advertise the live heat need, computed
+    /// fresh — no tick is needed after the demand changes.
     #[test]
-    fn effective_bounds_track_need() {
-        let w = crate::sim::MicrogridSite::new();
-        let b = boiler(SteamBoilerConfig::default());
-        b.tick(&w, Utc::now(), dt());
-        let eff = b.effective_active_bounds().unwrap();
-        assert_eq!(eff.0[0].upper, Some(0.0));
+    fn bounds_track_need_before_any_tick() {
+        let (w, b) = sited(boiler(SteamBoilerConfig::default()));
+        assert_eq!(
+            w.bounds_of(700, SetpointAxis::Active).unwrap().0[0].upper,
+            Some(0.0)
+        );
         b.set_steam_demand_kg_h(100.0);
-        b.tick(&w, Utc::now(), dt());
-        let eff = b.effective_active_bounds().unwrap();
-        assert!((eff.0[0].upper.unwrap() - 62_700.0).abs() < 1.0);
+        let upper = w.bounds_of(700, SetpointAxis::Active).unwrap().0[0]
+            .upper
+            .unwrap();
+        assert!((upper - 62_700.0).abs() < 1.0, "got {upper}");
+    }
+
+    /// An augmentation must overlap the heat need: at idle the need
+    /// is [0, 0], so a strictly positive band is refused, naming it.
+    #[test]
+    fn an_augmentation_must_overlap_the_heat_need() {
+        let (w, _b) = sited(boiler(SteamBoilerConfig::default()));
+        let e = w
+            .gateway()
+            .augment(
+                700,
+                w.run_generation(),
+                SetpointAxis::Active,
+                VecBounds::single(10_000.0, 20_000.0),
+                Duration::from_secs(30),
+            )
+            .unwrap_err();
+        assert!(e.to_string().contains("current envelope [0, 0]"), "{e}");
     }
 
     /// Telemetry advertises explicit zero reactive (P-only AC load)
@@ -870,10 +866,8 @@ mod tests {
     }
 
     /// `n` one-second ticks.
-    fn tick_n(w: &MicrogridSite, b: &std::sync::Arc<dyn SimulatedComponent>, n: usize) {
-        for _ in 0..n {
-            b.tick(w, Utc::now(), dt());
-        }
+    fn tick_n(w: &MicrogridSite, _b: &std::sync::Arc<dyn SimulatedComponent>, n: usize) {
+        w.tick_n(n, dt());
     }
 
     /// The heat need is a physical limit: when the steam demand
@@ -883,7 +877,9 @@ mod tests {
     fn a_falling_demand_cuts_the_draw_at_once() {
         let (w, b) = sited(slewing_boiler());
         assert!(b.set_steam_demand_kg_h(100.0)); // 62_700 W equivalent
-        b.set_active_setpoint(200_000.0).unwrap();
+        w.gateway()
+            .command(700, SetpointAxis::Active, 200_000.0)
+            .unwrap();
         tick_n(&w, &b, 7);
         assert!((b.aggregate_power_w(&w) - 62_700.0).abs() < 1.0);
         assert!(b.set_steam_demand_kg_h(10.0)); // 6_270 W equivalent
@@ -903,7 +899,9 @@ mod tests {
         for health in [Health::Error, Health::Standby] {
             let (w, b) = sited(slewing_boiler());
             assert!(b.set_steam_demand_kg_h(100.0)); // 62_700 W equivalent
-            b.set_active_setpoint(200_000.0).unwrap();
+            w.gateway()
+                .command(700, SetpointAxis::Active, 200_000.0)
+                .unwrap();
             tick_n(&w, &b, 7);
             assert!(
                 (b.aggregate_power_w(&w) - 62_700.0).abs() < 1.0,
@@ -928,7 +926,9 @@ mod tests {
             tick_n(&w, &b, 5);
             assert_eq!(b.aggregate_power_w(&w), 0.0, "no command survives the trip");
 
-            b.set_active_setpoint(200_000.0).unwrap();
+            w.gateway()
+                .command(700, SetpointAxis::Active, 200_000.0)
+                .unwrap();
             tick_n(&w, &b, 7);
             assert!(
                 (b.aggregate_power_w(&w) - 62_700.0).abs() < 1.0,
@@ -961,7 +961,7 @@ mod tests {
         // it reports even while offline.
         assert!(b.set_pressure_bar(8.0));
         tick_n(&w, &b, 1);
-        let eff = b.effective_active_bounds().unwrap();
+        let eff = w.bounds_of(700, SetpointAxis::Active).unwrap();
         assert_eq!(
             eff.0[0].upper,
             Some(62_700.0),
@@ -976,11 +976,13 @@ mod tests {
     fn ttl_expiry_slews_down() {
         let (w, b) = sited(slewing_boiler());
         b.set_steam_demand_kg_h(100.0); // 62_700 W equivalent
-        b.set_active_setpoint(200_000.0).unwrap();
+        w.gateway()
+            .command(700, SetpointAxis::Active, 200_000.0)
+            .unwrap();
         tick_n(&w, &b, 7);
         assert!((b.aggregate_power_w(&w) - 62_700.0).abs() < 1.0);
 
-        b.reset_setpoint();
+        w.gateway().reset(700, SetpointAxis::Active);
         tick_n(&w, &b, 1);
         let p = b.aggregate_power_w(&w);
         assert!(p > 50_000.0 && p < 62_700.0, "one tick of slew, got {p}");
