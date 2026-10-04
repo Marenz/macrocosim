@@ -736,9 +736,13 @@ body[data-mg-empty="1"][data-mg-view="selected"][data-subview="topology"] #topol
   background: rgba(217, 196, 107, 0.18);
   color: var(--warn);
 }
-.mg-chip.unsaved {
+.mg-chip.unsaved,
+.mg-chip.failed {
   background: rgba(255, 121, 121, 0.18);
   color: var(--bad);
+}
+.mg-chip.failed {
+  border: 1px solid var(--bad);
 }
 
 #load-script-breadcrumb {

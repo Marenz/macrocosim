@@ -21,6 +21,12 @@ export const microgridsPanel = (() => {
   let pollTimer = null;
 
   function gridEl() { return document.getElementById("mglist-grid"); }
+  // Warn when a microgrid was created but its gRPC server failed.
+  function warnFailedRuntime(id, runtime) {
+    if (runtime?.status === "failed") {
+      notify(`Microgrid #${id} was created, but its gRPC server failed: ${runtime.error}`);
+    }
+  }
   function breadcrumbNameEl() { return document.getElementById("mg-breadcrumb-name"); }
   function breadcrumbTsoEl() { return document.getElementById("mg-breadcrumb-tso"); }
 
@@ -37,6 +43,7 @@ export const microgridsPanel = (() => {
       // Two file-state chips: `unmanaged` means macrocosim may not
       // rewrite this file's structure (Adopt first), `unsaved` means
       // an edit ran live that the file could not be given.
+      const runtime = m.runtime;
       const chips = [
         m.managed
           ? ""
@@ -44,12 +51,21 @@ export const microgridsPanel = (() => {
         m.unsaved
           ? `<span class="mg-chip unsaved" title="live edits this file could not record">unsaved</span>`
           : "",
+        runtime?.status === "failed"
+          ? `<span class="mg-chip failed" title="${escapeHtml(runtime.error ?? "")}">failed</span>`
+          : "",
       ].join("");
+      // A starting runtime shows "starting…", a started one its
+      // bound address or "not bound"; the configured port stands in
+      // when no runtime was started.
+      let grpc = `:${m.grpc_port}`;
+      if (runtime?.status === "starting") grpc = "starting…";
+      else if (runtime) grpc = runtime.grpc_addr ?? "not bound";
       card.innerHTML = `
         <span class="mglist-id">#${m.id}</span>
         <h3 class="mglist-name">${escapeHtml(m.name || "(unnamed)")}</h3>
         ${tso}${chips}
-        <span class="mglist-meta muted">${m.component_count} components · gRPC :${m.grpc_port}</span>
+        <span class="mglist-meta muted">${m.component_count} components · gRPC ${escapeHtml(grpc)}</span>
       `;
       card.addEventListener("click", () => selectMicrogrid(m.id));
       grid.appendChild(card);
@@ -183,6 +199,7 @@ export const microgridsPanel = (() => {
       // back as a success carrying a warning, because the microgrid
       // IS live — say so rather than dropping it.
       if (resp?.warning) notify(resp.warning);
+      warnFailedRuntime(resp?.id ?? info.suggested_id, resp?.runtime);
       bar.hidden = true;
       await refresh();
       document.getElementById("load-script-dialog").close();
@@ -346,6 +363,7 @@ export const microgridsPanel = (() => {
           return;
         }
         dlg.close();
+        warnFailedRuntime(created.id, created.runtime);
         await refresh();
         selectMicrogrid(created.id);
       });
@@ -511,6 +529,7 @@ export const microgridsPanel = (() => {
           `Imported ${m.components} components, ${m.connections} connections.`,
           "success",
         );
+        warnFailedRuntime(m.id, m.runtime);
         selectMicrogrid(m.id);
         return;
       } catch (e) {
