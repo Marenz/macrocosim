@@ -6,11 +6,13 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use macrocosim::{
-    assets_server::AssetsServer, dispatch_server::DispatchServer, lisp::Config,
+    assets_server::AssetsServer,
+    dispatch_server::DispatchServer,
+    lisp::Config,
     proto::assets::platform_assets_server::PlatformAssetsServer as AssetsGrpcServer,
     proto::dispatch::microgrid_dispatch_service_server::MicrogridDispatchServiceServer as DispatchGrpcServer,
-    proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
-    server::MicrogridServer, sim::MicrogridSite, ui, ui_log,
+    runtime::{MicrogridRuntimes, RuntimeOptions, RuntimeStatus},
+    ui, ui_log,
 };
 use simplelog::{
     ColorChoice, CombinedLogger, ConfigBuilder, LevelFilter, TermLogger, TerminalMode,
@@ -132,42 +134,40 @@ async fn main() {
         std::process::exit(1);
     });
 
-    // Snapshot the enterprise registry: one tuple per microgrid
-    // (id, name, grpc_port, site). Each will get its own physics
-    // tick + history sampler + Microgrid gRPC server.
-    let entries: Vec<(u64, String, u16, macrocosim::sim::MicrogridSite)> = config
-        .microgrids()
-        .lock()
-        .values()
-        .map(|e| {
-            (
-                e.def.id,
-                e.def.name.clone(),
-                e.def.grpc_port,
-                e.site.clone(),
-            )
-        })
-        .collect();
-    log::info!(
-        "Enterprise carries {} microgrid(s); spawning per-microgrid runtimes",
-        entries.len()
-    );
-    for (id, name, port, site) in &entries {
-        log::info!(
-            "Microgrid #{id} {name:?} → :{port} ({} components, {} connections)",
-            site.components().len(),
-            site.connections().len(),
-        );
-        MicrogridSite::clone(site).spawn_physics();
-        MicrogridSite::clone(site).spawn_history_sampler();
+    // Every microgrid runtime, boot-time and later, starts through
+    // MicrogridRuntimes. The listener subscribes before the file
+    // watcher starts, so no reload can register a microgrid unseen.
+    let runtimes = MicrogridRuntimes::new(
+        config.clone(),
+        RuntimeOptions {
+            ephemeral_ports: args.ephemeral_ports,
+            bind_host: Ipv6Addr::LOCALHOST.into(),
+        },
+    )
+    .unwrap_or_else(|e| {
+        log::error!("{e}");
+        std::process::exit(1);
+    });
+    let _listener = runtimes.spawn_registration_listener().await;
+    let boot_ids: Vec<u64> = config.microgrids().lock().keys().copied().collect();
+    log::info!("Enterprise carries {} microgrid(s)", boot_ids.len());
+    // `--emit-endpoints` promises every boot listener is up, so a
+    // boot microgrid that failed to start exits the process.
+    for id in &boot_ids {
+        if let Some(v) = runtimes.status(*id)
+            && v.status == RuntimeStatus::Failed
+        {
+            log::error!("Microgrid #{id} failed to start; exiting");
+            std::process::exit(1);
+        }
     }
 
     // Watch the config file in the background so saves trigger reload.
     tokio::spawn(config.clone().watch());
 
-    // Bind every listener up front (synchronously) so ephemeral (:0)
-    // ports resolve to real ones before we wire loopbacks + emit the
-    // endpoints. Hosts stay loopback (UI 127.0.0.1, gRPC [::1]); a
+    // Bind the UI, assets and dispatch listeners up front so
+    // ephemeral (:0) ports resolve to real ones before the endpoints
+    // are emitted. Hosts stay loopback (UI 127.0.0.1, gRPC [::1]); a
     // routable --*-bind + the hardening it gates is a follow-up
     // (todo §D3).
     let eph = args.ephemeral_ports;
@@ -175,25 +175,6 @@ async fn main() {
     let (ui_listener, ui_addr) =
         bind_or_exit(SocketAddr::from((Ipv4Addr::LOCALHOST, ui_port)), "UI").await;
     let ui_config = config.clone();
-
-    // Per-microgrid gRPC listeners: (id, name, site, listener, addr).
-    let mut bound: Vec<(
-        u64,
-        String,
-        MicrogridSite,
-        tokio::net::TcpListener,
-        SocketAddr,
-    )> = Vec::with_capacity(entries.len());
-    for (id, name, port, site) in entries {
-        let port = if eph { 0 } else { port };
-        let (listener, addr) = bind_or_exit(
-            SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
-            &format!("Microgrid #{id} gRPC"),
-        )
-        .await;
-        bound.push((id, name, site, listener, addr));
-    }
-    let boot_ids: Vec<u64> = bound.iter().map(|b| b.0).collect();
 
     // Assets + dispatch: single enterprise-wide sockets (defaults
     // [::1]:9900 / [::1]:8900, lisp-overridable). --ephemeral-ports
@@ -215,123 +196,13 @@ async fn main() {
     }
     let (dispatch_listener, dispatch_addr) = bind_or_exit(dispatch_addr, "MicrogridDispatch").await;
 
-    // One loopback Microgrid client per microgrid, pointed at the
-    // *resolved* gRPC address. Keyed by id so /api/mg/{id}/microgrid/*
-    // looks up the right slot; the legacy /api/microgrid/* endpoints
-    // read the *first* microgrid's slot for backward compat.
-    let loopbacks = ui::new_microgrid_loopbacks();
-    let first_id = bound.first().map(|b| b.0);
-    let mut primary_slot: Option<ui::SharedMicrogrid> = None;
-    for (id, name, site, _listener, addr) in &bound {
-        let slot = ui::new_microgrid_slot();
-        ui::spawn_microgrid_loopback(format!("http://{addr}"), slot.clone(), site.clone());
-        loopbacks.write().insert(*id, slot.clone());
-        if Some(*id) == first_id {
-            primary_slot = Some(slot);
-        }
-        log::info!("Microgrid #{id} {name:?} loopback client spawned");
-    }
-    // Bare boot: the legacy /api/microgrid/* endpoints read this
-    // slot; with no boot-time microgrids it stays an empty,
+    // The legacy /api/microgrid/* endpoints read the first boot
+    // microgrid's slot; on a bare boot it is an empty,
     // never-connected slot (the per-mg routes serve runtime loads).
-    let microgrid = primary_slot.unwrap_or_else(ui::new_microgrid_slot);
-
-    // Runtime-create callback: when POST /api/microgrids/create
-    // inserts a new entry into the registry, this closure spawns
-    // its physics tick + history sampler + Microgrid gRPC server
-    // (on the assigned port) + loopback client. Cloning Arcs
-    // captures the runtime state we need; the closure itself is
-    // Send + Sync so it can ride through an axum Extension.
-    let spawner_config = config.clone();
-    let spawner_loopbacks = loopbacks.clone();
-    let spawner_eph = eph;
-    let spawner: ui::MicrogridSpawner = std::sync::Arc::new(move |id, name, port, site| {
-        site.clone().spawn_physics();
-        site.clone().spawn_history_sampler();
-        // Honor --ephemeral-ports here too: bind :0 for an OS-chosen
-        // port so a runtime-created microgrid doesn't clash with a
-        // parallel instance on its config-declared port. Bind up front
-        // (std → tokio) so the loopback client + log use the resolved
-        // port. (Runtime-created microgrids are still absent from the
-        // --emit-endpoints readiness signal — see the emit below.)
-        let bind_port = if spawner_eph { 0 } else { port };
-        let listener = match std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, bind_port))
-            .and_then(|l| l.set_nonblocking(true).map(|()| l))
-            .and_then(tokio::net::TcpListener::from_std)
-        {
-            Ok(l) => l,
-            Err(e) => {
-                log::error!(
-                    "Microgrid #{id} {name:?} create: gRPC bind [::1]:{bind_port} failed ({e}); skipping"
-                );
-                return;
-            }
-        };
-        let addr = listener.local_addr().expect("resolved gRPC addr");
-        let cfg = spawner_config.clone();
-        let site_for_server = site.clone();
-        let name_owned = name.to_string();
-        tokio::spawn(async move {
-            log::info!("Microgrid #{id} {name_owned:?} runtime-created → gRPC {addr}");
-            let server = MicrogridServer::new(cfg, id, site_for_server);
-            if let Err(e) = Server::builder()
-                .add_service(MicrogridGrpcServer::new(server))
-                .serve_with_incoming(TcpListenerStream::new(listener))
-                .await
-            {
-                log::error!("Microgrid #{id} gRPC server exited: {e}");
-            }
-        });
-        let slot = ui::new_microgrid_slot();
-        ui::spawn_microgrid_loopback(format!("http://{addr}"), slot.clone(), site);
-        spawner_loopbacks.write().insert(id, slot);
-    });
-
-    // Single spawn path for microgrids registered after boot. A
-    // `(make-microgrid …)` evaluated at runtime — REPL eval, a config
-    // reload that added an entry, or the create-microgrid HTTP
-    // endpoint (which only notifies; see handlers/microgrids.rs) —
-    // broadcasts on the registered channel, and this listener boots
-    // the same runtime set the boot loop below gives boot-time
-    // entries. Reused (reload) registrations notify too and the
-    // `spawned` set drops duplicates, so no path double-boots a
-    // runtime.
-    {
-        let config = config.clone();
-        let spawner = spawner.clone();
-        let mut spawned: std::collections::HashSet<u64> = boot_ids.iter().copied().collect();
-        tokio::spawn(async move {
-            let mut rx = config.subscribe_microgrid_registered();
-            loop {
-                let ids: Vec<u64> = match rx.recv().await {
-                    Ok(id) => vec![id],
-                    // Fell behind a registration burst — the per-id
-                    // notifications in the gap are lost, so re-snapshot
-                    // the registry and boot anything unseen.
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        log::warn!("microgrid spawner lagged {n} registrations; re-snapshotting");
-                        config.microgrids().lock().keys().copied().collect()
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                };
-                for id in ids {
-                    if !spawned.insert(id) {
-                        continue;
-                    }
-                    let entry = config.microgrids().lock().get(&id).cloned();
-                    match entry {
-                        Some(e) => spawner(e.def.id, &e.def.name, e.def.grpc_port, e.site),
-                        None => {
-                            // Registered then removed before we looked —
-                            // forget it so a later re-registration spawns.
-                            log::warn!("microgrid_registered({id}) but registry has no entry");
-                            spawned.remove(&id);
-                        }
-                    }
-                }
-            }
-        });
-    }
+    let microgrid = boot_ids
+        .first()
+        .and_then(|id| runtimes.loopbacks().read().get(id).cloned())
+        .unwrap_or_else(ui::new_microgrid_slot);
 
     // Emit the resolved endpoints once everything is bound — the
     // machine-readable readiness signal. Boot-time microgrids only;
@@ -339,10 +210,12 @@ async fn main() {
     if let Some(target) = &args.emit_endpoints {
         let json = serde_json::json!({
             "ui": ui_addr.to_string(),
-            "microgrids": bound
+            "microgrids": boot_ids
                 .iter()
-                .map(|(id, name, _, _, addr)| {
-                    serde_json::json!({ "id": id, "name": name, "grpc": addr.to_string() })
+                .filter_map(|id| {
+                    let name = config.microgrids().lock().get(id)?.def.name.clone();
+                    let addr = runtimes.status(*id)?.grpc_addr?;
+                    Some(serde_json::json!({ "id": id, "name": name, "grpc": addr }))
                 })
                 .collect::<Vec<_>>(),
             "assets": assets_addr.to_string(),
@@ -367,40 +240,24 @@ async fn main() {
         }
     }
 
-    // Critical long-running tasks (UI server, every gRPC listener)
-    // go into one JoinSet: any of them exiting means the process is
-    // limping with a dead surface, so main notices the FIRST exit and
-    // shuts the whole binary down instead of serving degraded. (The
-    // lisp refresh + timeout loops live inside Config and stay
-    // fire-and-forget for now.)
+    // Critical long-running tasks (UI, PlatformAssets and dispatch
+    // servers) go into one JoinSet: any of them exiting means the
+    // process is limping with a dead surface, so main notices the
+    // FIRST exit and shuts the whole binary down instead of serving
+    // degraded. A microgrid's gRPC server reports through its runtime
+    // status instead. (The lisp refresh + timeout loops live inside
+    // Config and stay fire-and-forget for now.)
     let mut tasks: tokio::task::JoinSet<&'static str> = tokio::task::JoinSet::new();
     log::info!("Macrocosim UI listening on http://{ui_addr}");
     tasks.spawn(async move {
-        if let Err(e) = ui::serve_with_listener(ui_listener, ui_config, microgrid, loopbacks).await
+        if let Err(e) =
+            ui::serve_with_listener(ui_listener, ui_config, microgrid, runtimes.loopbacks()).await
         {
             log::error!("UI server exited: {e}");
         }
         "UI server"
     });
 
-    // One Microgrid gRPC server per registry entry, each driving its
-    // pre-bound listener (serve_with_incoming, so the served port is
-    // exactly the one we resolved + reported above).
-    for (id, name, site, listener, addr) in bound {
-        log::info!("Microgrid #{id} {name:?} gRPC listening on {addr}");
-        let cfg_for_server = config.clone();
-        tasks.spawn(async move {
-            let mg_server = MicrogridServer::new(cfg_for_server, id, site);
-            if let Err(e) = Server::builder()
-                .add_service(MicrogridGrpcServer::new(mg_server))
-                .serve_with_incoming(TcpListenerStream::new(listener))
-                .await
-            {
-                log::error!("Microgrid #{id} gRPC server exited: {e}");
-            }
-            "Microgrid gRPC server"
-        });
-    }
     // PlatformAssets — its own listener, reachable regardless of which
     // microgrid the client picks.
     log::info!("PlatformAssets gRPC listening on {assets_addr}");

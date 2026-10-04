@@ -20,8 +20,8 @@ mod state;
 
 pub use loopback::spawn_microgrid_loopback;
 pub use state::{
-    HistorySample, MicrogridLoopbacks, MicrogridSampleSnapshot, MicrogridSpawner, MicrogridState,
-    SharedMicrogrid, new_microgrid_loopbacks, new_microgrid_slot,
+    HistorySample, MicrogridLoopbacks, MicrogridSampleSnapshot, MicrogridState, SharedMicrogrid,
+    new_microgrid_loopbacks, new_microgrid_slot,
 };
 
 use axum::{

@@ -1,7 +1,6 @@
 //! Shared state types for the UI subsystem: the per-microgrid
-//! loopback cache (latest + history rings + forwarder handles),
-//! the enterprise map of loopback states, the create-microgrid
-//! spawner callback, and the embedded-assets handle.
+//! loopback cache (latest + history rings + forwarder handles), the
+//! enterprise map of loopback states, and the embedded-assets handle.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -147,13 +146,3 @@ pub type MicrogridLoopbacks = Arc<RwLock<std::collections::BTreeMap<u64, SharedM
 pub fn new_microgrid_loopbacks() -> MicrogridLoopbacks {
     Arc::new(RwLock::new(std::collections::BTreeMap::new()))
 }
-
-/// Callback the binary's registered-microgrid listener invokes for
-/// each microgrid that lands in the registry after boot: spawn the
-/// physics tick + history sampler + Microgrid gRPC server + loopback
-/// client. The concrete implementation lives in
-/// `src/bin/macrocosim.rs`; test fixtures run no listener, so
-/// runtime-created entries simply get no runtime there.
-///
-/// Args: `(id, name, grpc_port, site)`.
-pub type MicrogridSpawner = Arc<dyn Fn(u64, &str, u16, crate::sim::MicrogridSite) + Send + Sync>;
