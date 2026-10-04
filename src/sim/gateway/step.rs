@@ -8,7 +8,9 @@ use std::{sync::Arc, time::Duration};
 use chrono::{DateTime, Utc};
 
 use super::{Gateway, GatewayState, log_expired};
-use crate::sim::{SimulatedComponent, gateway_axis::AdvanceCtx, runtime::Health};
+use crate::sim::{
+    SimulatedComponent, bounds::VecBounds, gateway_axis::AdvanceCtx, runtime::Health,
+};
 use crate::timeout_tracker::SetpointAxis;
 
 /// One healthy owned axis between its target (step 1) and the command
@@ -18,6 +20,9 @@ struct Planned {
     axis: SetpointAxis,
     component: Arc<dyn SimulatedComponent>,
     target: Option<f32>,
+    /// The validation base, read before any axis is handed its
+    /// command so a reactive one sees the P of the last tick.
+    base: VecBounds,
 }
 
 impl Gateway<'_> {
@@ -32,10 +37,9 @@ impl Gateway<'_> {
         }
         let planned = self.plan_locked(&st, now);
         for p in &planned {
-            let base = self.base_of(p.component.as_ref(), p.axis);
             let physical = p.component.physical_band(p.axis, dt);
             let ctx = AdvanceCtx {
-                base: &base,
+                base: &p.base,
                 physical: physical.as_ref(),
                 share: None,
             };
@@ -65,11 +69,13 @@ impl Gateway<'_> {
                 continue;
             }
             let target = ax.target(now, c.idle_value(axis));
+            let base = self.base_of(c.as_ref(), axis);
             planned.push(Planned {
                 id,
                 axis,
                 component: c,
                 target,
+                base,
             });
         }
         planned
@@ -84,10 +90,14 @@ mod tests {
         Mode,
         test_stubs::{Hw, put, sim_site},
     };
+    use chrono::{DateTime, Utc};
+    use parking_lot::Mutex;
+
     use crate::sim::{
-        MicrogridSite, bounds::VecBounds, component::GatewaySettings, runtime::Health,
+        Category, MicrogridSite, SimulatedComponent, Telemetry, bounds::VecBounds,
+        component::GatewaySettings, reactive::ReactiveCapability, runtime::Health,
     };
-    use crate::timeout_tracker::SetpointAxis::Active;
+    use crate::timeout_tracker::SetpointAxis::{self, Active, Reactive};
 
     const DT: Duration = Duration::from_millis(100);
 
@@ -235,5 +245,92 @@ mod tests {
             "[-1000, 1000]",
             "the lapsed augmentation is gone even at its own time"
         );
+    }
+
+    /// A two-axis component whose measured P follows its last active
+    /// command at once, with a pure 1 kVA reactive cap.
+    struct Pq {
+        p: Mutex<f32>,
+        q: Mutex<Option<f32>>,
+    }
+
+    impl std::fmt::Display for Pq {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "pq")
+        }
+    }
+
+    impl SimulatedComponent for Pq {
+        fn id(&self) -> u64 {
+            1
+        }
+        fn category(&self) -> Category {
+            Category::Inverter
+        }
+        fn name(&self) -> &str {
+            "pq"
+        }
+        fn stream_interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+        fn tick(&self, _: &MicrogridSite, _: DateTime<Utc>, _: Duration) {}
+        fn telemetry(&self, _: &MicrogridSite) -> Telemetry {
+            Telemetry::default()
+        }
+        fn active_power_w(&self, _: &MicrogridSite) -> Option<f32> {
+            Some(*self.p.lock())
+        }
+        fn rated_active_bounds(&self) -> Option<(f32, f32)> {
+            Some((-1000.0, 1000.0))
+        }
+        fn reactive_capability(&self) -> Option<ReactiveCapability> {
+            Some(ReactiveCapability {
+                pf_limit: None,
+                apparent_va: Some(1000.0),
+            })
+        }
+        fn has_axis(&self, _: SetpointAxis) -> bool {
+            true
+        }
+        fn set_command(&self, axis: SetpointAxis, value: f32) {
+            match axis {
+                Active => *self.p.lock() = value,
+                Reactive => *self.q.lock() = Some(value),
+            }
+        }
+        fn gateway_settings(&self) -> Option<GatewaySettings> {
+            Some(GatewaySettings::default())
+        }
+        fn make_fn(&self) -> &'static str {
+            "%make-test-pq"
+        }
+        fn constructor_kwargs(&self) -> Vec<(&'static str, String)> {
+            Vec::new()
+        }
+    }
+
+    /// A reactive axis is clamped against the capability at the P
+    /// measured before the step, whichever axis is handed its command
+    /// first: the active command moving P to the kVA rim in the same
+    /// step does not squeeze Q to 0.
+    #[test]
+    fn the_reactive_base_is_read_before_any_axis_is_commanded() {
+        // Fresh sites, so the axes' map order varies between runs.
+        for i in 0..32 {
+            let site = MicrogridSite::new();
+            let pq = put(
+                &site,
+                Arc::new(Pq {
+                    p: Mutex::new(0.0),
+                    q: Mutex::new(None),
+                }),
+            );
+            let gw = site.gateway();
+            gw.command(1, Active, 1000.0).unwrap();
+            gw.command(1, Reactive, 500.0).unwrap();
+            site.tick_n(1, DT);
+            assert_eq!(*pq.p.lock(), 1000.0, "iteration {i}");
+            assert_eq!(*pq.q.lock(), Some(500.0), "iteration {i}");
+        }
     }
 }

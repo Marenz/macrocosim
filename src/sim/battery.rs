@@ -326,6 +326,7 @@ mod tests {
                 },
                 reactive_command_delay: Duration::ZERO,
                 reactive_ramp_rate_var_per_s: f32::INFINITY,
+                device_delay: Duration::ZERO,
                 ..Default::default()
             },
         );
@@ -333,12 +334,18 @@ mod tests {
         w.connect(2, 1);
 
         let inv_ref = w.get(2).unwrap();
-        inv_ref.set_active_setpoint(4_000.0).unwrap();
-        inv_ref.set_reactive_setpoint(1_000.0).unwrap();
+        use crate::timeout_tracker::SetpointAxis;
+        inv_ref.set_command(SetpointAxis::Active, 4_000.0);
+        inv_ref.set_command(SetpointAxis::Reactive, 1_000.0);
 
+        // Hardware only: tick in registration order with no gateway
+        // step, so the written commands stand.
         let dt = Duration::from_millis(100);
-        w.tick_once(Utc::now(), dt);
-        w.tick_once(Utc::now(), dt);
+        for _ in 0..2 {
+            for c in w.components().iter() {
+                c.tick(&w, Utc::now(), dt);
+            }
+        }
 
         let bat_ref = w.get(1).unwrap();
         let t = bat_ref.telemetry(&w);

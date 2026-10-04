@@ -450,23 +450,7 @@ impl SimulatedComponent for SolarInverter {
 
     fn telemetry(&self, site: &MicrogridSite) -> Telemetry {
         let p = self.active.actual();
-        super::inverter_telemetry(
-            self.id,
-            site,
-            p,
-            self.reactive.published(),
-            self.active.effective_static(),
-            // The trait's telemetry-shaped Q envelope: the live
-            // envelope at the measured P it samples itself (normally
-            // the `p` above, though a concurrent tick between the two
-            // reads can slide it by one step), with a genuinely empty
-            // one (a live Q augmentation disjoint from the caps band, or two
-            // live augmentations disjoint from each other) normalized
-            // to a present (0, 0) band — otherwise every telemetry
-            // consumer sees an absent bound instead of the real "zero
-            // headroom" answer. Always `Some` for an inverter.
-            self.reactive_bounds().unwrap_or_default(),
-        )
+        super::inverter_telemetry(self.id, site, p, self.reactive.published())
     }
 
     fn set_active_setpoint(&self, power_w: f32) -> Result<(), SetpointError> {

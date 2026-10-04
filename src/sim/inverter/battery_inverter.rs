@@ -4,31 +4,34 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    AugmentError, Category, MicrogridSite, SetpointError, SimulatedComponent, Telemetry,
-    axis::{AxisConfig, IdleTarget, PowerAxis, StepCtx},
-    reactive::ReactiveCapability,
+    Category, MicrogridSite, SimulatedComponent, Telemetry, bounds::VecBounds,
+    component::GatewaySettings, device_axis::DeviceAxis, reactive::ReactiveCapability,
     runtime::Health,
 };
+use crate::timeout_tracker::SetpointAxis;
 
 #[derive(Clone, Debug)]
 pub struct BatteryInverterConfig {
     pub rated_lower_w: f32,
     pub rated_upper_w: f32,
+    /// The gateway's delay before it acts on an active command.
     pub command_delay: Duration,
     /// W/s; use `f32::INFINITY` to disable ramping.
     pub ramp_rate_w_per_s: f32,
     pub stream_jitter_pct: f32,
     /// Q envelope. Default microsim-compatible PF cap of 0.35.
     pub reactive: ReactiveCapability,
-    /// SCADA / inverter-internal latency between accepting a Q
-    /// setpoint and starting to track it. Real smart inverters take
-    /// some milliseconds; default 100 ms.
+    /// The gateway's delay before it acts on a reactive command;
+    /// default 100 ms.
     pub reactive_command_delay: Duration,
     /// Reactive slew rate (VAR/s). Sized to give an open-loop
     /// response time around 5 s when traversing a ~10 kVAR window —
-    /// matches IEEE 1547-2018's Performance Category B default OLRT
-    /// for Volt/VAR control. Use `f32::INFINITY` to disable.
+    /// IEEE 1547-2018's Performance Category B default OLRT for
+    /// Volt/VAR control. Use `f32::INFINITY` to disable.
     pub reactive_ramp_rate_var_per_s: f32,
+    /// Time a command takes to reach the output once the inverter has
+    /// it, on both axes; default 100 ms.
+    pub device_delay: Duration,
 }
 
 impl Default for BatteryInverterConfig {
@@ -42,6 +45,7 @@ impl Default for BatteryInverterConfig {
             reactive: ReactiveCapability::microsim_default(),
             reactive_command_delay: Duration::from_millis(100),
             reactive_ramp_rate_var_per_s: 2000.0,
+            device_delay: Duration::from_millis(100),
         }
     }
 }
@@ -51,51 +55,44 @@ pub struct BatteryInverter {
     name: String,
     interval: Duration,
     cfg: BatteryInverterConfig,
-    /// Active (P) control path: rated band + TTL augmentations,
-    /// command delay, slew ramp. Its `published` slot is unused — the
-    /// AC-side P telemetry reads `measured_w` below instead.
-    active: PowerAxis,
-    /// Reactive (Q) control path: the PF/kVA capability envelope
-    /// evaluated at the live P, command delay, slew ramp, and the
-    /// published Q telemetry / parent meters read.
-    reactive: PowerAxis,
-    /// The AC-side value telemetry publishes. Set each tick to the
-    /// power we *commanded* the healthy children to take — zeroed when
-    /// the inverter is tripped or no healthy child accepted the push —
-    /// NOT the sum the batteries actually accepted: a clipped battery's
-    /// own telemetry exposes the accepted value, so a client wanting to
-    /// see saturation reads both streams (todo.org d5 tracks per-source
-    /// attribution).
+    /// Active output: the command handed in through `set_command`,
+    /// delayed and clamped to the rated band. It is what the inverter
+    /// pushes onto the DC bus.
+    active: DeviceAxis,
+    /// Reactive output, clamped to the capability at the live P. Its
+    /// `published` slot is what telemetry and parent meters read.
+    reactive: DeviceAxis,
+    /// The live PF / kVA capability; `set-reactive-pf-limit` and
+    /// `set-reactive-apparent-va` change it at runtime.
+    caps: Mutex<ReactiveCapability>,
+    /// The AC-side value telemetry publishes: the push each healthy
+    /// child accepted, by its accept ratio; 0 when the inverter is
+    /// tripped or no healthy child took the push.
     measured_w: Mutex<f32>,
 }
 
 impl BatteryInverter {
     pub fn new(id: u64, interval: Duration, cfg: BatteryInverterConfig) -> Self {
-        let active = PowerAxis::new(AxisConfig {
-            rated: Some((cfg.rated_lower_w, cfg.rated_upper_w)),
-            caps: None,
-            command_delay: cfg.command_delay,
-            ramp_rate_per_s: cfg.ramp_rate_w_per_s,
-            unit: "W",
-        });
-        // A Q axis has no rated band of its own — its static shape is
-        // the PF/kVA capability evaluated at the live P.
-        let reactive = PowerAxis::new(AxisConfig {
-            rated: None,
-            caps: Some(cfg.reactive),
-            command_delay: cfg.reactive_command_delay,
-            ramp_rate_per_s: cfg.reactive_ramp_rate_var_per_s,
-            unit: "VAr",
-        });
         Self {
             id,
             name: format!("inv-bat-{id}"),
             interval,
+            active: DeviceAxis::new(cfg.device_delay, 0.0),
+            reactive: DeviceAxis::new(cfg.device_delay, 0.0),
+            caps: Mutex::new(cfg.reactive),
             cfg,
-            active,
-            reactive,
             measured_w: Mutex::new(0.0),
         }
+    }
+
+    fn rated(&self) -> VecBounds {
+        VecBounds::single(self.cfg.rated_lower_w, self.cfg.rated_upper_w)
+    }
+
+    /// The Q band the capability allows at active power `p`.
+    fn q_band_at(&self, p: f32) -> VecBounds {
+        let (lo, hi) = self.caps.lock().q_bounds_at(p);
+        VecBounds::single(lo, hi)
     }
 }
 
@@ -119,68 +116,33 @@ impl SimulatedComponent for BatteryInverter {
         self.interval
     }
 
-    fn tick(&self, site: &MicrogridSite, now: DateTime<Utc>, dt: Duration) {
-        // Own-health gate: a faulted or standby inverter is electrically
-        // offline — its IGBTs stop switching, so it pushes nothing to its
-        // batteries and reports zero AC output. Distinct from the
-        // no-healthy-children case below (a *healthy* inverter with no
-        // sink, which holds its setpoint and resumes the instant a child
-        // returns): a tripped inverter clears its setpoint and stays at
-        // zero until it both recovers and is re-dispatched, because a real
-        // inverter stays off until it is reset. Standby deliberately gets
-        // the SAME treatment — a Standby→Ok transition does NOT resume
-        // the prior setpoint; the controller re-dispatches, exactly like
-        // an Error recovery. If a "hot standby" that resumes on wake ever
-        // matters, it needs its own mode rather than a Standby special
-        // case here.
+    fn tick(&self, site: &MicrogridSite, now: DateTime<Utc>, _dt: Duration) {
+        // Own-health gate: a faulted or standby inverter is
+        // electrically offline — its IGBTs stop switching, so both
+        // outputs snap to 0 and nothing still in a delay line comes
+        // out later. (The gateway clears the command, so recovery
+        // waits for a new one.)
         if site.runtime_of(self.id).health != Health::Ok {
             self.active.trip();
-            *self.measured_w.lock() = 0.0;
             self.reactive.trip();
+            *self.measured_w.lock() = 0.0;
             return;
         }
 
-        // Active path: the axis clamps the pending command against our
-        // OWN bounds (no peeking at the children — the gateway gates
-        // out-of-envelope setpoints upstream). If one slips through,
-        // the children will refuse the excess via their own clamp
-        // and the published battery telemetry will reveal the gap.
-        let commanded_p = self.active.step(
-            now,
-            dt,
-            StepCtx {
-                other_axis: 0.0,
-                dynamic: None,
-                idle: IdleTarget::Hold,
-            },
-        );
-        // p_live is the PREVIOUS tick's published P — read before the
-        // reactive step, exactly as the pre-axis code did, so the Q
-        // envelope is judged against the AC power the children
-        // actually accepted rather than what we just commanded.
+        let commanded_p = self.active.tick(now, Some(&self.rated()));
+        // Q is clamped at the PREVIOUS tick's published P: the AC
+        // power the children actually accepted, not what was just
+        // commanded.
         let p_live = *self.measured_w.lock();
-        // Reactive: validated when accepted, re-clamped to the live
-        // envelope at p_live as the command is promoted, then slewed.
-        let commanded_q = self.reactive.step(
-            now,
-            dt,
-            StepCtx {
-                other_axis: p_live,
-                dynamic: None,
-                idle: IdleTarget::Hold,
-            },
-        );
+        let commanded_q = self.reactive.tick(now, Some(&self.q_band_at(p_live)));
 
-        // Distribute equal share among the *healthy DC sinks*. Failed
-        // batteries (Health::Error / Standby) are skipped, so the
-        // surviving siblings absorb the full commanded value; a child
-        // that doesn't take DC pushes at all (a meter mis-wired under
-        // the inverter from the UI) is skipped too, so it neither
-        // inflates the divisor nor counts as having accepted a share.
-        // Each child accumulates pushes additively over the tick, so
-        // an MxN topology (N inverters → 1 bus → M batteries) settles
-        // to the clamped sum of all parent pushes, not
-        // last-writer-wins.
+        // Distribute equal shares among the healthy DC sinks. Failed
+        // batteries are skipped, so the survivors absorb the full
+        // push; a child that takes no DC push (a meter mis-wired
+        // under the inverter) neither inflates the divisor nor counts
+        // as having accepted a share. Each child accumulates pushes
+        // over the tick, so N inverters on one bus settle to the
+        // clamped sum.
         let healthy: Vec<std::sync::Arc<dyn SimulatedComponent>> = site
             .children_of(self.id)
             .into_iter()
@@ -189,27 +151,17 @@ impl SimulatedComponent for BatteryInverter {
             .filter(|c| c.takes_dc_power())
             .collect();
         if healthy.is_empty() {
-            // No child accepted the push → no AC output. Publishing the
-            // commanded value would be a fiction: telemetry would say
-            // "I delivered P W" when the bus is electrically inert.
-            // The ramp state stays at commanded_p so the inverter
-            // resumes delivering instantly if a child comes back
-            // healthy on a later tick.
+            // No child accepted the push → no AC output. The device
+            // output stays at its command, so delivery resumes the
+            // moment a child comes back.
             *self.measured_w.lock() = 0.0;
             self.reactive.override_published(0.0);
         } else {
-            let n = healthy.len() as f32;
-            let p_share = commanded_p / n;
+            let p_share = commanded_p / healthy.len() as f32;
             // Publish what the children accepted of our push, by each
-            // child's clip ratio. The battery ticks before us (children
-            // register first), so the ratio it holds came from the
-            // previous push: the published value lags one tick. With
-            // several inverters on one bus every inverter is scaled
-            // alike, so in steady state the shares sum to what the
-            // battery took; on the tick a sibling changes its push the
-            // sum is off by that change until the next ratio. Q never
-            // reaches the battery at all — it terminates here, on the
-            // AC side, so a battery under this inverter never sees it.
+            // child's clip ratio from its previous tick (children
+            // tick first): the published value lags one tick. Q never
+            // reaches a battery; it ends here, on the AC side.
             let mut accepted_p = 0.0;
             for child in &healthy {
                 child.set_dc_power(p_share);
@@ -221,134 +173,48 @@ impl SimulatedComponent for BatteryInverter {
     }
 
     fn telemetry(&self, site: &MicrogridSite) -> Telemetry {
-        // Report the measured AC output, not the internal ramp state —
-        // those diverge when a battery clips downstream.
-        let p = *self.measured_w.lock();
-        // Reported active envelope is OUR own bounds only — clients
-        // that want the combined inverter+battery envelope read both
-        // streams and intersect. Reactive envelope is dynamic:
-        // tightens with |P| under PF, expands toward the kVA edge
-        // when P is small.
+        // The measured AC output, not the commanded value: the two
+        // differ when a battery clips downstream.
         super::inverter_telemetry(
             self.id,
             site,
-            p,
+            *self.measured_w.lock(),
             self.reactive.published(),
-            self.active.effective_static(),
-            // The trait's telemetry-shaped Q envelope: the live
-            // envelope at the measured P it samples itself (normally
-            // the `p` above, though a concurrent tick between the two
-            // reads can slide it by one step), with a genuinely empty
-            // one (a live Q augmentation disjoint from the caps band, or two
-            // live augmentations disjoint from each other) normalized
-            // to a present (0, 0) band — otherwise every telemetry
-            // consumer sees an absent bound instead of the real "zero
-            // headroom" answer. Always `Some` for an inverter.
-            self.reactive_bounds().unwrap_or_default(),
         )
-    }
-
-    fn set_active_setpoint(&self, power_w: f32) -> Result<(), SetpointError> {
-        // We don't have a `&MicrogridSite` here (the trait method is per-component),
-        // so children-summing happens in tick(). Validation here uses our
-        // own (post-augmentation) bounds — anything beyond that is a hard
-        // protocol error; the SoC clamp is enforced silently via tick().
-        //
-        // Wall clock, not the tick clock: this runs on a gRPC/UI
-        // thread with no access to the site's clock, and that is how
-        // setpoint validation has always judged augmentation liveness.
-        self.active.accept(power_w, Utc::now(), 0.0)
-    }
-
-    fn set_reactive_setpoint(&self, vars: f32) -> Result<(), SetpointError> {
-        self.reactive
-            .accept(vars, Utc::now(), *self.measured_w.lock())
-    }
-
-    fn reset_setpoint(&self) {
-        self.active.reset(0.0);
-        self.reactive.reset(0.0);
-        *self.measured_w.lock() = 0.0;
-    }
-
-    fn reset_setpoint_axis(&self, axis: crate::timeout_tracker::SetpointAxis) {
-        // Dual-axis component: each axis resets alone so one TTL
-        // expiring doesn't clear the other axis's running command.
-        // `measured_w` is recomputed from the ramp on the next tick,
-        // so neither arm needs to touch it.
-        use crate::timeout_tracker::SetpointAxis;
-        match axis {
-            SetpointAxis::Active => self.active.reset(0.0),
-            SetpointAxis::Reactive => self.reactive.reset(0.0),
-        }
-    }
-
-    fn augmentation_active(
-        &self,
-        axis: crate::timeout_tracker::SetpointAxis,
-        now: DateTime<Utc>,
-    ) -> bool {
-        use crate::timeout_tracker::SetpointAxis;
-        match axis {
-            SetpointAxis::Active => self.active.augmented(now),
-            SetpointAxis::Reactive => self.reactive.augmented(now),
-        }
-    }
-
-    /// Test-only convenience; production augments go through
-    /// `try_augment_reactive_bounds` below — this bypasses the atomic
-    /// validate+apply. Kept (rather than deleted like the P-axis
-    /// twin) because two tests deliberately reach a live-augmentation-
-    /// disjoint-from-caps state to pin `or_zero_band`'s telemetry
-    /// normalization, a state `try_augment_reactive_bounds` correctly
-    /// refuses to create; see
-    /// `zero_headroom_from_a_disjoint_q_augmentation_publishes_a_present_zero_band`
-    /// below and `setpoints::tests::set_reactive_power_clamps_to_zero_at_zero_headroom`.
-    fn augment_reactive_bounds(
-        &self,
-        ts: DateTime<Utc>,
-        bounds: crate::sim::bounds::VecBounds,
-        lifetime: Duration,
-    ) {
-        self.reactive.augment(ts, bounds, lifetime);
-    }
-
-    /// `None` for the dynamic slot: this inverter has no per-tick
-    /// derate on its P axis — `effective_active_bounds` below is rated
-    /// ∩ augmentations and nothing more, which is exactly what
-    /// `try_augment` composes on its own.
-    fn try_augment_active_bounds(
-        &self,
-        ts: DateTime<Utc>,
-        bounds: crate::sim::bounds::VecBounds,
-        lifetime: Duration,
-    ) -> Result<(), AugmentError> {
-        self.active
-            .try_augment(ts, bounds, lifetime, 0.0, None)
-            .map_err(AugmentError::Disjoint)
-    }
-
-    fn try_augment_reactive_bounds(
-        &self,
-        ts: DateTime<Utc>,
-        bounds: crate::sim::bounds::VecBounds,
-        lifetime: Duration,
-    ) -> Result<(), AugmentError> {
-        // Read P and release the lock before entering the axis's own
-        // compose-check-insert section — matches the `reactive_bounds_raw`
-        // idiom below, and keeps `measured_w` from being held across
-        // the augs+caps locks `try_augment` takes.
-        let p = *self.measured_w.lock();
-        // `None`: the Q axis's whole shape is the caps band at `p`,
-        // which `try_augment` composes itself — `reactive_bounds_raw`
-        // passes no dynamic band either.
-        self.reactive
-            .try_augment(ts, bounds, lifetime, p, None)
-            .map_err(AugmentError::Disjoint)
     }
 
     fn active_power_w(&self, _site: &MicrogridSite) -> Option<f32> {
         Some(*self.measured_w.lock())
+    }
+
+    fn has_axis(&self, _axis: SetpointAxis) -> bool {
+        true
+    }
+
+    fn set_command(&self, axis: SetpointAxis, value: f32) {
+        match axis {
+            SetpointAxis::Active => self.active.set_command(value),
+            SetpointAxis::Reactive => self.reactive.set_command(value),
+        }
+    }
+
+    fn physical_band(&self, axis: SetpointAxis, _dt: Duration) -> Option<VecBounds> {
+        match axis {
+            SetpointAxis::Active => None,
+            SetpointAxis::Reactive => {
+                let p = *self.measured_w.lock();
+                Some(self.q_band_at(p))
+            }
+        }
+    }
+
+    fn gateway_settings(&self) -> Option<GatewaySettings> {
+        Some(GatewaySettings {
+            command_delay: self.cfg.command_delay,
+            ramp_rate_w_per_s: self.cfg.ramp_rate_w_per_s,
+            reactive_command_delay: self.cfg.reactive_command_delay,
+            reactive_ramp_rate_var_per_s: self.cfg.reactive_ramp_rate_var_per_s,
+        })
     }
 
     fn aggregate_power_w(&self, _world: &MicrogridSite) -> f32 {
@@ -371,25 +237,16 @@ impl SimulatedComponent for BatteryInverter {
         self.cfg.stream_jitter_pct
     }
 
-    fn effective_active_bounds(&self) -> Option<crate::sim::bounds::VecBounds> {
-        Some(self.active.effective_static())
-    }
-
-    fn reactive_bounds_raw(&self) -> Option<crate::sim::bounds::VecBounds> {
-        let p = *self.measured_w.lock();
-        Some(self.reactive.tracking_envelope_at(Utc::now(), p, None))
-    }
-
-    fn reactive_capability(&self) -> Option<crate::sim::reactive::ReactiveCapability> {
-        self.reactive.capability()
+    fn reactive_capability(&self) -> Option<ReactiveCapability> {
+        Some(*self.caps.lock())
     }
 
     fn set_reactive_pf_limit(&self, pf: Option<f32>) {
-        self.reactive.set_pf_limit(pf);
+        self.caps.lock().pf_limit = pf;
     }
 
     fn set_reactive_apparent_va(&self, va: Option<f32>) {
-        self.reactive.set_apparent_va(va);
+        self.caps.lock().apparent_va = va;
     }
 
     fn make_fn(&self) -> &'static str {
@@ -414,79 +271,67 @@ impl SimulatedComponent for BatteryInverter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::common::metrics::Bounds;
-    use crate::sim::bounds::VecBounds;
     use crate::sim::{Battery, battery::BatteryConfig};
 
-    fn setup_inverter_with_battery() -> (MicrogridSite, u64, u64) {
-        let w = MicrogridSite::new();
-        let bat = Battery::new(
-            100,
-            Duration::from_secs(1),
-            BatteryConfig {
-                rated_lower_w: -10000.0,
-                rated_upper_w: 10000.0,
-                capacity_wh: 100_000.0,
-                soc_protect_margin_pct: 0.0,
-                ..Default::default()
+    const DT: Duration = Duration::from_millis(100);
+
+    /// ±10 kW, no delays, no ramps, a pure 10 kVA Q cap.
+    fn instant_cfg() -> BatteryInverterConfig {
+        BatteryInverterConfig {
+            rated_lower_w: -10_000.0,
+            rated_upper_w: 10_000.0,
+            command_delay: Duration::ZERO,
+            ramp_rate_w_per_s: f32::INFINITY,
+            reactive: ReactiveCapability {
+                pf_limit: None,
+                apparent_va: Some(10_000.0),
             },
-        );
-        w.register(bat);
-        let inv = BatteryInverter::new(
-            200,
-            Duration::from_secs(1),
-            BatteryInverterConfig {
-                rated_lower_w: -10000.0,
-                rated_upper_w: 10000.0,
-                command_delay: Duration::ZERO,
-                ramp_rate_w_per_s: f32::INFINITY,
-                // Instant Q with a pure kVA cap, so a reactive
-                // setpoint is accepted at P = 0 and publishes on the
-                // next tick.
-                reactive: ReactiveCapability {
-                    pf_limit: None,
-                    apparent_va: Some(10_000.0),
-                },
-                reactive_command_delay: Duration::ZERO,
-                reactive_ramp_rate_var_per_s: f32::INFINITY,
-                ..Default::default()
-            },
-        );
-        w.register(inv);
-        w.connect(200, 100);
-        (w, 100, 200)
+            reactive_command_delay: Duration::ZERO,
+            reactive_ramp_rate_var_per_s: f32::INFINITY,
+            device_delay: Duration::ZERO,
+            ..Default::default()
+        }
     }
 
-    /// A site where `n` inverters (ids 200, 201, …) share one battery
-    /// rated ±`bat_w`; inverters are ±10 kW with no delay or ramp, so
-    /// one tick settles a command.
-    fn setup_shared_battery(n: usize, bat_w: f32, soc: f32) -> (MicrogridSite, u64, Vec<u64>) {
-        let w = MicrogridSite::new();
-        w.register(Battery::new(
-            100,
+    fn battery(id: u64, w: f32, soc: f32) -> Battery {
+        Battery::new(
+            id,
             Duration::from_secs(1),
             BatteryConfig {
-                rated_lower_w: -bat_w,
-                rated_upper_w: bat_w,
+                rated_lower_w: -w,
+                rated_upper_w: w,
                 capacity_wh: 100_000.0,
                 initial_soc_pct: soc,
                 soc_protect_margin_pct: 0.0,
                 ..Default::default()
             },
+        )
+    }
+
+    /// Battery 100 (±10 kW) under inverter 200 (`instant_cfg`).
+    fn setup_inverter_with_battery() -> (MicrogridSite, u64, u64) {
+        let w = MicrogridSite::new();
+        w.register(battery(100, 10_000.0, 50.0));
+        w.register(BatteryInverter::new(
+            200,
+            Duration::from_secs(1),
+            instant_cfg(),
         ));
+        w.connect(200, 100);
+        (w, 100, 200)
+    }
+
+    /// `n` inverters (200, 201, …) sharing battery 100 (±`bat_w`).
+    fn setup_shared_battery(n: usize, bat_w: f32, soc: f32) -> (MicrogridSite, u64, Vec<u64>) {
+        let w = MicrogridSite::new();
+        w.register(battery(100, bat_w, soc));
         let mut invs = Vec::new();
         for i in 0..n {
             let id = 200 + i as u64;
             w.register(BatteryInverter::new(
                 id,
                 Duration::from_secs(1),
-                BatteryInverterConfig {
-                    rated_lower_w: -10000.0,
-                    rated_upper_w: 10000.0,
-                    command_delay: Duration::ZERO,
-                    ramp_rate_w_per_s: f32::INFINITY,
-                    ..Default::default()
-                },
+                instant_cfg(),
             ));
             w.connect(id, 100);
             invs.push(id);
@@ -494,26 +339,28 @@ mod tests {
         (w, 100, invs)
     }
 
-    /// Runs `rounds` physics passes in the site's own order
-    /// (registration order: the battery, then the inverters), so the
-    /// inverters read the ratio the battery computed from their
-    /// previous push — two rounds settle a command.
-    fn settle(w: &MicrogridSite, rounds: usize) {
-        let dt = Duration::from_millis(100);
+    /// Hardware only: every component ticks in registration order and
+    /// no gateway step runs, so a command written with `set_command`
+    /// stands.
+    fn hardware_ticks(w: &MicrogridSite, rounds: usize) {
+        let mut now = Utc::now();
         for _ in 0..rounds {
-            w.tick_once(Utc::now(), dt);
+            now += chrono::Duration::milliseconds(100);
+            for c in w.components().iter() {
+                c.tick(w, now, DT);
+            }
         }
     }
 
     /// The inverter publishes what the battery accepted, not what it
-    /// commanded: a 5 kW push into a battery that clips at 3 kW reads
-    /// 3 kW on the inverter too.
+    /// was commanded: a 5 kW push into a battery that clips at 3 kW
+    /// reads 3 kW on the inverter too.
     #[test]
     fn reported_power_follows_the_battery_clip() {
         let (w, bat, invs) = setup_shared_battery(1, 3_000.0, 50.0);
         let inv = w.get(invs[0]).unwrap();
-        inv.set_active_setpoint(5_000.0).unwrap();
-        settle(&w, 2);
+        inv.set_command(SetpointAxis::Active, 5_000.0);
+        hardware_ticks(&w, 2);
         let accepted = w.get(bat).unwrap().aggregate_power_w(&w);
         assert!(
             (accepted - 3_000.0).abs() < 1.0,
@@ -534,29 +381,26 @@ mod tests {
         let (w, _bat, invs) = setup_shared_battery(2, 3_000.0, 50.0);
         w.get(invs[0])
             .unwrap()
-            .set_active_setpoint(4_000.0)
-            .unwrap();
-        settle(&w, 2);
+            .set_command(SetpointAxis::Active, 4_000.0);
+        hardware_ticks(&w, 2);
         let a = w.get(invs[0]).unwrap().aggregate_power_w(&w);
         let b = w.get(invs[1]).unwrap().aggregate_power_w(&w);
         assert!((a - 3_000.0).abs() < 1.0, "commanding inverter, got {a}");
         assert!(b.abs() < 1.0, "idle inverter, got {b}");
     }
 
-    /// Two inverters pushing 4 kW and 2 kW into a 3 kW battery share
-    /// the clip in proportion: 2 kW and 1 kW.
+    /// Pushes of 4 kW and 2 kW into a 3 kW battery share the clip in
+    /// proportion: 2 kW and 1 kW.
     #[test]
     fn shared_clip_is_split_in_proportion_to_the_push() {
         let (w, bat, invs) = setup_shared_battery(2, 3_000.0, 50.0);
         w.get(invs[0])
             .unwrap()
-            .set_active_setpoint(4_000.0)
-            .unwrap();
+            .set_command(SetpointAxis::Active, 4_000.0);
         w.get(invs[1])
             .unwrap()
-            .set_active_setpoint(2_000.0)
-            .unwrap();
-        settle(&w, 2);
+            .set_command(SetpointAxis::Active, 2_000.0);
+        hardware_ticks(&w, 2);
         let a = w.get(invs[0]).unwrap().aggregate_power_w(&w);
         let b = w.get(invs[1]).unwrap().aggregate_power_w(&w);
         assert!((a - 2_000.0).abs() < 1.0, "4 kW pusher, got {a}");
@@ -568,160 +412,81 @@ mod tests {
         );
     }
 
-    /// A setpoint rejected because the live augmentation narrowed the
-    /// envelope must surface the *augmented* bounds in the error, not
-    /// the rated ones — a client that just installed the augmentation
-    /// reads "out of [-5000, 5000]" and knows exactly which limit
-    /// they're up against.
+    /// A setpoint refused because a live augmentation narrowed the
+    /// envelope names the augmented bounds, not the rated ones.
     #[test]
     fn out_of_bounds_error_reports_augmented_envelope() {
-        let (_w, _bat_id, inv_id) = setup_inverter_with_battery();
-        let w = MicrogridSite::new();
-        let inv = BatteryInverter::new(
-            inv_id,
-            Duration::from_secs(1),
-            BatteryInverterConfig {
-                rated_lower_w: -10_000.0,
-                rated_upper_w: 10_000.0,
-                command_delay: Duration::ZERO,
-                ramp_rate_w_per_s: f32::INFINITY,
-                ..Default::default()
-            },
-        );
-        w.register(inv);
-        let inv = w.get(inv_id).unwrap();
-
-        inv.try_augment_active_bounds(
-            Utc::now(),
-            VecBounds(vec![Bounds {
-                lower: Some(-5_000.0),
-                upper: Some(5_000.0),
-            }]),
+        let (w, _bat, inv) = setup_inverter_with_battery();
+        let gw = w.gateway();
+        gw.augment(
+            inv,
+            w.run_generation(),
+            SetpointAxis::Active,
+            VecBounds::single(-5_000.0, 5_000.0),
             Duration::from_secs(60),
         )
         .unwrap();
-
-        let err = inv
-            .set_active_setpoint(8_000.0)
-            .expect_err("8 kW exceeds augmented envelope");
-        match err {
-            SetpointError::OutOfBounds {
-                value, envelope, ..
-            } => {
-                assert_eq!(value, 8_000.0);
-                let b = envelope.0.first().expect("single-bucket envelope");
-                assert_eq!(b.lower, Some(-5_000.0));
-                assert_eq!(b.upper, Some(5_000.0));
-            }
-            other => panic!("expected OutOfBounds, got {other:?}"),
-        }
+        let err = gw
+            .command(inv, SetpointAxis::Active, 8_000.0)
+            .expect_err("8 kW exceeds the augmented envelope");
+        assert!(err.to_string().contains("[-5000, 5000]"), "{err}");
     }
 
-    /// An augmentation arriving AFTER a setpoint armed must pull the
-    /// running output back inside the narrowed envelope — and the
-    /// original commanded value resumes when it lapses. The delay
-    /// queue returns the armed value on every poll, so each tick
-    /// re-clamps it against the live envelope.
+    /// An augmentation arriving after a setpoint armed pulls the
+    /// running output in, and the command resumes when it lapses.
     #[test]
     fn late_augmentation_re_clamps_an_armed_setpoint() {
-        let (w, _bat_id, inv_id) = setup_inverter_with_battery();
-        let inv = w.get(inv_id).unwrap();
-        let dt = Duration::from_millis(100);
-        let t0 = Utc::now();
-
-        inv.set_active_setpoint(8_000.0).unwrap();
-        inv.tick(&w, t0, dt);
+        let (w, _bat, id) = setup_inverter_with_battery();
+        let inv = w.get(id).unwrap();
+        let t0 = w.now();
+        w.gateway()
+            .command(id, SetpointAxis::Active, 8_000.0)
+            .unwrap();
+        w.tick_once(t0, DT);
         assert!((inv.aggregate_power_w(&w) - 8_000.0).abs() < 1.0);
-
-        // Narrow to ±5 kW for 50 ms — the next tick pulls the output in.
-        inv.try_augment_active_bounds(
-            t0,
-            VecBounds(vec![Bounds {
-                lower: Some(-5_000.0),
-                upper: Some(5_000.0),
-            }]),
-            Duration::from_millis(50),
-        )
-        .unwrap();
-        inv.tick(&w, t0 + chrono::Duration::milliseconds(10), dt);
+        w.gateway()
+            .augment(
+                id,
+                w.run_generation(),
+                SetpointAxis::Active,
+                VecBounds::single(-5_000.0, 5_000.0),
+                Duration::from_millis(500),
+            )
+            .unwrap();
+        w.tick_once(t0 + chrono::Duration::milliseconds(100), DT);
         assert!(
             (inv.aggregate_power_w(&w) - 5_000.0).abs() < 1.0,
             "expected the armed 8 kW clamped to 5 kW, got {}",
             inv.aggregate_power_w(&w),
         );
-
-        // Past the lifetime the rated envelope returns and the armed
-        // command resumes in full.
-        inv.tick(&w, t0 + chrono::Duration::milliseconds(100), dt);
+        w.tick_once(t0 + chrono::Duration::seconds(5), DT);
         assert!((inv.aggregate_power_w(&w) - 8_000.0).abs() < 1.0);
     }
 
-    /// An expired reactive TTL resets ONLY the reactive axis — the
-    /// active command keeps running (and vice versa). Pre-split, one
-    /// shared timeout called the full `reset_setpoint`, so a 10 s Q
-    /// command's expiry silently cleared a 15 min P command.
+    /// Resetting one axis leaves the other axis's command running.
     #[test]
     fn axis_reset_leaves_the_other_axis_running() {
-        use crate::timeout_tracker::SetpointAxis;
-        // kVA-capped reactive envelope (not the default PF cap) so Q
-        // stays commandable while P parks at 0 — the point here is
-        // axis independence, not envelope coupling.
-        let w = MicrogridSite::new();
-        let bat = Battery::new(
-            100,
-            Duration::from_secs(1),
-            BatteryConfig {
-                rated_lower_w: -10_000.0,
-                rated_upper_w: 10_000.0,
-                capacity_wh: 100_000.0,
-                soc_protect_margin_pct: 0.0,
-                ..Default::default()
-            },
-        );
-        w.register(bat);
-        let inv = BatteryInverter::new(
-            200,
-            Duration::from_secs(1),
-            BatteryInverterConfig {
-                rated_lower_w: -10_000.0,
-                rated_upper_w: 10_000.0,
-                command_delay: Duration::ZERO,
-                ramp_rate_w_per_s: f32::INFINITY,
-                reactive: ReactiveCapability {
-                    pf_limit: None,
-                    apparent_va: Some(10_000.0),
-                },
-                reactive_command_delay: Duration::ZERO,
-                reactive_ramp_rate_var_per_s: f32::INFINITY,
-                ..Default::default()
-            },
-        );
-        w.register(inv);
-        w.connect(200, 100);
-        let inv = w.get(200).unwrap();
-        let dt = Duration::from_millis(100);
-
-        inv.set_active_setpoint(4_000.0).unwrap();
-        inv.set_reactive_setpoint(1_000.0).unwrap();
-        inv.tick(&w, Utc::now(), dt);
-        inv.tick(&w, Utc::now(), dt);
+        let (w, _bat, id) = setup_inverter_with_battery();
+        let inv = w.get(id).unwrap();
+        let gw = w.gateway();
+        gw.command(id, SetpointAxis::Active, 4_000.0).unwrap();
+        gw.command(id, SetpointAxis::Reactive, 1_000.0).unwrap();
+        w.tick_n(2, DT);
         assert!((inv.aggregate_power_w(&w) - 4_000.0).abs() < 1.0);
         assert!((inv.aggregate_reactive_var(&w) - 1_000.0).abs() < 1.0);
 
-        // Reactive TTL fires: Q parks, P keeps running.
-        inv.reset_setpoint_axis(SetpointAxis::Reactive);
-        inv.tick(&w, Utc::now(), dt);
+        gw.reset(id, SetpointAxis::Reactive);
+        w.tick_n(1, DT);
         assert!(
             (inv.aggregate_power_w(&w) - 4_000.0).abs() < 1.0,
             "P survives"
         );
         assert!(inv.aggregate_reactive_var(&w).abs() < 1.0, "Q parked");
 
-        // Re-arm Q, then expire the ACTIVE axis: P parks, Q runs on.
-        inv.set_reactive_setpoint(800.0).unwrap();
-        inv.tick(&w, Utc::now(), dt);
-        inv.reset_setpoint_axis(SetpointAxis::Active);
-        inv.tick(&w, Utc::now(), dt);
+        gw.command(id, SetpointAxis::Reactive, 800.0).unwrap();
+        w.tick_n(1, DT);
+        gw.reset(id, SetpointAxis::Active);
+        w.tick_n(1, DT);
         assert!(inv.aggregate_power_w(&w).abs() < 1.0, "P parked");
         assert!(
             (inv.aggregate_reactive_var(&w) - 800.0).abs() < 1.0,
@@ -729,51 +494,32 @@ mod tests {
         );
     }
 
-    /// When every downstream battery is unhealthy the inverter delivers
-    /// nothing — telemetry has to mirror that, not the ramp's
-    /// in-flight commanded value. Pre-fix the inverter published the
-    /// commanded P even though no child accepted it.
+    /// With every battery unhealthy the inverter publishes 0 on both
+    /// axes, and resumes at once when one comes back.
     #[test]
     fn no_healthy_children_means_zero_published() {
-        let (w, bat_id, inv_id) = setup_inverter_with_battery();
-        let inv = w.get(inv_id).unwrap();
-
-        inv.set_active_setpoint(3000.0).unwrap();
-        inv.tick(&w, Utc::now(), Duration::from_millis(100));
-        // Healthy children: commanded value is delivered + published.
-        assert!((inv.aggregate_power_w(&w) - 3000.0).abs() < 1.0);
-
+        let (w, bat_id, id) = setup_inverter_with_battery();
+        let inv = w.get(id).unwrap();
+        w.gateway()
+            .command(id, SetpointAxis::Active, 3_000.0)
+            .unwrap();
+        w.tick_n(1, DT);
+        assert!((inv.aggregate_power_w(&w) - 3_000.0).abs() < 1.0);
         w.set_health(bat_id, Health::Error).unwrap();
-        inv.tick(&w, Utc::now(), Duration::from_millis(100));
-        assert!(
-            inv.aggregate_power_w(&w).abs() < 1.0,
-            "expected 0 W with no healthy children, got {}",
-            inv.aggregate_power_w(&w),
-        );
-        // Reactive side mirrors the same rule.
-        assert!(
-            inv.aggregate_reactive_var(&w).abs() < 1.0,
-            "expected 0 VAR with no healthy children, got {}",
-            inv.aggregate_reactive_var(&w),
-        );
-
-        // Recovery: bring the battery back, the inverter resumes
-        // delivering on the next tick (ramp.actual stayed at 3000).
+        w.tick_n(1, DT);
+        assert!(inv.aggregate_power_w(&w).abs() < 1.0);
+        assert!(inv.aggregate_reactive_var(&w).abs() < 1.0);
         w.set_health(bat_id, Health::Ok).unwrap();
-        inv.tick(&w, Utc::now(), Duration::from_millis(100));
-        assert!((inv.aggregate_power_w(&w) - 3000.0).abs() < 1.0);
+        w.tick_n(1, DT);
+        assert!((inv.aggregate_power_w(&w) - 3_000.0).abs() < 1.0);
     }
 
-    /// A child that takes no DC pushes (a meter mis-wired under the
-    /// inverter from the UI) is left out of the share split: the
-    /// battery gets the FULL commanded value, and the published P
-    /// reflects what the battery accepted — pre-fix the meter halved
-    /// the divisor and its swallowed share was still reported as
-    /// delivered via the default accept ratio of 1.0.
+    /// A child that takes no DC push (a mis-wired meter) neither
+    /// dilutes the share nor counts as having accepted one.
     #[test]
     fn non_dc_children_do_not_dilute_the_share() {
         use crate::sim::Meter;
-        let (w, bat_id, inv_id) = setup_inverter_with_battery();
+        let (w, bat_id, id) = setup_inverter_with_battery();
         w.register(Meter::new(
             300,
             Duration::from_secs(1),
@@ -782,79 +528,116 @@ mod tests {
             0.0,
             false,
         ));
-        w.connect(inv_id, 300);
-        let inv = w.get(inv_id).unwrap();
-
-        inv.set_active_setpoint(3000.0).unwrap();
-        inv.set_reactive_setpoint(500.0).unwrap();
-        inv.tick(&w, Utc::now(), Duration::from_millis(100));
-        assert!(
-            (inv.aggregate_power_w(&w) - 3000.0).abs() < 1.0,
-            "expected the full 3000 W published, got {}",
-            inv.aggregate_power_w(&w),
-        );
-        assert!(
-            (inv.aggregate_reactive_var(&w) - 500.0).abs() < 1.0,
-            "expected the commanded Q published, got {}",
-            inv.aggregate_reactive_var(&w),
-        );
-
-        // With the battery down only the meter is left — no DC sink,
-        // so the inverter publishes zero on BOTH axes, same as
-        // having no children at all.
+        w.connect(id, 300);
+        let inv = w.get(id).unwrap();
+        w.gateway()
+            .command(id, SetpointAxis::Active, 3_000.0)
+            .unwrap();
+        w.gateway()
+            .command(id, SetpointAxis::Reactive, 500.0)
+            .unwrap();
+        w.tick_n(1, DT);
+        assert!((inv.aggregate_power_w(&w) - 3_000.0).abs() < 1.0);
+        assert!((inv.aggregate_reactive_var(&w) - 500.0).abs() < 1.0);
         w.set_health(bat_id, Health::Error).unwrap();
-        inv.tick(&w, Utc::now(), Duration::from_millis(100));
+        w.tick_n(1, DT);
         assert!(inv.aggregate_power_w(&w).abs() < 1.0);
         assert!(inv.aggregate_reactive_var(&w).abs() < 1.0);
     }
 
-    /// When the *inverter itself* faults it trips offline: zero output,
-    /// and — unlike the no-healthy-children case — it does NOT auto-resume
-    /// its prior setpoint on recovery. A real inverter stays off until it
-    /// is reset and re-dispatched.
+    /// A faulted inverter trips offline, loses its command and its
+    /// lifetime, and stays at 0 after recovery until re-dispatched.
     #[test]
     fn errored_inverter_trips_offline_and_awaits_redispatch() {
-        let (w, _bat_id, inv_id) = setup_inverter_with_battery();
-        let inv = w.get(inv_id).unwrap();
-        let dt = Duration::from_millis(100);
-
-        inv.set_active_setpoint(3000.0).unwrap();
-        inv.tick(&w, Utc::now(), dt);
-        assert!((inv.aggregate_power_w(&w) - 3000.0).abs() < 1.0);
-
-        // Fault the inverter itself → no production or consumption.
-        w.set_health(inv_id, Health::Error).unwrap();
-        inv.tick(&w, Utc::now(), dt);
-        assert!(
-            inv.aggregate_power_w(&w).abs() < 1.0,
-            "errored inverter must produce 0 W, got {}",
-            inv.aggregate_power_w(&w),
+        let (w, _bat, id) = setup_inverter_with_battery();
+        let inv = w.get(id).unwrap();
+        w.gateway()
+            .command(id, SetpointAxis::Active, 3_000.0)
+            .unwrap();
+        w.tick_n(1, DT);
+        assert!((inv.aggregate_power_w(&w) - 3_000.0).abs() < 1.0);
+        w.set_health(id, Health::Error).unwrap();
+        w.tick_n(1, DT);
+        assert!(inv.aggregate_power_w(&w).abs() < 1.0);
+        assert_eq!(
+            w.gateway().remaining_lifetime(id, SetpointAxis::Active),
+            None
         );
-
-        // Recovery alone does not resume delivery — the setpoint was
-        // cleared on the trip, so it stays at zero awaiting re-dispatch.
-        w.set_health(inv_id, Health::Ok).unwrap();
-        inv.tick(&w, Utc::now(), dt);
-        assert!(
-            inv.aggregate_power_w(&w).abs() < 1.0,
-            "recovered inverter must await re-dispatch at 0 W, got {}",
-            inv.aggregate_power_w(&w),
-        );
-
-        // A fresh setpoint brings it back online.
-        inv.set_active_setpoint(2000.0).unwrap();
-        inv.tick(&w, Utc::now(), dt);
-        assert!((inv.aggregate_power_w(&w) - 2000.0).abs() < 1.0);
+        w.set_health(id, Health::Ok).unwrap();
+        w.tick_n(1, DT);
+        assert!(inv.aggregate_power_w(&w).abs() < 1.0, "awaits re-dispatch");
+        w.gateway()
+            .command(id, SetpointAxis::Active, 2_000.0)
+            .unwrap();
+        w.tick_n(1, DT);
+        assert!((inv.aggregate_power_w(&w) - 2_000.0).abs() < 1.0);
     }
 
-    /// A disabled PF cap (`None`) must pin as literal `0`, not be
-    /// omitted — an omitted kwarg would resurrect the 0.35 PF default
-    /// on load. Infinite ramp rates are omitted instead of rendered
-    /// as a non-finite literal.
+    /// A command still in the device delay line when the inverter
+    /// trips does not replay on recovery.
+    #[test]
+    fn a_trip_does_not_replay_a_pre_trip_command() {
+        let w = MicrogridSite::new();
+        w.register(battery(100, 10_000.0, 50.0));
+        w.register(BatteryInverter::new(
+            200,
+            Duration::from_secs(1),
+            BatteryInverterConfig {
+                device_delay: Duration::from_millis(100),
+                ..instant_cfg()
+            },
+        ));
+        w.connect(200, 100);
+        let inv = w.get(200).unwrap();
+        w.gateway()
+            .command(200, SetpointAxis::Active, 3_000.0)
+            .unwrap();
+        w.tick_n(1, DT);
+        assert!(
+            inv.aggregate_power_w(&w).abs() < 1.0,
+            "still in the delay line"
+        );
+        w.set_health(200, Health::Error).unwrap();
+        w.tick_n(1, DT);
+        w.set_health(200, Health::Ok).unwrap();
+        w.tick_n(3, DT);
+        assert!(inv.aggregate_power_w(&w).abs() < 1.0, "nothing replays");
+    }
+
+    /// Gateway delay and device delay each apply once: 200 ms of
+    /// gateway delay and 100 ms of device delay at a 100 ms tick put
+    /// the command on the output at the fourth tick, not earlier and
+    /// not later.
+    #[test]
+    fn a_command_reaches_the_output_after_the_gateway_and_device_delays() {
+        let w = MicrogridSite::new();
+        w.register(battery(100, 10_000.0, 50.0));
+        w.register(BatteryInverter::new(
+            200,
+            Duration::from_secs(1),
+            BatteryInverterConfig {
+                command_delay: Duration::from_millis(200),
+                device_delay: Duration::from_millis(100),
+                ..instant_cfg()
+            },
+        ));
+        w.connect(200, 100);
+        let inv = w.get(200).unwrap();
+        w.gateway()
+            .command(200, SetpointAxis::Active, 3_000.0)
+            .unwrap();
+        w.tick_n(3, DT);
+        assert!(inv.aggregate_power_w(&w).abs() < 1.0, "too early");
+        w.tick_n(1, DT);
+        assert!((inv.aggregate_power_w(&w) - 3_000.0).abs() < 1.0, "on time");
+    }
+
+    /// A disabled PF cap pins as literal `0`; infinite ramps are
+    /// omitted.
     #[test]
     fn constructor_kwargs_pin_reactive_disabled_as_zero() {
         let mut cfg = BatteryInverterConfig::default();
-        cfg.reactive.pf_limit = None; // disabled at construction
+        cfg.reactive.pf_limit = None;
         let inv = BatteryInverter::new(3, Duration::from_secs(1), cfg);
         assert_eq!(inv.make_fn(), "%make-battery-inverter");
         let s = inv
@@ -871,11 +654,7 @@ mod tests {
         assert!(s.contains(":command-delay-ms 0"));
     }
 
-    /// Component config is `f32`, so its kwargs must render through
-    /// the `f32` shortest-round-trip form. Widening to `f64` first
-    /// prints the *f64* nearest 0.35f32 —
-    /// `:reactive-pf-limit 0.3499999940395355` — which is what ended
-    /// up committed in the generated block of a shipped example.
+    /// f32 config renders without widened-f64 noise.
     #[test]
     fn constructor_kwargs_render_f32_without_widening_noise() {
         let mut cfg = BatteryInverterConfig::default();
@@ -891,120 +670,55 @@ mod tests {
         assert!(!s.contains("0.3499"), "no widened-f64 tail: {s}");
     }
 
-    /// P pinned at the apparent-power rim alone is NOT the empty-
-    /// envelope case: `ReactiveCapability::q_bounds_at` always
-    /// returns a well-formed `lo <= hi` pair (explicitly `(0.0, 0.0)`
-    /// at the rim), so the caps band is always one present band. This
-    /// pins that baseline so it isn't confused with the real empty
-    /// case below.
+    /// P at the apparent-power rim alone gives a present (0, 0) band.
     #[test]
     fn apparent_power_rim_alone_is_a_present_zero_band_not_an_empty_one() {
-        let inv = BatteryInverter::new(
-            1,
-            Duration::from_secs(1),
-            BatteryInverterConfig {
-                reactive: ReactiveCapability {
-                    pf_limit: None,
-                    apparent_va: Some(10_000.0),
-                },
-                reactive_command_delay: Duration::ZERO,
-                reactive_ramp_rate_var_per_s: f32::INFINITY,
-                ..Default::default()
-            },
-        );
-        // P == S: q_bounds_at returns (0.0, 0.0) directly — already a
-        // present band, no augmentation involved.
-        let env = inv
-            .reactive
-            .tracking_envelope_at(Utc::now(), 10_000.0, None);
+        let inv = BatteryInverter::new(1, Duration::from_secs(1), instant_cfg());
+        let env = inv.q_band_at(10_000.0);
         assert_eq!(env.0.len(), 1, "caps alone never produce an empty band");
         assert_eq!((env.0[0].lower, env.0[0].upper), (Some(0.0), Some(0.0)));
     }
 
-    /// The GENUINE empty-envelope case: a live Q augmentation whose
-    /// band is entirely disjoint from the caps band at the current P
-    /// intersects to nothing (`VecBounds::intersect` drops every
-    /// non-overlapping pair), so `tracking_envelope_at` returns a
-    /// truly empty `VecBounds` — unlike the apparent-power-rim case
-    /// above. `telemetry()`'s `reactive_power_bounds` and the
-    /// `reactive_bounds()` trait method (read by the CLAMP arm and by
-    /// the site's `reactive_setpoint_envelope`; the config-bounds
-    /// proto advertises the capability hull instead) must both
-    /// normalize that empty envelope to a PRESENT `(0.0, 0.0)` band —
-    /// an absent band would
-    /// leave the WS/history/hovercard surfaces on stale non-zero
-    /// bounds exactly when the operator should see "no headroom".
-    ///
-    /// The augmentation goes in through the trait's infallible
-    /// test-only `augment_reactive_bounds`, not the atomic production
-    /// door (`try_augment_reactive_bounds`) the gRPC route uses — that
-    /// door refuses to install a band disjoint from the current caps
-    /// band, so it can't reach this state directly. The disjoint state
-    /// is nonetheless production-reachable: a prior augmentation that
-    /// overlapped the caps band at the P it was installed under can go
-    /// disjoint later purely from the caps band shrinking as P ramps,
-    /// with no further augmentation call at all. This test uses the
-    /// test-only door to construct that state directly rather than
-    /// waiting on a ramp.
-    /// The inverter is still constructed directly rather than through
-    /// `MicrogridSite::register` because the sanity check below reads
-    /// the private `reactive` axis, which only the concrete type
-    /// exposes.
+    /// A Q augmentation that fit the caps band at idle P is disjoint
+    /// from it once P reaches the kVA rim: the envelope is genuinely
+    /// empty, and every reader sees a present (0, 0) band.
     #[test]
     fn zero_headroom_from_a_disjoint_q_augmentation_publishes_a_present_zero_band() {
-        let inv = BatteryInverter::new(
-            1,
+        let w = MicrogridSite::new();
+        w.register(battery(100, 5_000.0, 50.0));
+        w.register(BatteryInverter::new(
+            200,
             Duration::from_secs(1),
             BatteryInverterConfig {
+                rated_lower_w: -5_000.0,
+                rated_upper_w: 5_000.0,
                 reactive: ReactiveCapability {
                     pf_limit: None,
-                    apparent_va: Some(1_000.0),
+                    apparent_va: Some(5_000.0),
                 },
-                reactive_command_delay: Duration::ZERO,
-                reactive_ramp_rate_var_per_s: f32::INFINITY,
-                ..Default::default()
+                ..instant_cfg()
             },
-        );
-        let t0 = Utc::now();
-        // At P=0 the caps band is [-1000, 1000]; a live augmentation
-        // at [2000, 3000] shares nothing with it.
-        inv.augment_reactive_bounds(
-            t0,
-            VecBounds::single(2000.0, 3000.0),
+        ));
+        w.connect(200, 100);
+        let gw = w.gateway();
+        gw.augment(
+            200,
+            w.run_generation(),
+            SetpointAxis::Reactive,
+            VecBounds::single(-4_000.0, -3_000.0),
             Duration::from_secs(60),
-        );
-
-        // Sanity: confirm this really is the empty case the caps-only
-        // test above is NOT.
-        let env = inv.reactive.tracking_envelope_at(t0, 0.0, None);
-        assert!(
-            env.0.is_empty(),
-            "test setup must reach a genuinely empty envelope, got {env}"
-        );
-
-        let w = MicrogridSite::new();
-        let t = inv.telemetry(&w);
-        let bounds = t
-            .reactive_power_bounds
-            .expect("empty envelope normalizes to a present band");
-        assert_eq!(bounds.0.len(), 1, "must normalize to exactly one band");
+        )
+        .unwrap();
+        gw.command(200, SetpointAxis::Active, 5_000.0).unwrap();
+        w.tick_n(3, DT);
+        assert!((w.get(200).unwrap().aggregate_power_w(&w) - 5_000.0).abs() < 1.0);
+        let band = w.bounds_of(200, SetpointAxis::Reactive).unwrap();
         assert_eq!(
-            (bounds.0[0].lower, bounds.0[0].upper),
-            (Some(0.0), Some(0.0))
+            (band.0.len(), band.0[0].lower, band.0[0].upper),
+            (1, Some(0.0), Some(0.0))
         );
-
-        let rb = inv
-            .reactive_bounds()
-            .expect("reactive_bounds() present even at zero headroom");
-        assert_eq!(rb.0.len(), 1);
-        assert_eq!((rb.0[0].lower, rb.0[0].upper), (Some(0.0), Some(0.0)));
-
-        // The un-normalized twin the augment gate reads stays empty —
-        // that is what makes a further augmentation disjoint from
-        // everything instead of overlapping a phantom (0, 0) band.
-        let raw = inv
-            .reactive_bounds_raw()
-            .expect("an inverter always reports a raw Q envelope");
-        assert!(raw.0.is_empty(), "raw must stay empty, got {raw}");
+        let t = w.telemetry_of(w.get(200).unwrap().as_ref());
+        assert_eq!(t.reactive_power_bounds.unwrap().to_string(), "[0, 0]");
+        assert!(gw.command(200, SetpointAxis::Reactive, 400.0).is_err());
     }
 }

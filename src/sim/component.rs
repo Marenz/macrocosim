@@ -648,10 +648,7 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// This does NOT back the gRPC `AugmentElectricalComponentBounds`
     /// method any more — [`Self::try_augment_reactive_bounds`] does,
     /// and it validates atomically with the insert. What's left here
-    /// is the unchecked door: `BatteryInverter` overrides it so tests
-    /// can deliberately reach a live-augmentation-disjoint-from-caps
-    /// state that the atomic door correctly refuses to create. The
-    /// active-side twin had no such user and was deleted.
+    /// is the unchecked door, which no component overrides.
     ///
     /// The default is a silent no-op: a component with no reactive
     /// axis has nothing to narrow.
@@ -666,9 +663,9 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// Check an active-power bounds augmentation against the live
     /// envelope and apply it atomically. Reached through
     /// `try_augment_bounds` (on `dyn SimulatedComponent`), which runs
-    /// the shape checks first; this door does not. The four axis-backed
-    /// components (`EvCharger`, `SteamBoiler`, `BatteryInverter`,
-    /// `SolarInverter`) override this to route through their axis's
+    /// the shape checks first; this door does not. The components with
+    /// a `PowerAxis` (`EvCharger`, `SteamBoiler`, `SolarInverter`)
+    /// override this to route through their axis's
     /// `PowerAxis::try_augment`, which composes, checks and inserts
     /// under one lock.
     ///

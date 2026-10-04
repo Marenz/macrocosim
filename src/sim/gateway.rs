@@ -714,9 +714,9 @@ mod tests {
         assert_eq!(deadline, headless_base() + chrono::Duration::seconds(30));
     }
 
-    /// Through the façade a command crosses the component's own
-    /// delay and ramp once: a zero-delay, unramped battery inverter
-    /// answers on the very next tick, as it did before the gateway.
+    /// A zero-delay, unramped battery inverter answers a gateway
+    /// command on the very next tick: the command crosses each delay
+    /// once.
     #[test]
     fn facade_command_reaches_the_output_in_one_tick() {
         use crate::sim::{
@@ -732,7 +732,10 @@ mod tests {
         site.register(BatteryInverter::new(
             2,
             Duration::from_secs(1),
-            BatteryInverterConfig::default(),
+            BatteryInverterConfig {
+                device_delay: Duration::ZERO,
+                ..Default::default()
+            },
         ));
         site.connect(2, 1);
         site.gateway()
@@ -831,6 +834,45 @@ mod tests {
         );
         assert!(gw.bounds_of(1, SetpointAxis::Reactive).is_none());
         assert!(gw.bounds_of(99, SetpointAxis::Active).is_none());
+    }
+
+    /// An owned reactive axis validates against, and reports, the
+    /// capability at the inverter's measured P from its last tick; an
+    /// envelope a Q augmentation leaves empty reads as `(0, 0)`.
+    #[test]
+    fn an_owned_reactive_axis_follows_the_capability_at_measured_p() {
+        let site = inverter_over_battery(30_000.0);
+        let gw = site.gateway();
+        let q = SetpointAxis::Reactive;
+        assert_eq!(gw.bounds_of(2, q).unwrap().to_string(), "[-5000, 5000]");
+        gw.command(2, SetpointAxis::Active, 3_000.0).unwrap();
+        assert_eq!(
+            gw.bounds_of(2, q).unwrap().to_string(),
+            "[-5000, 5000]",
+            "a command moves nothing before the inverter measures it"
+        );
+        site.tick_n(3, Duration::from_millis(100));
+        assert_eq!(site.get(2).unwrap().active_power_w(&site), Some(3_000.0));
+        // 5 kVA at 3 kW leaves 4 kVAr.
+        assert_eq!(gw.bounds_of(2, q).unwrap().to_string(), "[-4000, 4000]");
+        let e = gw.command(2, q, 4_500.0).unwrap_err();
+        assert!(e.to_string().contains("out of bounds [-4000, 4000]"), "{e}");
+        assert!(gw.command(2, q, 3_500.0).is_ok());
+
+        gw.augment(
+            2,
+            site.run_generation(),
+            q,
+            VecBounds::single(3_000.0, 3_900.0),
+            HOUR,
+        )
+        .unwrap();
+        gw.command(2, SetpointAxis::Active, 4_800.0).unwrap();
+        site.tick_n(3, Duration::from_millis(100));
+        // 5 kVA at 4.8 kW leaves ±1.4 kVAr, disjoint from [3000, 3900].
+        let band = gw.bounds_of(2, q).unwrap();
+        assert_eq!(band.to_string(), "[0, 0]");
+        assert_eq!(band.0.len(), 1, "a present zero band, not an absent one");
     }
 
     /// The children gate names the combined envelope; `Clamp` uses it.
