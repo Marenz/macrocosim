@@ -1328,6 +1328,69 @@ async fn load_as_reports_a_committed_partial_as_a_warning_not_a_conflict() {
     assert!(dir.join("microgrids/41.lisp").exists(), "the copy is kept");
 }
 
+/// A load-as claims an id and a port and writes a file, the same
+/// window a create has, so it waits on the create lock: a create in
+/// flight finishes before the copy picks its port.
+#[tokio::test]
+async fn load_as_waits_for_a_create_in_flight() {
+    let (config, dir) =
+        config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
+    let text = crate::lisp::microgrid_file::compose(
+        "(make-microgrid :id 44 :name \"w\" :grpc-port 8844\n  :topology\n  (lambda ()\n    nil))",
+        "",
+    );
+    std::fs::write(dir.join("wait.lisp"), &text).unwrap();
+    let create_lock = config.create_lock();
+    let held = create_lock.lock().await;
+    let pending = tokio::spawn(call(
+        config.clone(),
+        post_json("/api/load-as", r#"{"path":"wait.lisp","id":45}"#),
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !config.microgrids().lock().contains_key(&45),
+        "the copy must not load while a create holds the lock"
+    );
+    drop(held);
+    let (st, body) = pending.await.unwrap();
+    assert_eq!(st, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert!(config.microgrids().lock().contains_key(&45));
+}
+
+/// Loading a snapshot as a new microgrid runs the same load-as, so it
+/// waits on the create lock too.
+#[tokio::test]
+async fn snapshot_load_as_waits_for_a_create_in_flight() {
+    let (config, _dir) =
+        config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
+    call(
+        config.clone(),
+        post_json("/api/microgrids/create", r#"{"name":"s","id":46}"#),
+    )
+    .await;
+    let (st, _) = call(
+        config.clone(),
+        post_json("/api/mg/46/snapshots/save", r#"{"name":"one"}"#),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let create_lock = config.create_lock();
+    let held = create_lock.lock().await;
+    let pending = tokio::spawn(call(
+        config.clone(),
+        post_json("/api/mg/46/snapshots/load", r#"{"name":"one","as_id":47}"#),
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !config.microgrids().lock().contains_key(&47),
+        "the copy must not load while a create holds the lock"
+    );
+    drop(held);
+    let (st, body) = pending.await.unwrap();
+    assert_eq!(st, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert!(config.microgrids().lock().contains_key(&47));
+}
+
 /// The committed-partial 200 must come from load_as KNOWING it
 /// copied and registered, not from asking the registry afterwards
 /// who backs the target. Retrying a load-as that already succeeded

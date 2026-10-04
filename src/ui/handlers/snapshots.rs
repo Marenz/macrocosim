@@ -60,9 +60,14 @@ pub(in crate::ui) async fn snapshots_load_for_mg(
     Path(mg_id): Path<u64>,
     Json(body): Json<SnapshotsLoadBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let loaded = super::blocking(move || config.load_snapshot_for(mg_id, &body.name, body.as_id))
-        .await?
-        .map_err(status_for)?;
+    let load = move |cfg: &Config| cfg.load_snapshot_for(mg_id, &body.name, body.as_id);
+    // Loading `as_id` is a load-as: it claims an id and a port.
+    let loaded = if body.as_id.is_some() {
+        super::blocking_under_create_lock(&config, load).await?
+    } else {
+        super::blocking(move || load(&config)).await?
+    }
+    .map_err(status_for)?;
     Ok(Json(serde_json::json!({ "ok": true, "id": loaded })))
 }
 

@@ -448,7 +448,7 @@ pub(in crate::ui) async fn load_file_as(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let path = std::path::PathBuf::from(&body.path);
     let id = body.id;
-    match super::blocking(move || config.load_as(&path, id)).await? {
+    match super::blocking_under_create_lock(&config, move |cfg| cfg.load_as(&path, id)).await? {
         Ok(id) => Ok(Json(serde_json::json!({ "id": id }))),
         // `load_as` typed this for us — it is the only thing that
         // knows whether the copy got as far as registering, so the

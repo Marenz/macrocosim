@@ -290,13 +290,16 @@ pub struct Config {
     /// before it; `/api/mg/{id}/undo` pops it back. See
     /// [`crate::lisp::undo`].
     pub(crate) undo: undo::SharedUndo,
-    /// Serializes `/api/microgrids/create` requests (import's create
-    /// step included). Create validates an id + port against the
-    /// registry, then writes a file and loads it — and the load
-    /// cannot run under the registry lock (it evaluates lisp). One
-    /// create at a time is what keeps the validation authoritative,
-    /// so two concurrent creates can never collapse onto one id. A
-    /// tokio mutex because the handler holds it across `await`s.
+    /// Serializes the routes that claim a microgrid id and a port,
+    /// then write and load a file: `/api/microgrids/create` (import's
+    /// create step included), `/api/load-as`, and a snapshot loaded
+    /// as a new microgrid. The load cannot run under the registry
+    /// lock (it evaluates lisp), so one claim at a time is what keeps
+    /// each route's validation authoritative. A plain `(load …)` or
+    /// an eval of `(make-microgrid …)` takes its port as it registers
+    /// and does not wait here. A tokio mutex, so a route waits for it
+    /// without blocking the runtime and its owned guard can move into
+    /// the blocking task.
     pub(crate) create_lock: Arc<tokio::sync::Mutex<()>>,
     /// Present only for a headless `Config` (built by
     /// [`Config::new_headless`]): the hand-advanced clock that drives
