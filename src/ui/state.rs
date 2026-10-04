@@ -65,7 +65,7 @@ pub struct MicrogridState {
     /// `tokio::sync::OnceCell` rather than `RwLock<Option<_>>`
     /// because the value is set exactly once on the first
     /// successful boot.
-    pub(super) client: tokio::sync::OnceCell<MicrogridClientHandle>,
+    pub(crate) client: tokio::sync::OnceCell<MicrogridClientHandle>,
     /// Latest sample seen per stream name. Forwarders overwrite on
     /// each recv; the `/api/microgrid/latest` endpoint snapshots the
     /// whole map on each call. `parking_lot::RwLock` because writes

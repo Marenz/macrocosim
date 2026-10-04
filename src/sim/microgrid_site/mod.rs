@@ -16,7 +16,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -96,6 +96,9 @@ struct MicrogridSiteInner {
     connections: RwLock<Vec<(u64, u64)>>,
     grid_state: RwLock<GridState>,
     physics_tick_ms: AtomicU64,
+    /// Set once `spawn_background` has started the physics tick and
+    /// the history sampler.
+    background_spawned: AtomicBool,
     /// *Process-wide* component-id allocator, cloned across every
     /// `MicrogridSite` in the enterprise so component ids stay
     /// globally unique across microgrids — matching the platform,
@@ -270,6 +273,7 @@ impl MicrogridSite {
                 connections: RwLock::new(Vec::new()),
                 grid_state: RwLock::new(GridState::default()),
                 physics_tick_ms: AtomicU64::new(100),
+                background_spawned: AtomicBool::new(false),
                 next_id,
                 runtime: RwLock::new(HashMap::new()),
                 operational_modes: RwLock::new(HashMap::new()),
@@ -1377,6 +1381,17 @@ impl MicrogridSite {
     /// belongs to a previous run.
     pub fn run_generation(&self) -> u64 {
         self.inner.run_generation.load(Ordering::Relaxed)
+    }
+
+    /// Start the physics tick and the history sampler, once per site:
+    /// `false` when they already run.
+    pub fn spawn_background(&self) -> bool {
+        if self.inner.background_spawned.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        self.clone().spawn_physics();
+        self.clone().spawn_history_sampler();
+        true
     }
 
     /// Spawn the physics loop. Returns immediately. The loop holds an

@@ -3,6 +3,7 @@ pub mod dispatch_server;
 pub mod lisp;
 pub mod proto;
 pub mod proto_conv;
+pub mod runtime;
 pub mod server;
 pub mod sim;
 pub mod timeout_tracker;
