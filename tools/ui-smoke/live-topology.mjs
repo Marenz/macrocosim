@@ -2475,6 +2475,31 @@ const fill = await page.evaluate(() => ({
 }));
 check("e2e: main ends at the bottom of the window", fill.mainBottom === fill.vh && fill.scrollHeight === fill.vh, JSON.stringify(fill));
 
+// ── e2e: a resize keeps the camera ─────────────────────────────────
+// Resizing the canvas (a window resize, a dock splitter drag) keeps
+// the user's view instead of re-fitting the graph. vis-network scales
+// the view with the canvas width on its own, so the check is against
+// what a re-fit would show, not against the old scale.
+const zoomedRect = await page.evaluate(async () => {
+  const { topology } = await import("/assets/topology.js");
+  topology.debugSetScale(1.7);
+  return topology.debugNodeScreenRect(1);
+});
+await page.setViewportSize({ width: 1300, height: 950 });
+await new Promise((r) => setTimeout(r, 800));
+const resizedRect = await page.evaluate(async () => (await import("/assets/topology.js")).topology.debugNodeScreenRect(1));
+const fittedRect = await page.evaluate(async () => {
+  const { topology } = await import("/assets/topology.js");
+  topology.fit();
+  return topology.debugNodeScreenRect(1);
+});
+await page.setViewportSize({ width: 1600, height: 950 });
+check(
+  "e2e: resizing the canvas does not re-fit the graph",
+  zoomedRect && resizedRect && fittedRect && Math.abs(resizedRect.width - fittedRect.width) > 5,
+  JSON.stringify({ zoomedRect, resizedRect, fittedRect }),
+);
+
 // ── e2e: charts without uPlot ─────────────────────────────────────
 // uPlot is a classic <script>, not a module: when it does not load
 // (a blocked asset, a bad vendor bump, its own load-time throw on an

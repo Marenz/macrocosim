@@ -768,15 +768,21 @@ export function createGraphCanvas(containerId, adapter = {}) {
       edgesDS = new vis.DataSet(edges);
       const el = container();
       network = new vis.Network(el, { nodes: nodesDS, edges: edgesDS }, visOptions);
-      // Re-frame whenever the container resizes — the subview's own
-      // display flip (display:none → display:block) is what resizes
-      // this container, and it falls through here. Without this, vis-
-      // network's camera sticks to whatever extent was captured on
-      // first paint and a graph that was wider than the canvas at
-      // construction shows only half of itself afterwards.
+      // Re-frame when the container is revealed — the subview's own
+      // display flip (display:none → display:block) takes it from
+      // 0 × 0 to its real size, and it falls through here. Without
+      // this, vis-network's camera sticks to whatever extent was
+      // captured on first paint and a graph that was wider than the
+      // canvas at construction shows only half of itself afterwards.
+      // Any other resize (the window, a dock splitter drag) keeps the
+      // user's pan and zoom; a pending reveal still re-centers.
       if (typeof ResizeObserver !== "undefined") {
+        let wasShown = false;
         const ro = new ResizeObserver(() => {
-          if (network && el.offsetWidth > 0 && el.offsetHeight > 0 && !applyPendingReveal()) {
+          const shown = el.offsetWidth > 0 && el.offsetHeight > 0;
+          const revealed = shown && !wasShown;
+          wasShown = shown;
+          if (network && shown && !applyPendingReveal() && revealed) {
             network.fit({ animation: false });
           }
         });
