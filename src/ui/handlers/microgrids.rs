@@ -185,18 +185,8 @@ fn create_core(
                 ));
             }
             Some(p) => {
-                if let Some((other, _)) = r.iter().find(|(_, e)| e.def.grpc_port == p) {
-                    return Err((
-                        StatusCode::CONFLICT,
-                        format!("gRPC port {p} is already bound by microgrid {other}"),
-                    ));
-                }
-                if reserved.contains(&p) {
-                    return Err((
-                        StatusCode::CONFLICT,
-                        format!("gRPC port {p} is reserved for the assets or dispatch server"),
-                    ));
-                }
+                crate::sim::microgrids::check_port(&r, &reserved, id, p)
+                    .map_err(|c| (StatusCode::CONFLICT, format!("gRPC port {p} {c}")))?;
                 p
             }
             None => next_free_port_in(&r, &reserved),

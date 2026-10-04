@@ -137,6 +137,46 @@ pub fn snapshot(registry: &SharedMicrogrids) -> Vec<MicrogridView> {
     registry.lock().values().map(MicrogridView::from).collect()
 }
 
+/// Why a microgrid cannot claim a gRPC port.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PortClash {
+    /// Another microgrid holds it.
+    Microgrid(u64),
+    /// It is the assets or dispatch server's port.
+    Reserved,
+}
+
+impl std::fmt::Display for PortClash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Microgrid(other) => write!(f, "is already bound by microgrid {other}"),
+            Self::Reserved => write!(f, "is reserved for the assets or dispatch server"),
+        }
+    }
+}
+
+impl std::error::Error for PortClash {}
+
+/// Whether microgrid `id` may claim `port`: no other microgrid holds
+/// it and it is not in `reserved`.
+pub fn check_port(
+    entries: &BTreeMap<u64, MicrogridEntry>,
+    reserved: &[u16],
+    id: u64,
+    port: u16,
+) -> Result<(), PortClash> {
+    if let Some((other, _)) = entries
+        .iter()
+        .find(|(oid, e)| **oid != id && e.def.grpc_port == port)
+    {
+        return Err(PortClash::Microgrid(*other));
+    }
+    if reserved.contains(&port) {
+        return Err(PortClash::Reserved);
+    }
+    Ok(())
+}
+
 /// Smallest port not claimed by a registered microgrid or listed in
 /// `reserved`, starting at `DEFAULT_GRPC_PORT` and stepping by 10.
 pub fn next_free_port(registry: &SharedMicrogrids, reserved: &[u16]) -> u16 {

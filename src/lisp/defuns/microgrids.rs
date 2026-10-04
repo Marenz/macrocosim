@@ -158,8 +158,8 @@ pub(in crate::lisp) fn register(
         );
     }
     use crate::sim::microgrids::{
-        DEFAULT_MICROGRID_NAME, MicrogridDef, MicrogridEntry, next_free_id_in, next_free_port_in,
-        with_microgrid,
+        DEFAULT_MICROGRID_NAME, MicrogridDef, MicrogridEntry, check_port, next_free_id_in,
+        next_free_port_in, with_microgrid,
     };
     ctx.defun(
         "make-microgrid",
@@ -257,20 +257,12 @@ pub(in crate::lisp) fn register(
                                          gRPC server holds :{bound_port} (restart to move it)"
                                     );
                                     bound_port
-                                } else if let Some((other, _)) = reg
-                                    .iter()
-                                    .find(|(oid, e)| **oid != id && e.def.grpc_port == p)
-                                {
-                                    return Err(tulisp::Error::invalid_argument(format!(
-                                        "make-microgrid #{id}: :grpc-port {p} is already \
-                                         bound by microgrid {other}"
-                                    )));
-                                } else if reserved.contains(&p) {
-                                    return Err(tulisp::Error::invalid_argument(format!(
-                                        "make-microgrid #{id}: :grpc-port {p} is reserved \
-                                         for the assets or dispatch server"
-                                    )));
                                 } else {
+                                    check_port(&reg, &reserved, id, p).map_err(|c| {
+                                        tulisp::Error::invalid_argument(format!(
+                                            "make-microgrid #{id}: :grpc-port {p} {c}"
+                                        ))
+                                    })?;
                                     p
                                 }
                             }
@@ -289,20 +281,11 @@ pub(in crate::lisp) fn register(
                                 // retried only on its next
                                 // registration. Reject up front,
                                 // under the same lock as the insert.
-                                if let Some((other, _)) =
-                                    reg.iter().find(|(_, e)| e.def.grpc_port == p)
-                                {
-                                    return Err(tulisp::Error::invalid_argument(format!(
-                                        "make-microgrid #{id}: :grpc-port {p} is already \
-                                         bound by microgrid {other}"
-                                    )));
-                                }
-                                if reserved.contains(&p) {
-                                    return Err(tulisp::Error::invalid_argument(format!(
-                                        "make-microgrid #{id}: :grpc-port {p} is reserved \
-                                         for the assets or dispatch server"
-                                    )));
-                                }
+                                check_port(&reg, &reserved, id, p).map_err(|c| {
+                                    tulisp::Error::invalid_argument(format!(
+                                        "make-microgrid #{id}: :grpc-port {p} {c}"
+                                    ))
+                                })?;
                                 p
                             }
                             None => next_free_port_in(&reg, &reserved),
