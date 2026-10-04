@@ -718,6 +718,12 @@ impl microgrid_server::Microgrid for MicrogridServer {
                     Err(e @ AugmentError::Disjoint(_)) => {
                         Err(tonic::Status::invalid_argument(e.to_string()))
                     }
+                    Err(e @ AugmentError::NotFound(_)) => {
+                        Err(tonic::Status::not_found(e.to_string()))
+                    }
+                    Err(e @ AugmentError::SiteReset) => {
+                        Err(tonic::Status::failed_precondition(e.to_string()))
+                    }
                 },
                 Err(status) => Err(status),
             },

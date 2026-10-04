@@ -130,6 +130,11 @@ impl TimeoutTracker {
         guard.remove(&(id, SetpointAxis::Active));
         guard.remove(&(id, SetpointAxis::Reactive));
     }
+
+    /// Drop one (id, axis) deadline.
+    pub fn remove(&self, id: u64, axis: SetpointAxis) {
+        self.inner.lock().remove(&(id, axis));
+    }
 }
 
 #[cfg(test)]

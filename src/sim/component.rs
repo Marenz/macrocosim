@@ -190,6 +190,11 @@ pub enum AugmentError {
     /// carried here: what a client could still command, not the empty
     /// composed result.
     Disjoint(VecBounds),
+    /// No component with this id is registered.
+    NotFound(u64),
+    /// The site was reset between the request's lookup and its
+    /// arrival at the gateway.
+    SiteReset,
 }
 
 impl fmt::Display for AugmentError {
@@ -202,6 +207,8 @@ impl fmt::Display for AugmentError {
                 "augmentation is disjoint from the component's current envelope {env}; \
                  no valid setpoint would remain"
             ),
+            Self::NotFound(id) => write!(f, "component {id} not found"),
+            Self::SiteReset => write!(f, "{}", crate::sim::gateway::SITE_RESET),
         }
     }
 }

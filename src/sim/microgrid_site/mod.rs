@@ -32,13 +32,13 @@ use crate::sim::component::{
     ComponentHandle, FIRST_AUTO_ID, KnobKind, KnobSnapshot, SimulatedComponent,
 };
 use crate::sim::events::{EVENT_BUS_CAPACITY, SiteEvent};
+use crate::sim::gateway::{Gateway, MicrogridGateway};
 use crate::sim::history::ComponentHistory;
 use crate::sim::runtime::{CommandMode, ComponentRuntime, Health, TelemetryMode};
 use crate::sim::scenario::ScenarioJournal;
 use crate::sim::scenario_csv::CsvSinks;
 use crate::sim::setpoints::{SetpointEvent, SetpointLog, SetpointOutcome};
 use crate::sim::sim_clock::NowSource;
-use crate::timeout_tracker::TimeoutTracker;
 
 mod history;
 mod scenarios;
@@ -95,6 +95,11 @@ impl MicrogridSite {
     /// The current time on this site's clock.
     pub fn now(&self) -> DateTime<Utc> {
         self.inner.now.read().now()
+    }
+
+    /// This site's Microgrid API gateway.
+    pub fn gateway(&self) -> Gateway<'_> {
+        Gateway::new(self, &self.inner.gateway)
     }
 }
 
@@ -198,13 +203,12 @@ struct MicrogridSiteInner {
     /// time unless the creator installs another (the sim clock of a
     /// headless run).
     now: RwLock<NowSource>,
-    /// Per-component setpoint expiry deadlines. Both the gRPC
-    /// `SetElectricalComponentPower` handler and the `(set-power …)`
-    /// Lisp defun add to this; a single tokio task in
-    /// `Config::start_timeout_loop` polls for expirations and calls
-    /// `reset_setpoint` on each. Living on MicrogridSite means the loop runs
-    /// once per process regardless of which call sites schedule.
-    timeout_tracker: TimeoutTracker,
+    /// The Microgrid API state of this microgrid: commands, request
+    /// lifetimes, augmentations. Cleared by `reset`.
+    gateway: MicrogridGateway,
+    /// The test clock `tick_n` advances.
+    #[cfg(test)]
+    test_clock: parking_lot::Mutex<Option<DateTime<Utc>>>,
     /// Scenario lifecycle + event journal. Scoped to the MicrogridSite
     /// rather than the Config because long-running scenarios
     /// outlive an `eval_file` call and the gRPC server reads from
@@ -302,7 +306,9 @@ impl MicrogridSite {
                 structural_version: AtomicU64::new(0),
                 events: broadcast::channel(EVENT_BUS_CAPACITY).0,
                 now: RwLock::new(NowSource::wall()),
-                timeout_tracker: TimeoutTracker::new(),
+                gateway: MicrogridGateway::new(),
+                #[cfg(test)]
+                test_clock: parking_lot::Mutex::new(None),
                 scenario: RwLock::new(ScenarioJournal::default()),
                 scenario_knob_baseline: RwLock::new(BTreeMap::new()),
                 scenario_csv: RwLock::new(CsvSinks::new()),
@@ -423,16 +429,17 @@ impl MicrogridSite {
     //
     // Each accepted setpoint atomically actuates and schedules a
     // deadline on its own power axis via `actuate_and_arm`; on expiry
-    // the Config loop calls `reset_expired_setpoints`, which
-    // atomically drains and resets each (id, axis) pair — the other
-    // axis's command keeps running.
+    // the physics tick (`Gateway::step`) and the Config loop
+    // (`reset_expired_setpoints`) atomically drain and reset each
+    // (id, axis) pair — the other axis's command keeps running. The
+    // deadlines live in the gateway; these methods delegate to it.
 
     /// Actuate `f` (the setpoint write on `id`'s `axis`) and, only if
     /// it succeeds, arm a deadline for it at `now + lifetime` on this
-    /// site's clock — both under the tracker's lock. Returns the
+    /// site's clock — both under the gateway lock. Returns the
     /// deadline. Replaces any previously-scheduled deadline for that
-    /// (id, axis). Lock order: tracker → components map → component
-    /// locks; `f` must not call back into `self.get`.
+    /// (id, axis). Lock order: gateway → components map → component
+    /// locks; `f` must not call back into `self.get` or the gateway.
     pub fn actuate_and_arm<E>(
         &self,
         id: u64,
@@ -440,27 +447,14 @@ impl MicrogridSite {
         lifetime: Duration,
         f: impl FnOnce() -> Result<(), E>,
     ) -> Result<DateTime<Utc>, E> {
-        self.inner
-            .timeout_tracker
-            .actuate_and_arm(id, axis, self.now(), lifetime, f)
+        self.gateway().arm(id, axis, lifetime, f)
     }
 
     /// Atomically drain every deadline at or before this site's `now`
     /// and reset its axis. The `log::info!` per expired pair fires
-    /// after the tracker lock is released.
+    /// after the gateway lock is released.
     pub fn reset_expired_setpoints(&self) {
-        let mut expired = Vec::new();
-        self.inner
-            .timeout_tracker
-            .reset_expired_with(self.now(), |id, axis| {
-                if let Some(c) = self.get(id) {
-                    c.reset_setpoint_axis(axis);
-                }
-                expired.push((id, axis));
-            });
-        for (id, axis) in expired {
-            log::info!("Request timeout for component {id} ({axis:?}) — resetting that axis");
-        }
+        self.gateway().expire(self.now());
     }
 
     /// Time left on this site's clock before `id`'s `axis` setpoint
@@ -470,7 +464,7 @@ impl MicrogridSite {
         id: u64,
         axis: crate::timeout_tracker::SetpointAxis,
     ) -> Option<Duration> {
-        self.inner.timeout_tracker.remaining(id, axis, self.now())
+        self.gateway().remaining_lifetime(id, axis)
     }
 
     // ─── Version counter + event broadcast bus ────────────────────────
@@ -626,6 +620,11 @@ impl MicrogridSite {
     /// for one pass).
     pub fn register_arc(&self, c: Arc<dyn SimulatedComponent>) -> ComponentHandle {
         let id = c.id();
+        // The gateway drops whatever a raced removal left under this
+        // id and sets the newcomer up before the component can be
+        // found, so a setpoint that finds it also finds its axes.
+        // `on_register` reads only the component itself.
+        self.inner.gateway.on_register(c.as_ref());
         Arc::make_mut(&mut *self.inner.components.write()).push(c.clone());
         self.inner.by_id.write().insert(id, c.clone());
         self.bump_structural();
@@ -645,12 +644,6 @@ impl MicrogridSite {
             .retain(|(cid, _), _| *cid != id);
         self.inner.histories.write().remove(&id);
         self.inner.setpoint_logs.write().remove(&id);
-        // Same rationale for the setpoint deadlines: a removal that
-        // raced an in-flight setpoint can leave an armed (id, axis)
-        // behind, and the fresh component under this id was never
-        // commanded — letting that deadline fire would reset an axis
-        // nobody drove.
-        self.inner.timeout_tracker.remove_component(id);
         ComponentHandle::from_arc(c)
     }
 
@@ -978,11 +971,8 @@ impl MicrogridSite {
         self.inner.histories.write().clear();
         self.inner.component_energy.write().clear();
         self.inner.setpoint_logs.write().clear();
-        // Armed setpoint deadlines are run-scoped too: one armed before
-        // the reset would otherwise fire afterwards against whatever
-        // component the reloaded config registers under the same id,
-        // resetting a command the NEW run accepted.
-        self.inner.timeout_tracker.clear();
+        // Commands, lifetimes and augmentations are run-scoped.
+        self.inner.gateway.clear();
         *self.inner.scenario.write() = ScenarioJournal::default();
         self.inner.scenario_knob_baseline.write().clear();
         // `clear()` drops every sink; each BufWriter flushes on drop.
@@ -1030,10 +1020,7 @@ impl MicrogridSite {
         self.inner.operational_modes.write().remove(&id);
         self.inner.setpoint_logs.write().remove(&id);
         self.inner.name_overrides.write().remove(&id);
-        // Both axes' deadlines: a live one outliving the component
-        // would fire against a re-registered id and reset a command
-        // the new occupant accepted.
-        self.inner.timeout_tracker.remove_component(id);
+        self.inner.gateway.forget(id);
         was_present
     }
 
@@ -1299,6 +1286,7 @@ impl MicrogridSite {
         if let Some(w) = self.inner.weather.write().as_mut() {
             w.advance(now);
         }
+        self.gateway().step(now, dt);
         let components = self.inner.components.read().clone();
         for c in components.iter() {
             c.tick(self, now, dt);
@@ -1490,6 +1478,25 @@ impl MicrogridSite {
 impl Default for MicrogridSite {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+impl MicrogridSite {
+    /// Tick the whole site `n` times, `dt` apart, on a test clock
+    /// that starts at `now()` and only moves forward, so a command
+    /// crosses the gateway and device delays. Returns the last tick's
+    /// time.
+    pub(crate) fn tick_n(&self, n: usize, dt: Duration) -> DateTime<Utc> {
+        let mut clock = self.inner.test_clock.lock();
+        let mut now = clock.unwrap_or_else(|| self.now());
+        let step = chrono::Duration::from_std(dt).expect("a test tick fits chrono");
+        for _ in 0..n {
+            now += step;
+            self.tick_once(now, dt);
+        }
+        *clock = Some(now);
+        now
     }
 }
 
