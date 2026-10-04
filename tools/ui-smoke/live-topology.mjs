@@ -2465,6 +2465,16 @@ check(
 );
 await openDemoTopology();
 
+// ── e2e: main fills the window ─────────────────────────────────────
+// Header, pulse bar and main fill the window exactly: main's height
+// is what is left, not a sum that assumes a header height.
+const fill = await page.evaluate(() => ({
+  mainBottom: Math.round(document.querySelector("main").getBoundingClientRect().bottom),
+  scrollHeight: document.documentElement.scrollHeight,
+  vh: window.innerHeight,
+}));
+check("e2e: main ends at the bottom of the window", fill.mainBottom === fill.vh && fill.scrollHeight === fill.vh, JSON.stringify(fill));
+
 // ── e2e: charts without uPlot ─────────────────────────────────────
 // uPlot is a classic <script>, not a module: when it does not load
 // (a blocked asset, a bad vendor bump, its own load-time throw on an

@@ -92,6 +92,15 @@ body {
   overflow: hidden;
 }
 
+/* Header, pulse bar, then main taking whatever height is left, so
+   main fits the window whatever the header and pulse bar measure. */
+body {
+  display: flex;
+  flex-direction: column;
+}
+body > header,
+#pulse { flex: none; }
+
 header {
   display: flex;
   align-items: center;
@@ -385,7 +394,7 @@ main {
     "bottom-splitter bottom-splitter bottom-splitter"
     "bottom bottom bottom";
   gap: 0;
-  height: calc(100vh - 41px - 28px); /* viewport minus header minus pulse bar */
+  flex: 1 1 0;
   /* Same reason as on body: keeps the canvas from pushing the
      grid past its definite size. */
   overflow: hidden;
@@ -2265,8 +2274,6 @@ body[data-density="compact"] #pulse {
   font-size: 13px;
 }
 body[data-density="compact"] #pulse-spark { width: 64px; height: 12px; }
-/* Re-tighten the main grid since the pulse bar shrank 6 px. */
-body[data-density="compact"] main { height: calc(100vh - 41px - 22px); }
 
 /* ─── Dispatches (per-microgrid) ─────────────────────────────────────────
    Read-only table of dispatches the dispatch API holds for the selected
