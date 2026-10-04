@@ -2383,12 +2383,17 @@ check(
   JSON.stringify({ blankedByNewer, failedAfterHold, repainted }),
 );
 await page.click("#mg-back");
-// The complement: fail every request, so a card click's refresh
-// fails as the newest outcome (a failed poll applies nothing and
-// cannot outrank it) — and blanks. The back click above was aborted
-// by the previous route and blanked the list too, so unroute first
-// and let the next poll bring the cards back before failing
-// everything.
+// The complement: fail every request, so a card click's refresh fails
+// as the newest outcome (a failed poll applies nothing and cannot
+// outrank it) — and blanks. The back click above was aborted by the
+// previous route and blanks the list too, so wait for that blank,
+// unroute, and let the next poll bring the cards back before failing
+// everything. A blank landing after the route below goes in would
+// stay: no poll could bring the cards back.
+check(
+  "e2e: the back click's failed refresh blanks the list",
+  (await waitFor(async () => page.evaluate(() => window.__mgPanelCache?.length === 0), 5000).catch(() => null)) === true,
+);
 await page.unroute("**/api/microgrids");
 check("e2e: the cards return once the list fetch succeeds again", Boolean(await waitFor(async () => (await page.locator(DEMO_CARD).count()) > 0, 10000).catch(() => null)));
 await page.route("**/api/microgrids", (route) => route.abort());
