@@ -1,9 +1,10 @@
 //! Marker components: CHP, wind turbine, power transformer, breaker.
-//! They carry no physics of their own — they exist so the topology
-//! is complete and so the formula engine can classify the meters
-//! around them (a meter feeding a wind turbine is a wind meter).
-//! Power is set directly on the neighboring meter via
-//! `(set-meter-power …)`.
+//! They carry no physics of their own — they exist so the topology is
+//! complete and so the formula engine can classify the meters around
+//! them (a meter feeding a wind turbine is a wind meter). Power is
+//! set directly on the neighboring meter via `(set-meter-power …)`.
+//! Whatever flows through a marker is its children's, so a meter
+//! above a transformer or breaker still sums the branch below it.
 
 use std::{fmt, time::Duration};
 
@@ -67,6 +68,14 @@ impl SimulatedComponent for Marker {
             category: Some(self.category),
             ..Default::default()
         }
+    }
+
+    fn aggregate_power_w(&self, site: &MicrogridSite) -> f32 {
+        site.sum_children(self.id, |c| c.aggregate_power_w(site))
+    }
+
+    fn aggregate_reactive_var(&self, site: &MicrogridSite) -> f32 {
+        site.sum_children(self.id, |c| c.aggregate_reactive_var(site))
     }
 
     fn make_fn(&self) -> &'static str {

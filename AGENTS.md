@@ -27,7 +27,8 @@ is wiring the topology + animating the environment.
     overrides, taper, draw law; owned by the charger, never a site
     component
   - `marker.rs` — no-physics categories (chp, wind turbine, power
-    transformer, breaker); they classify the meters around them
+    transformer, breaker); they classify the meters around them and
+    pass their children's power up to the meter above
   - `site_import.rs` — microgrid API site-export JSON → `(make-* …)` /
     `(connect …)` forms for `/api/microgrids/import`
   - `graph_adapter.rs` — lifts a site into

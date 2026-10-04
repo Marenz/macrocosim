@@ -746,6 +746,21 @@ impl MicrogridSite {
             .collect()
     }
 
+    /// Sum `value` over `parent`'s direct children, applying the
+    /// parallel-paths share — a child with N parents in the
+    /// connection graph contributes 1/N to each parent. So 1 inverter
+    /// shared by 2 parallel meters appears as half of its flow under
+    /// each — the top meter sums them and lands on the inverter's
+    /// actual power. Single-parent children clamp via `.max(1)`. The
+    /// aggregation walk behind meters and the pass-through markers.
+    pub fn sum_children(&self, parent: u64, value: impl Fn(&dyn SimulatedComponent) -> f32) -> f32 {
+        self.children_with_parent_counts(parent)
+            .into_iter()
+            .filter_map(|(id, parents)| self.get(id).map(|c| (c, parents)))
+            .map(|(child, parents)| value(child.as_ref()) / parents.max(1) as f32)
+            .sum()
+    }
+
     /// Snapshot of the registration-order component list — one Arc
     /// refcount bump, no Vec copy.
     pub fn components(&self) -> Arc<Vec<Arc<dyn SimulatedComponent>>> {

@@ -135,30 +135,11 @@ impl Meter {
         }
     }
 
-    /// The shared children walk: sum `value` over the direct
-    /// children, applying the parallel-paths share — a child with N
-    /// parents in the connection graph contributes 1/N to each
-    /// parent. So 1 inverter shared by 2 parallel meters appears as
-    /// half of its flow under each — the top meter sums them and
-    /// lands on the inverter's actual power. Single-parent children
-    /// clamp via `.max(1)`.
-    fn sum_children(
-        &self,
-        site: &MicrogridSite,
-        value: impl Fn(&dyn SimulatedComponent) -> f32,
-    ) -> f32 {
-        site.children_with_parent_counts(self.id)
-            .into_iter()
-            .filter_map(|(id, parents)| site.get(id).map(|c| (c, parents)))
-            .map(|(child, parents)| value(child.as_ref()) / parents.max(1) as f32)
-            .sum()
-    }
-
     fn aggregate_active(&self, site: &MicrogridSite) -> f32 {
         if let Some(scalar) = self.power_source.read().as_ref() {
             return scalar.get();
         }
-        self.sum_children(site, |c| c.aggregate_power_w(site))
+        site.sum_children(self.id, |c| c.aggregate_power_w(site))
     }
 
     fn aggregate_reactive(&self, site: &MicrogridSite) -> f32 {
@@ -174,7 +155,7 @@ impl Meter {
         match self.reactive_source.read().as_ref() {
             Some(ReactiveSource::Var(scalar)) => scalar.get(),
             Some(ReactiveSource::PowerFactor { pf, leading }) => derive_pf_q(p(), *pf, *leading),
-            None => self.sum_children(site, |c| c.aggregate_reactive_var(site)),
+            None => site.sum_children(self.id, |c| c.aggregate_reactive_var(site)),
         }
     }
 
@@ -575,6 +556,44 @@ mod tests {
         assert!(w.connect(2, 100));
         let m = w.get(2).unwrap();
         assert!((m.aggregate_power_w(&w) - 10_000.0).abs() < 1e-3);
+    }
+
+    /// A transformer and a breaker between two meters carry the power
+    /// below them: the top meter reads the inverter's flow (P and Q)
+    /// through both, not zero for the branch.
+    #[test]
+    fn markers_pass_their_childrens_flow_through() {
+        let w = MicrogridSite::new();
+        w.register_arc(std::sync::Arc::new(FixedFlow {
+            id: 100,
+            p: 10_000.0,
+            q: 2_000.0,
+        }));
+        w.register(Meter::new(
+            3,
+            Duration::from_secs(1),
+            None,
+            None,
+            0.0,
+            false,
+        ));
+        w.register(crate::sim::Marker::new(20, Category::Breaker, 0.0));
+        w.register(crate::sim::Marker::new(21, Category::PowerTransformer, 0.0));
+        w.register(Meter::new(
+            2,
+            Duration::from_secs(1),
+            None,
+            None,
+            0.0,
+            false,
+        ));
+        assert!(w.connect(2, 21));
+        assert!(w.connect(21, 20));
+        assert!(w.connect(20, 3));
+        assert!(w.connect(3, 100));
+        let top = w.get(2).unwrap();
+        assert!((top.aggregate_power_w(&w) - 10_000.0).abs() < 1e-3);
+        assert!((top.aggregate_reactive_var(&w) - 2_000.0).abs() < 1e-3);
     }
 
     /// 1 inverter, 2 parallel meters, 1 top meter:
