@@ -20,9 +20,13 @@ struct Planned {
     axis: SetpointAxis,
     component: Arc<dyn SimulatedComponent>,
     target: Option<f32>,
-    /// The validation base, read before any axis is handed its
-    /// command so a reactive one sees the P of the last tick.
+    /// The validation base and the physical band, both read before
+    /// any healthy axis is commanded, so a reactive axis sees the P
+    /// of the last tick whatever the order of the axes. (A tripped
+    /// axis is handed its 0 during planning; that touches only the
+    /// device's pending command, which no later read depends on.)
     base: VecBounds,
+    physical: Option<VecBounds>,
 }
 
 impl Gateway<'_> {
@@ -35,12 +39,11 @@ impl Gateway<'_> {
         for ax in st.axes.values_mut() {
             ax.drop_expired(now);
         }
-        let planned = self.plan_locked(&st, now);
+        let planned = self.plan_locked(&st, now, dt);
         for p in &planned {
-            let physical = p.component.physical_band(p.axis, dt);
             let ctx = AdvanceCtx {
                 base: &p.base,
-                physical: physical.as_ref(),
+                physical: p.physical.as_ref(),
                 share: None,
             };
             let out = st.axes[&(p.id, p.axis)].advance(p.target, now, dt, &ctx);
@@ -52,8 +55,9 @@ impl Gateway<'_> {
 
     /// Trip every owned axis whose component is unhealthy — the ramp
     /// snaps to 0, the command and its lifetime go unless the
-    /// component keeps them, and 0 is handed — and target every other.
-    fn plan_locked(&self, st: &GatewayState, now: DateTime<Utc>) -> Vec<Planned> {
+    /// component keeps them, and 0 is handed — and target every
+    /// other, reading its validation base and physical band.
+    fn plan_locked(&self, st: &GatewayState, now: DateTime<Utc>, dt: Duration) -> Vec<Planned> {
         let mut planned = Vec::new();
         for (&(id, axis), ax) in &st.axes {
             let Some(c) = self.site.get(id) else {
@@ -70,12 +74,14 @@ impl Gateway<'_> {
             }
             let target = ax.target(now, c.idle_value(axis));
             let base = self.base_of(c.as_ref(), axis);
+            let physical = c.physical_band(axis, dt);
             planned.push(Planned {
                 id,
                 axis,
                 component: c,
                 target,
                 base,
+                physical,
             });
         }
         planned
@@ -248,7 +254,8 @@ mod tests {
     }
 
     /// A two-axis component whose measured P follows its last active
-    /// command at once, with a pure 1 kVA reactive cap.
+    /// command at once, with a pure 1 kVA reactive cap that is also
+    /// its reactive physical band at that P.
     struct Pq {
         p: Mutex<f32>,
         q: Mutex<Option<f32>>,
@@ -298,6 +305,10 @@ mod tests {
                 Reactive => *self.q.lock() = Some(value),
             }
         }
+        fn physical_band(&self, axis: SetpointAxis, _: Duration) -> Option<VecBounds> {
+            let cap = self.reactive_capability()?;
+            (axis == Reactive).then(|| cap.q_band_at(*self.p.lock()))
+        }
         fn gateway_settings(&self) -> Option<GatewaySettings> {
             Some(GatewaySettings::default())
         }
@@ -309,12 +320,12 @@ mod tests {
         }
     }
 
-    /// A reactive axis is clamped against the capability at the P
-    /// measured before the step, whichever axis is handed its command
-    /// first: the active command moving P to the kVA rim in the same
-    /// step does not squeeze Q to 0.
+    /// A reactive axis is clamped against the capability and the
+    /// physical band at the P measured before the step, whichever
+    /// axis is handed its command first: the active command moving P
+    /// to the kVA rim in the same step does not squeeze Q to 0.
     #[test]
-    fn the_reactive_base_is_read_before_any_axis_is_commanded() {
+    fn the_reactive_base_and_band_are_read_before_any_axis_is_commanded() {
         // Fresh sites, so the axes' map order varies between runs.
         for i in 0..32 {
             let site = MicrogridSite::new();

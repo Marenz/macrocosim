@@ -1,9 +1,9 @@
-//! Solar (PV) inverter. Active-side: produces a negative power
-//! proportional to `sunlight_pct`, slewed by the ramp + command-delay
-//! pair; less sun cuts it at once, as it would a real array.
-//! Reactive-side: a second [`PowerAxis`], the same one the battery
-//! inverter uses — a real PV smart inverter (IEEE 1547-2018) does
-//! Volt/VAR control alongside its real-power output.
+//! Solar (PV) inverter. Active side: produces a negative power
+//! proportional to `sunlight_pct`; the gateway slews it, the device
+//! delays it, and less sun cuts it at once, as it would a real array.
+//! Reactive side: a second axis, as on the battery inverter — a real
+//! PV smart inverter (IEEE 1547-2018) does Volt/VAR control alongside
+//! its real-power output.
 
 use std::{
     fmt,
@@ -12,19 +12,20 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use rand::Rng;
 use tulisp::TulispContext;
 
 use crate::sim::{
-    AugmentError, Category, MicrogridSite, SetpointError, SimulatedComponent, Telemetry,
-    axis::{AxisConfig, IdleTarget, PowerAxis, StepCtx},
+    Category, MicrogridSite, SimulatedComponent, Telemetry,
     bounds::VecBounds,
-    component::{KnobKind, KnobSnapshot, ScalarReading},
+    component::{GatewaySettings, KnobKind, KnobSnapshot, ScalarReading},
+    device_axis::DeviceAxis,
     dynamic_scalar::DynamicScalar,
     reactive::ReactiveCapability,
     runtime::Health,
 };
+use crate::timeout_tracker::SetpointAxis;
 
 /// What a PV inverter's sunlight cache starts at, and what a
 /// weather-following inverter therefore reads before its first tick:
@@ -136,6 +137,9 @@ pub struct SolarInverterConfig {
     /// instantaneous power. Defaults to |rated-lower|: a matched
     /// array. Oversizing produces midday clipping.
     pub array_peak_w: f32,
+    /// Time a command takes to reach the output once the inverter has
+    /// it, on both axes; default 100 ms.
+    pub device_delay: Duration,
 }
 
 impl Default for SolarInverterConfig {
@@ -154,6 +158,7 @@ impl Default for SolarInverterConfig {
             weather_lag: None,
             weather_jitter_pct: 0.0,
             array_peak_w: 30_000.0,
+            device_delay: Duration::from_millis(100),
         }
     }
 }
@@ -185,14 +190,15 @@ pub struct SolarInverter {
     /// [`Self::resolve_sunlight`] drop the source guard before it
     /// touches the site's weather.
     sunlight_cache: AtomicU32,
-    /// Active (P) control path: rated band + TTL augmentations,
-    /// command delay, slew ramp. Its `published` slot is unused — PV
-    /// has no children to clip P, so telemetry reads `actual()`.
-    active: PowerAxis,
-    /// Reactive (Q) control path: the PF/kVA capability envelope
-    /// evaluated at the live P, command delay, slew ramp, and the
-    /// published Q telemetry reads.
-    reactive: PowerAxis,
+    /// Active output: the command handed in through `set_command`,
+    /// delayed and held inside the sun band. Seeded at the available
+    /// power, so a fresh inverter is already generating.
+    active: DeviceAxis,
+    /// Reactive output, clamped to the capability at the last active
+    /// output; `published` is what telemetry reads.
+    reactive: DeviceAxis,
+    /// The live PF / kVA capability, changed at runtime.
+    caps: Mutex<ReactiveCapability>,
 }
 
 /// What an array of `cfg.array_peak_w` produces at `pct` % sunlight
@@ -212,32 +218,17 @@ impl SolarInverter {
         // Whatever the slot starts at: a `Follow` slot starts at the
         // cache's full-sun seed, a driven one at its constant.
         let init_pct = cfg.sunlight_pct.unwrap_or(SUNLIGHT_SEED_PCT);
-        let active = PowerAxis::new(AxisConfig {
-            rated: Some((cfg.rated_lower_w, cfg.rated_upper_w)),
-            caps: None,
-            command_delay: cfg.command_delay,
-            ramp_rate_per_s: cfg.ramp_rate_w_per_s,
-            unit: "W",
-        });
         // A fresh PV inverter is already generating from whatever sun
-        // it has — it does not slew up from zero on its first tick.
-        // The same `available_w` as every tick: an oversized array
-        // flat-tops at the AC rating from the very first sample, not
-        // just from the first tick onward.
-        active.snap_output(available_w(&cfg, init_pct));
-        // A Q axis has no rated band of its own — its static shape is
-        // the PF/kVA capability evaluated at the live P.
-        let reactive = PowerAxis::new(AxisConfig {
-            rated: None,
-            caps: Some(cfg.reactive),
-            command_delay: cfg.reactive_command_delay,
-            ramp_rate_per_s: cfg.reactive_ramp_rate_var_per_s,
-            unit: "VAr",
-        });
+        // it has — it does not slew up from zero. The same
+        // `available_w` as every tick, so an oversized array
+        // flat-tops at the AC rating from the very first sample.
+        let active = DeviceAxis::new(cfg.device_delay, available_w(&cfg, init_pct));
+        let reactive = DeviceAxis::new(cfg.device_delay, 0.0);
         Self {
             id,
             name: format!("inv-pv-{id}"),
             interval,
+            caps: Mutex::new(cfg.reactive),
             cfg,
             sunlight_source: RwLock::new(source),
             sunlight_cache: AtomicU32::new(SUNLIGHT_SEED_PCT.to_bits()),
@@ -332,6 +323,17 @@ impl SolarInverter {
         available_w(&self.cfg, self.sunlight_pct())
     }
 
+    /// The band the sun allows now: from the available power
+    /// (negative) up to the rated upper edge.
+    fn sun_band(&self) -> VecBounds {
+        VecBounds::single(self.min_avail_w(), self.cfg.rated_upper_w)
+    }
+
+    /// The Q band the capability allows at active power `p`.
+    fn q_band_at(&self, p: f32) -> VecBounds {
+        self.caps.lock().q_band_at(p)
+    }
+
     /// The Follow lag used when no `:weather-lag-s` was given: a
     /// stable 0–60 s offset hashed from the component id, so a cloud
     /// sweeps across a multi-PV site by default. Hash, not RNG — the
@@ -377,7 +379,7 @@ impl SimulatedComponent for SolarInverter {
         }
     }
 
-    fn tick(&self, world: &MicrogridSite, now: DateTime<Utc>, dt: Duration) {
+    fn tick(&self, world: &MicrogridSite, now: DateTime<Utc>, _dt: Duration) {
         // Weather resolution happens BEFORE the health gate, on
         // purpose: the cached percentage is a reading of the SKY, not
         // of this inverter's output. A tripped inverter still sits
@@ -386,181 +388,110 @@ impl SimulatedComponent for SolarInverter {
         // it was when the fault landed. Production is zeroed by the
         // gate below regardless of what the sun is doing.
         self.resolve_sunlight(world, now);
-        // Own-health gate: a faulted or standby PV inverter is tripped
-        // offline — zero output. It must NOT fall back to its default of
-        // producing from sunlight. Unlike a battery inverter (which awaits
-        // re-dispatch), a recovered PV inverter reconnects and resumes
-        // generating from whatever sunlight is available, so the healthy
-        // path below picks production back up on its own — we only snap the
-        // live output to zero and leave any curtailment setpoint intact.
-        //
-        // The reactive axis gets the harder treatment — a full trip,
-        // clearing its armed command too. Q comes from the IGBTs
-        // switching, and they have stopped; without the trip an
-        // Error→Ok recovery would resurrect the pre-trip Q with nobody
-        // having dispatched it (todo #998).
+        // Own-health gate: a faulted or standby PV inverter is
+        // tripped offline — zero output on both axes, nothing left in
+        // either delay line. The gateway keeps the curtailment and
+        // drops the Q command, so a recovered inverter resumes from
+        // the sun.
         if world.runtime_of(self.id).health != Health::Ok {
-            self.active.snap_output(0.0);
+            self.active.trip();
             self.reactive.trip();
             return;
         }
-        // What sunlight allows right now. Production is negative, so
-        // `[avail, 0]` is the band the active axis may sit in — a
-        // curtailment inside it is honoured, anything asking for more
-        // production than the sun gives is pulled back to `avail`, and
-        // a free-running inverter idles right at `avail` (tracks the
-        // sun). Passed as the per-tick dynamic band rather than folded
-        // into the static bounds, since it changes every tick and must
-        // not leak into telemetry's advertised envelope.
-        let avail = self.min_avail_w();
-        // The band's upper edge is the rated upper — `0.0` for a
-        // pure-generation config, but a `:rated-upper > 0` solar
-        // config (e.g. one that can also sink power) needs its real
-        // upper edge here, not a hard-coded 0.
-        let sun = VecBounds::single(avail, self.cfg.rated_upper_w);
-        // The axis intersects that with rated ∩ live augmentations: an
-        // augmented cap actually reduces generation, and generation
-        // recovers toward available when the cap relaxes. (microsim
-        // parity: power limited to live bounds.) If the two do not
-        // overlap at all there is no legal output, so the axis parks
-        // at 0 rather than generating sun it does not have.
-        let p = self.active.step(
-            now,
-            dt,
-            StepCtx {
-                other_axis: 0.0,
-                dynamic: Some(&sun),
-                idle: IdleTarget::Value(avail),
-            },
-        );
-        // Reactive: validated when accepted, re-clamped to the live
-        // envelope at p as the command is promoted, then slewed.
-        // Solar has no children to clip Q so step()'s auto-publish
-        // is what telemetry reads next tick.
-        self.reactive.step(
-            now,
-            dt,
-            StepCtx {
-                other_axis: p,
-                dynamic: None,
-                idle: IdleTarget::Hold,
-            },
-        );
+        // Q is judged at the previous tick's P, like the battery
+        // inverter's.
+        let p_prev = self.active.output();
+        self.active.tick(now, Some(&self.sun_band()));
+        self.reactive.tick(now, Some(&self.q_band_at(p_prev)));
     }
 
     fn telemetry(&self, site: &MicrogridSite) -> Telemetry {
-        let p = self.active.actual();
+        let p = self.active.output();
         super::inverter_telemetry(self.id, site, p, self.reactive.published())
     }
 
-    fn set_active_setpoint(&self, power_w: f32) -> Result<(), SetpointError> {
-        // Wall clock, not the tick clock: this runs on a gRPC/UI
-        // thread with no access to the site's clock, and that is how
-        // setpoint validation has always judged augmentation liveness.
-        self.active.accept(power_w, Utc::now(), 0.0)
-    }
-
-    fn set_reactive_setpoint(&self, vars: f32) -> Result<(), SetpointError> {
-        self.reactive.accept(vars, Utc::now(), self.active.actual())
-    }
-
-    fn reset_setpoint(&self) {
-        // Ramp back toward the cloud-cover-determined floor rather
-        // than snapping — a reset is a control event, not a physical
-        // discontinuity, and the battery inverter's reset ramps the
-        // same way. The per-tick clamp recomputes the target from
-        // live sunlight anyway, so a reset racing a cloud shift still
-        // converges on the right floor.
-        self.active.reset(self.min_avail_w());
-        self.reactive.reset(0.0);
-    }
-
-    fn reset_setpoint_axis(&self, axis: crate::timeout_tracker::SetpointAxis) {
-        // Dual-axis: an expired curtailment (active) releases back to
-        // the sunlight floor without disturbing a running Volt/VAR
-        // command, and vice versa.
-        use crate::timeout_tracker::SetpointAxis;
-        match axis {
-            SetpointAxis::Active => self.active.reset(self.min_avail_w()),
-            SetpointAxis::Reactive => self.reactive.reset(0.0),
-        }
-    }
-
-    fn augmentation_active(
-        &self,
-        axis: crate::timeout_tracker::SetpointAxis,
-        now: DateTime<Utc>,
-    ) -> bool {
-        use crate::timeout_tracker::SetpointAxis;
-        match axis {
-            SetpointAxis::Active => self.active.augmented(now),
-            SetpointAxis::Reactive => self.reactive.augmented(now),
-        }
-    }
-
-    /// `None` for the dynamic slot, deliberately: the sunlight band
-    /// `tick` passes to `step` is a per-tick availability window that
-    /// swings with the sun and is explicitly kept OUT of the
-    /// advertised envelope (`effective_active_bounds` below is rated ∩
-    /// augmentations only). Gating augmentations on it would bounce a
-    /// legal curtailment at night and accept it again at noon; the
-    /// derate-aware gate is for the EV/boiler bands, which telemetry
-    /// does advertise.
-    fn try_augment_active_bounds(
-        &self,
-        ts: DateTime<Utc>,
-        bounds: crate::sim::bounds::VecBounds,
-        lifetime: Duration,
-    ) -> Result<(), AugmentError> {
-        self.active
-            .try_augment(ts, bounds, lifetime, 0.0, None)
-            .map_err(AugmentError::Disjoint)
-    }
-
-    fn try_augment_reactive_bounds(
-        &self,
-        ts: DateTime<Utc>,
-        bounds: crate::sim::bounds::VecBounds,
-        lifetime: Duration,
-    ) -> Result<(), AugmentError> {
-        // `None`: the Q axis carries no dynamic band (`step` passes
-        // none either) — its whole shape is the caps band at P.
-        self.reactive
-            .try_augment(ts, bounds, lifetime, self.active.actual(), None)
-            .map_err(AugmentError::Disjoint)
-    }
-
     fn active_power_w(&self, _site: &MicrogridSite) -> Option<f32> {
-        Some(self.active.actual())
+        Some(self.active.output())
     }
 
     fn aggregate_power_w(&self, _world: &MicrogridSite) -> f32 {
-        self.active.actual()
+        self.active.output()
     }
 
     fn aggregate_reactive_var(&self, _world: &MicrogridSite) -> f32 {
         self.reactive.published()
     }
 
+    fn has_axis(&self, _axis: SetpointAxis) -> bool {
+        true
+    }
+
+    fn set_command(&self, axis: SetpointAxis, value: f32) {
+        match axis {
+            SetpointAxis::Active => self.active.set_command(value),
+            SetpointAxis::Reactive => self.reactive.set_command(value),
+        }
+    }
+
+    /// P: the sun band (not advertised and not checked by an
+    /// augmentation — a curtailment must be accepted at night). Q:
+    /// the caps at the last active output.
+    fn physical_band(&self, axis: SetpointAxis, _dt: Duration) -> Option<VecBounds> {
+        Some(match axis {
+            SetpointAxis::Active => self.sun_band(),
+            SetpointAxis::Reactive => self.q_band_at(self.active.output()),
+        })
+    }
+
+    /// Free-running PV tracks the sun; Q holds.
+    fn idle_value(&self, axis: SetpointAxis) -> Option<f32> {
+        (axis == SetpointAxis::Active).then(|| self.min_avail_w())
+    }
+
+    /// An expired or reset curtailment releases to the sunlight
+    /// floor.
+    fn park_value(&self, axis: SetpointAxis) -> f32 {
+        match axis {
+            SetpointAxis::Active => self.min_avail_w(),
+            SetpointAxis::Reactive => 0.0,
+        }
+    }
+
+    fn initial_value(&self, axis: SetpointAxis) -> f32 {
+        match axis {
+            SetpointAxis::Active => self.active.output(),
+            SetpointAxis::Reactive => 0.0,
+        }
+    }
+
+    /// A curtailment survives a trip; a Q command does not.
+    fn keeps_command_through_fault(&self, axis: SetpointAxis) -> bool {
+        axis == SetpointAxis::Active
+    }
+
+    fn gateway_settings(&self) -> Option<GatewaySettings> {
+        Some(GatewaySettings {
+            command_delay: self.cfg.command_delay,
+            ramp_rate_w_per_s: self.cfg.ramp_rate_w_per_s,
+            reactive_command_delay: self.cfg.reactive_command_delay,
+            reactive_ramp_rate_var_per_s: self.cfg.reactive_ramp_rate_var_per_s,
+        })
+    }
+
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
         Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
     }
 
-    fn reactive_bounds_raw(&self) -> Option<VecBounds> {
-        let p = self.active.actual();
-        Some(self.reactive.tracking_envelope_at(Utc::now(), p, None))
-    }
-
-    fn reactive_capability(&self) -> Option<crate::sim::reactive::ReactiveCapability> {
-        self.reactive.capability()
+    fn reactive_capability(&self) -> Option<ReactiveCapability> {
+        Some(*self.caps.lock())
     }
 
     fn set_reactive_pf_limit(&self, pf: Option<f32>) {
-        self.reactive.set_pf_limit(pf);
+        self.caps.lock().pf_limit = pf;
     }
 
     fn set_reactive_apparent_va(&self, va: Option<f32>) {
-        self.reactive.set_apparent_va(va);
+        self.caps.lock().apparent_va = va;
     }
 
     fn subtype(&self) -> Option<&'static str> {
@@ -569,10 +500,6 @@ impl SimulatedComponent for SolarInverter {
 
     fn stream_jitter_pct(&self) -> f32 {
         self.cfg.stream_jitter_pct
-    }
-
-    fn effective_active_bounds(&self) -> Option<crate::sim::bounds::VecBounds> {
-        Some(self.active.effective_static())
     }
 
     fn set_sunlight_pct(&self, pct: f32) -> bool {
@@ -727,6 +654,9 @@ impl SimulatedComponent for SolarInverter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::timeout_tracker::SetpointAxis;
+
+    const DT: Duration = Duration::from_millis(100);
 
     fn cfg_with_sun(pct: f32) -> SolarInverterConfig {
         SolarInverterConfig {
@@ -735,6 +665,7 @@ mod tests {
             sunlight_pct: Some(pct),
             ramp_rate_w_per_s: f32::INFINITY,
             array_peak_w: 10_000.0,
+            device_delay: Duration::ZERO,
             ..Default::default()
         }
     }
@@ -881,12 +812,12 @@ mod tests {
         let dt = Duration::from_millis(100);
 
         // Healthy at full sun: produces its rated -10 kW.
-        inv.tick(&w, Utc::now(), dt);
+        w.tick_n(1, dt);
         assert!((inv.aggregate_power_w(&w) - (-10_000.0)).abs() < 1.0);
 
         // Errored: tripped offline, zero output — NOT sunlight production.
         w.set_health(1, Health::Error).unwrap();
-        inv.tick(&w, Utc::now(), dt);
+        w.tick_n(1, dt);
         assert!(
             inv.aggregate_power_w(&w).abs() < 1.0,
             "errored PV inverter must produce 0 W, got {}",
@@ -895,21 +826,17 @@ mod tests {
 
         // Recovery: a PV inverter reconnects and resumes from sunlight.
         w.set_health(1, Health::Ok).unwrap();
-        inv.tick(&w, Utc::now(), dt);
+        w.tick_n(1, dt);
         assert!((inv.aggregate_power_w(&w) - (-10_000.0)).abs() < 1.0);
     }
 
-    /// A health trip kills the reactive axis outright (todo #998): Q
-    /// snaps to zero AND its armed command is cleared, so an Error→Ok
-    /// recovery does not resurrect the pre-trip Q. The ACTIVE axis
-    /// keeps its armed curtailment, because a recovered PV inverter
-    /// reconnects and picks generation back up on its own.
+    /// A health trip kills the reactive axis outright — Q snaps to 0
+    /// and its command is cleared — while the active curtailment
+    /// survives and P resumes at it on recovery.
     #[test]
     fn health_trip_trips_q_but_keeps_the_armed_curtailment() {
         let w = MicrogridSite::new();
         let mut cfg = cfg_with_sun(100.0);
-        // kVA-shaped Q envelope with no delay and no slew, so a single
-        // tick settles a Q command at any P.
         cfg.reactive = ReactiveCapability {
             pf_limit: None,
             apparent_va: Some(10_000.0),
@@ -918,31 +845,22 @@ mod tests {
         cfg.reactive_ramp_rate_var_per_s = f32::INFINITY;
         w.register(SolarInverter::new(1, Duration::from_secs(1), cfg));
         let inv = w.get(1).unwrap();
-        let dt = Duration::from_millis(100);
+        let gw = w.gateway();
 
-        // Curtail production to -4 kW (full sun would be -10 kW) and
-        // dispatch 2 kVAR on top.
-        inv.set_active_setpoint(-4_000.0).unwrap();
-        inv.tick(&w, Utc::now(), dt);
-        inv.set_reactive_setpoint(2_000.0).unwrap();
-        inv.tick(&w, Utc::now(), dt);
+        gw.command(1, SetpointAxis::Active, -4_000.0).unwrap();
+        w.tick_n(1, DT);
+        gw.command(1, SetpointAxis::Reactive, 2_000.0).unwrap();
+        w.tick_n(1, DT);
         assert!((inv.aggregate_power_w(&w) - (-4_000.0)).abs() < 1.0);
         assert!((inv.aggregate_reactive_var(&w) - 2_000.0).abs() < 1.0);
 
-        // Trip: both axes read zero.
         w.set_health(1, Health::Error).unwrap();
-        inv.tick(&w, Utc::now(), dt);
+        w.tick_n(1, DT);
         assert!(inv.aggregate_power_w(&w).abs() < 1.0, "P snaps to 0");
-        assert!(
-            inv.aggregate_reactive_var(&w).abs() < 1.0,
-            "Q snaps to 0, got {}",
-            inv.aggregate_reactive_var(&w),
-        );
+        assert!(inv.aggregate_reactive_var(&w).abs() < 1.0, "Q snaps to 0");
 
-        // Recovery: P resumes at the ARMED curtailment, not full sun;
-        // Q stays parked until something dispatches it again.
         w.set_health(1, Health::Ok).unwrap();
-        inv.tick(&w, Utc::now(), dt);
+        w.tick_n(1, DT);
         assert!(
             (inv.aggregate_power_w(&w) - (-4_000.0)).abs() < 1.0,
             "P resumes at the curtailment, got {}",
@@ -950,41 +868,45 @@ mod tests {
         );
         assert!(
             inv.aggregate_reactive_var(&w).abs() < 1.0,
-            "Q must await re-dispatch, got {}",
-            inv.aggregate_reactive_var(&w),
+            "Q awaits re-dispatch"
         );
 
-        // A fresh Q command brings the reactive axis back.
-        inv.set_reactive_setpoint(1_500.0).unwrap();
-        inv.tick(&w, Utc::now(), dt);
+        gw.command(1, SetpointAxis::Reactive, 1_500.0).unwrap();
+        w.tick_n(1, DT);
         assert!((inv.aggregate_reactive_var(&w) - 1_500.0).abs() < 1.0);
     }
 
-    /// A reset releases a curtailment back to the SUNLIGHT FLOOR, not
-    /// to zero: a PV inverter with nothing dispatched at it generates
-    /// whatever the sun gives, so `reset_setpoint` parks the active
-    /// axis at `min_avail_w()` and the next tick has it producing
-    /// there again. Both entry points do it — the full reset and the
-    /// per-axis path the `TimeoutTracker` calls when only the ACTIVE
-    /// request's lifetime lapses, which must leave a Q command running
-    /// alongside untouched.
-    ///
-    /// What a tick can actually see is the release: the armed
-    /// curtailment is gone and production is back at the floor. The
-    /// `min_avail_w()` park value handed to `PowerAxis::reset` is
-    /// belt-and-braces on top — `step`'s `IdleTarget::Value(avail)`
-    /// re-derives the same floor before the ramp advances, so no tick
-    /// ever aims at a stale target either way. Parking at 0 there
-    /// would be a latent trap for any future caller that reads the
-    /// axis between the reset and the next tick, which is why the park
-    /// value stays the floor.
+    /// The trip keeps the curtailment's lifetime as well as the
+    /// command, and drops the reactive lifetime with the Q command.
+    #[test]
+    fn a_trip_keeps_the_curtailment_and_its_lifetime_but_drops_q() {
+        let w = MicrogridSite::new();
+        let mut cfg = cfg_with_sun(100.0);
+        cfg.reactive = ReactiveCapability {
+            pf_limit: None,
+            apparent_va: Some(10_000.0),
+        };
+        cfg.reactive_command_delay = Duration::ZERO;
+        w.register(SolarInverter::new(1, Duration::from_secs(1), cfg));
+        let gw = w.gateway();
+        gw.command(1, SetpointAxis::Active, -4_000.0).unwrap();
+        w.tick_n(1, DT);
+        gw.command(1, SetpointAxis::Reactive, 2_000.0).unwrap();
+        w.tick_n(1, DT);
+        w.set_health(1, Health::Error).unwrap();
+        w.tick_n(2, DT);
+        assert!(gw.remaining_lifetime(1, SetpointAxis::Active).is_some());
+        assert_eq!(gw.remaining_lifetime(1, SetpointAxis::Reactive), None);
+        w.set_health(1, Health::Ok).unwrap();
+        w.tick_n(1, DT);
+        assert!((w.get(1).unwrap().aggregate_power_w(&w) - (-4_000.0)).abs() < 1.0);
+    }
+
+    /// A reset releases a curtailment to the SUNLIGHT FLOOR, not to
+    /// zero; an active-axis reset leaves a Q command running.
     #[test]
     fn reset_releases_a_curtailment_back_to_the_sunlight_floor() {
-        use crate::timeout_tracker::SetpointAxis;
-
         let w = MicrogridSite::new();
-        // -10 kW rated at 60% sun → a -6 kW floor, distinct from both
-        // zero and the curtailments dispatched below.
         let mut cfg = cfg_with_sun(60.0);
         cfg.reactive = ReactiveCapability {
             pf_limit: None,
@@ -994,78 +916,81 @@ mod tests {
         cfg.reactive_ramp_rate_var_per_s = f32::INFINITY;
         w.register(SolarInverter::new(1, Duration::from_secs(1), cfg));
         let inv = w.get(1).unwrap();
-        let dt = Duration::from_millis(100);
+        let gw = w.gateway();
         let floor = -6_000.0;
 
-        // Curtail to -2 kW, well inside what the sun allows.
-        inv.set_active_setpoint(-2_000.0).unwrap();
-        inv.tick(&w, Utc::now(), dt);
-        assert!(
-            (inv.aggregate_power_w(&w) - (-2_000.0)).abs() < 1.0,
-            "curtailed to -2 kW, got {}",
-            inv.aggregate_power_w(&w),
-        );
+        gw.command(1, SetpointAxis::Active, -2_000.0).unwrap();
+        w.tick_n(1, DT);
+        assert!((inv.aggregate_power_w(&w) - (-2_000.0)).abs() < 1.0);
 
-        // Full reset: production returns to the floor, NOT to 0 W.
-        inv.reset_setpoint();
-        inv.tick(&w, Utc::now(), dt);
+        gw.reset(1, SetpointAxis::Active);
+        gw.reset(1, SetpointAxis::Reactive);
+        w.tick_n(1, DT);
         assert!(
             (inv.aggregate_power_w(&w) - floor).abs() < 1.0,
             "reset must return to the sunlight floor {floor}, got {}",
             inv.aggregate_power_w(&w),
         );
 
-        // The active-axis TTL path, with a Q command running alongside.
-        inv.set_active_setpoint(-1_000.0).unwrap();
-        inv.set_reactive_setpoint(3_000.0).unwrap();
-        inv.tick(&w, Utc::now(), dt);
+        gw.command(1, SetpointAxis::Active, -1_000.0).unwrap();
+        gw.command(1, SetpointAxis::Reactive, 3_000.0).unwrap();
+        w.tick_n(1, DT);
         assert!((inv.aggregate_power_w(&w) - (-1_000.0)).abs() < 1.0);
         assert!((inv.aggregate_reactive_var(&w) - 3_000.0).abs() < 1.0);
 
-        inv.reset_setpoint_axis(SetpointAxis::Active);
-        inv.tick(&w, Utc::now(), dt);
-        assert!(
-            (inv.aggregate_power_w(&w) - floor).abs() < 1.0,
-            "an expired curtailment releases to the floor {floor}, got {}",
-            inv.aggregate_power_w(&w),
-        );
+        gw.reset(1, SetpointAxis::Active);
+        w.tick_n(1, DT);
+        assert!((inv.aggregate_power_w(&w) - floor).abs() < 1.0);
         assert!(
             (inv.aggregate_reactive_var(&w) - 3_000.0).abs() < 1.0,
-            "the Q command survives an active-axis expiry, got {}",
-            inv.aggregate_reactive_var(&w),
+            "Q survives"
         );
     }
 
-    /// An augmentation demanding MORE production than the sun allows
-    /// does not overlap the sunlight band at all, so the active axis
-    /// has nowhere legal to sit and parks at 0. It must NOT produce at
-    /// the augmentation's edge on sunlight it does not have.
+    /// An augmentation demanding more production than the sun allows
+    /// leaves no legal band: the output parks at 0. The augmentation
+    /// itself is accepted (a curtailment must be accepted at night).
     #[test]
     fn augmentation_beyond_available_sun_parks_at_zero() {
         let w = MicrogridSite::new();
         let cfg = SolarInverterConfig {
             rated_lower_w: -30_000.0,
             rated_upper_w: 0.0,
-            sunlight_pct: Some(10.0), // → only -3 kW available
+            sunlight_pct: Some(10.0),
             ramp_rate_w_per_s: f32::INFINITY,
+            device_delay: Duration::ZERO,
             ..Default::default()
         };
         w.register(SolarInverter::new(1, Duration::from_secs(1), cfg));
-        let inv = w.get(1).unwrap();
-        let t0 = Utc::now();
-        // [-8 kW, -6 kW] is entirely below the available -3 kW.
-        inv.try_augment_active_bounds(
-            t0,
-            VecBounds::single(-8_000.0, -6_000.0),
-            Duration::from_secs(60),
-        )
-        .unwrap();
-        inv.tick(&w, t0, Duration::from_millis(100));
-        assert!(
-            inv.aggregate_power_w(&w).abs() < 1.0,
-            "no legal band left → park at 0, got {}",
-            inv.aggregate_power_w(&w),
-        );
+        w.gateway()
+            .augment(
+                1,
+                w.run_generation(),
+                SetpointAxis::Active,
+                VecBounds::single(-8_000.0, -6_000.0),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        w.tick_n(1, DT);
+        let p = w.get(1).unwrap().aggregate_power_w(&w);
+        assert!(p.abs() < 1.0, "no legal band left → park at 0, got {p}");
+    }
+
+    /// A fresh inverter starts at its available sun and does not slew
+    /// up from zero, even with a ramp.
+    #[test]
+    fn a_fresh_inverter_does_not_slew_up_from_zero() {
+        let w = MicrogridSite::new();
+        w.register(SolarInverter::new(
+            1,
+            Duration::from_secs(1),
+            SolarInverterConfig {
+                ramp_rate_w_per_s: 2_000.0,
+                ..cfg_with_sun(60.0)
+            },
+        ));
+        w.tick_n(1, DT);
+        assert!((w.get(1).unwrap().aggregate_power_w(&w) - (-6_000.0)).abs() < 1.0);
     }
 
     /// A static `:sunlight%` renders as its own kwarg, sharing the

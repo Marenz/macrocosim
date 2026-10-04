@@ -17,6 +17,8 @@
 //! inverter. The effective Q-bound at a given P is their
 //! intersection.
 
+use crate::sim::bounds::VecBounds;
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ReactiveCapability {
     /// `|Q| ≤ pf_limit × |P|`. None disables the PF cap.
@@ -69,6 +71,12 @@ impl ReactiveCapability {
         }
 
         if lo > hi { (0.0, 0.0) } else { (lo, hi) }
+    }
+
+    /// [`Self::q_bounds_at`] as a one-interval band.
+    pub fn q_band_at(&self, p: f32) -> VecBounds {
+        let (lo, hi) = self.q_bounds_at(p);
+        VecBounds::single(lo, hi)
     }
 
     pub fn contains(&self, p: f32, q: f32) -> bool {

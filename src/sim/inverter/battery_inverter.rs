@@ -91,8 +91,7 @@ impl BatteryInverter {
 
     /// The Q band the capability allows at active power `p`.
     fn q_band_at(&self, p: f32) -> VecBounds {
-        let (lo, hi) = self.caps.lock().q_bounds_at(p);
-        VecBounds::single(lo, hi)
+        self.caps.lock().q_band_at(p)
     }
 }
 
