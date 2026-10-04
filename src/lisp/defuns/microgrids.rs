@@ -188,7 +188,7 @@ pub(in crate::lisp) fn register(
             // only legal from the file that owns it — the reload path
             // re-evaluating its own `(make-microgrid …)` form. That
             // REUSES the existing entry's site, reset in place: the
-            // boot-spawned physics + history tasks, the per-port gRPC
+            // running physics + history tasks, the per-port gRPC
             // server, and the loopback client all hold that site
             // handle, and minting a fresh one would orphan every
             // runtime (the old site would keep ticking and serving
@@ -283,13 +283,12 @@ pub(in crate::lisp) fn register(
                         let grpc_port = match a.grpc_port {
                             Some(p) => {
                                 let p = p as u16;
-                                // A collision registers cleanly here but
-                                // the binary's spawner then fails the
-                                // bind and SKIPS this microgrid's gRPC
-                                // server with only a log line — a
-                                // registry entry that looks healthy and
-                                // serves nothing. Reject up front, under
-                                // the same lock as the insert.
+                                // A collision registers cleanly here
+                                // but the runtimes then fail the bind
+                                // and mark this microgrid failed,
+                                // retried only on its next
+                                // registration. Reject up front,
+                                // under the same lock as the insert.
                                 if let Some((other, _)) =
                                     reg.iter().find(|(_, e)| e.def.grpc_port == p)
                                 {
@@ -815,7 +814,7 @@ mod tests {
 
     /// Re-running `(make-microgrid …)` for an id that's already
     /// registered must reuse the existing entry's site (reset in
-    /// place), not mint a fresh one — the boot-spawned runtimes and
+    /// place), not mint a fresh one — the running physics task and
     /// the per-port gRPC server all hold the original handle, and a
     /// fresh site would orphan them (frozen physics, stale gRPC).
     ///
@@ -832,7 +831,7 @@ mod tests {
               :topology (lambda () (%make-grid-connection-point :id 1)))
             "#,
         );
-        // The handle a boot-spawned runtime would hold.
+        // The handle a running microgrid runtime would hold.
         let live_site = cfg.microgrids().lock().get(&7000).unwrap().site.clone();
         assert!(live_site.get(1).is_some());
 

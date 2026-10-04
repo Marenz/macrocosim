@@ -31,9 +31,11 @@ use tonic::transport::Server;
 static UNIQ: AtomicU64 = AtomicU64::new(0);
 
 /// A live macrocosim instance: gRPC + UI on OS-assigned localhost
-/// ports, plus the underlying [`Config`] for direct world
-/// inspection. `Drop` aborts the spawned server tasks; the temp
-/// dir cleans up via the held `TempDir` handle.
+/// ports, plus the underlying [`Config`] for direct world inspection.
+/// `Drop` aborts the registration listener and the UI / assets server
+/// tasks in `handles`; per-microgrid servers live in the runtimes and
+/// are never aborted. The temp dir cleans up via the held `TempDir`
+/// handle.
 ///
 /// Each integration-test binary picks the fields it needs; the
 /// `#[allow(dead_code)]` keeps the unused-warning quiet for tests

@@ -25,7 +25,7 @@ async fn editing_config_lisp_rebuilds_the_world() {
 
     let v0 = s.config.site().version();
     let path = s.config_path();
-    // The handle the boot-spawned physics task / per-port gRPC server
+    // The handle the running physics task / per-port gRPC server
     // holds. Reload must rebuild the topology on THIS site, not a
     // fresh one — otherwise every runtime is orphaned.
     let live_site = s

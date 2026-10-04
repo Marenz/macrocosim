@@ -2551,7 +2551,7 @@ mod tests {
             "(make-microgrid :id 9 :grpc-port 8800 :topology \
              (lambda () (%make-grid-connection-point :id 1)))",
         );
-        // The handle a boot-spawned physics task / gRPC server holds.
+        // The handle the running physics task / gRPC server holds.
         let live_site = cfg.microgrids().lock().get(&9).unwrap().site.clone();
         assert!(live_site.get(1).is_some());
 

@@ -7,6 +7,9 @@ is wiring the topology + animating the environment.
 ## Layout
 
 - `src/lib.rs` — module roots
+- `src/runtime.rs` — `MicrogridRuntimes`: the one startup path per
+  microgrid (physics, history, gRPC server, UI loopback) and its
+  started / failed status
 - `src/sim/` — components + scheduler
   - `component.rs` — `SimulatedComponent` trait, `ComponentHandle`, `Telemetry`
   - `microgrid_site/` — per-microgrid registry, physics tick, grid state,
@@ -138,14 +141,14 @@ section collides with it on the next load).
 derive the two sections. `(set-microgrid-name ID NAME)` and
 `(set-microgrid-tso ID TSO)` edit the head's own arguments and
 persist like any other structural edit; the `:grpc-port` has no
-setter on purpose — a listening gRPC server pins it, so moving one
+setter on purpose — a bound gRPC address is fixed, so moving one
 needs an unload (a later sub-project).
 
 Files load explicitly — `(load "path.lisp")`, a boot-script arg, or
 the UI's Load — never implicitly. Loading a second file that declares
 an id already owned by a DIFFERENT file is a hard error naming the
 owner; re-loading the SAME file re-registers its microgrid in place,
-reusing the live site so boot-spawned physics / gRPC survive. A
+reusing the live site so its running physics / gRPC survive. A
 driver-only script — timers perturbing somebody else's world, no
 `(make-microgrid …)` of its own — is watched and hot-reloaded per
 file just like any other loaded file, but a *whole-world* reload
@@ -156,7 +159,7 @@ microgrid; a driver-only script sits out of that replay list.
 collision by copying the managed file to `microgrids/N.lisp` and
 re-numbering everything the enterprise makes unique: the head's
 `:id` becomes N, `:grpc-port` becomes a free one (the original's is
-held by a listening gRPC server), and every component in the
+held by its bound gRPC server), and every component in the
 `:topology` lambda gets a fresh `:id` off the enterprise allocator,
 with each `(connect a b)` moved to match. Without the component
 re-mint a copy of a *populated* live microgrid always fails
@@ -298,8 +301,19 @@ commit via a button (dialogs, pass-a-cloud) may keep both.
 
 Each registered microgrid binds its own gRPC port; the first
 defaults to `[::1]:8800` and subsequent microgrids step by ten
-(`:8810`, `:8820`, …). Override via `:grpc-port` on
-`(make-microgrid …)`. macroctl's `--addr` points the gRPC client at
+(`:8810`, `:8820`, …), skipping the assets and dispatch ports; an
+explicit `:grpc-port` on either is refused. Override via `:grpc-port`
+on `(make-microgrid …)`. `MicrogridRuntimes` starts every registered
+microgrid at boot and every one `make-microgrid` announces later. A
+bind failure, or a server that ends, marks only that microgrid failed
+and the process stays up (a boot-time bind failure still exits the
+binary); registering it again (reload, undo, snapshot restore, load)
+retries. A microgrid's address is fixed after its first successful
+bind; a reload adopts a changed `:grpc-port` only for one that never
+bound. `/api/microgrids` entries carry `runtime: {status, grpc_addr,
+error} | null`, and create / import / load-as / snapshot-as-new wait
+for the start and report it; the microgrid card shows the address and
+a "failed" chip. macroctl's `--addr` points the gRPC client at
 the first microgrid by default; pass `--addr http://[::1]:8810`
 etc. to reach others. The UI server binds `127.0.0.1:8801` by
 default; override the port with `--ui-port N`, or pass
