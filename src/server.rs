@@ -63,9 +63,10 @@ use crate::proto::microgrid::{
     StartElectricalComponentRequest, StopElectricalComponentRequest, microgrid_server,
 };
 use crate::proto_conv::{make_component_proto, telemetry_to_proto};
+use crate::sim::gateway::{GatewayError, Mode};
 use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
 use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
-use crate::sim::{AugmentError, SetpointError, bounds::VecBounds};
+use crate::sim::{AugmentError, bounds::VecBounds};
 use crate::timeout_tracker::SetpointAxis;
 
 /// gRPC frontend for one microgrid. Each microgrid registered in
@@ -172,7 +173,10 @@ impl MicrogridServer {
                 req.power
             )));
         }
-        let component = site.get(req.electrical_component_id).ok_or_else(|| {
+        // The run this request belongs to: the gateway refuses it if
+        // a reload resets the site while the fault gate below awaits.
+        let generation = site.run_generation();
+        site.get(req.electrical_component_id).ok_or_else(|| {
             tonic::Status::not_found(format!(
                 "component {} not found",
                 req.electrical_component_id
@@ -214,56 +218,34 @@ impl MicrogridServer {
             )));
         }
 
-        // Gateway-level envelope check: a real microgrid API gateway
-        // intersects the inverter's reported AC bounds with the sum of
-        // its children's reported bounds and rejects setpoints that
-        // exceed the result. Macrocosim does the same here so client
-        // code sees the production behaviour even though the inverter
-        // and battery don't share a data link in our model. The gate
-        // (per-axis envelope, 0-park carve-out, message) is shared
-        // with the DSL's set-*-power arms via `gate_setpoint`.
         let axis = match power_type {
             PowerType::Active => SetpointAxis::Active,
             PowerType::Reactive => SetpointAxis::Reactive,
             PowerType::Unspecified => unreachable!("rejected above"),
         };
-        site.gate_setpoint(req.electrical_component_id, axis, req.power)
-            .map_err(tonic::Status::failed_precondition)?;
-
-        // Resolve the request lifetime *before* actuating: an out-of-range
-        // lifetime is a protocol error, and rejecting it after the setpoint
-        // was applied would leave the component running with no expiry timer
-        // registered while the client believes the request failed.
+        // Resolve the request lifetime before the gateway sees the
+        // request: an out-of-range lifetime is a protocol error and
+        // must not reach actuation.
         let duration = resolve_lifetime(
             req.request_lifetime,
             SET_POWER_LIFETIME_MIN_S,
             self.config.metadata().default_request_lifetime,
         )?;
-
-        // Actuate and arm the TTL atomically: `actuate_and_arm` holds
-        // the deadline-map lock across both, so a concurrent expiry
-        // sweep can't observe the setpoint applied but the deadline
-        // still unarmed. The TTL is per power axis: this request's
-        // expiry resets only the axis it set, leaving a longer-lived
-        // command on the other axis running.
-        site.actuate_and_arm(
-            req.electrical_component_id,
-            axis,
-            duration,
-            || match power_type {
-                PowerType::Active => component.set_active_setpoint(req.power),
-                PowerType::Reactive => component.set_reactive_setpoint(req.power),
-                PowerType::Unspecified => unreachable!(),
-            },
-        )
-        .map_err(setpoint_error_to_status)?;
-
-        // Per the proto, the first response acknowledges the request
-        // and the final one reports how it ended; both carry the
-        // expiry the TTL was armed with so a client can time its
-        // refresh. The setpoint is applied by the time the stream
-        // opens, so the two follow each other at once.
-        let valid_until = Some(Timestamp::from(SystemTime::now() + duration));
+        // The gateway gates the value against the setpoint envelope
+        // (own bounds ∩ children's), applies it and arms its lifetime
+        // under one lock. The response carries that deadline.
+        let applied = site
+            .gateway()
+            .set_power(
+                axis,
+                req.electrical_component_id,
+                generation,
+                req.power,
+                duration,
+                Mode::Reject,
+            )
+            .map_err(gateway_error_to_status)?;
+        let valid_until = Some(crate::proto_conv::datetime_to_ts(applied.deadline));
         let statuses = [
             SetElectricalComponentPowerRequestStatus::Accepted,
             SetElectricalComponentPowerRequestStatus::Success,
@@ -578,7 +560,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
                         break;
                     }
                     TelemetryMode::Normal => {
-                        let mut snapshot = component.telemetry(&site);
+                        let mut snapshot = site.telemetry_of(component.as_ref());
                         // Health override: a degraded device reports
                         // ERROR/STANDBY in its state code, regardless
                         // of what the physics layer thinks the
@@ -658,13 +640,12 @@ impl microgrid_server::Microgrid for MicrogridServer {
             AUGMENT_LIFETIME_MIN_S,
             self.config.metadata().default_augment_lifetime,
         )?;
-        let lifetime_s = lifetime.as_secs() as i64;
         let now = chrono::Utc::now();
         let id = req.electrical_component_id;
 
         let site = self.site.clone();
-        let component = site.get(id);
-        let known = component.is_some();
+        let generation = site.run_generation();
+        let known = site.get(id).is_some();
         // Timeout-fault components park the request inside
         // gate_runtime_faults — log the attempt up front, same
         // rationale as the SetPower path.
@@ -684,28 +665,25 @@ impl microgrid_server::Microgrid for MicrogridServer {
                 },
             );
         }
-        let response = match component {
+        let response = if known {
             // Reject the augmentation for an errored/standby/unreachable
             // device, same as a setpoint command.
-            Some(component) => match self.gate_runtime_faults(id).await {
-                // The component checks the shape, then checks its
-                // live envelope and inserts under one lock
-                // (`PowerAxis::try_augment`), so concurrent clients
-                // can't empty the envelope between check and insert.
-                Ok(_) => match component.try_augment_bounds(
+            match self.gate_runtime_faults(id).await {
+                // The gateway checks the shape, then checks the live
+                // envelope and stores the augmentation under one
+                // lock.
+                Ok(_) => match site.gateway().augment(
+                    id,
+                    generation,
                     axis,
-                    now,
                     VecBounds::new(req.bounds),
                     lifetime,
                 ) {
-                    Ok(()) => {
-                        let expiry = now + chrono::Duration::seconds(lifetime_s);
-                        Ok(tonic::Response::new(
-                            AugmentElectricalComponentBoundsResponse {
-                                valid_until_time: Some(crate::proto_conv::datetime_to_ts(expiry)),
-                            },
-                        ))
-                    }
+                    Ok(deadline) => Ok(tonic::Response::new(
+                        AugmentElectricalComponentBoundsResponse {
+                            valid_until_time: Some(crate::proto_conv::datetime_to_ts(deadline)),
+                        },
+                    )),
                     Err(AugmentError::Malformed(m)) => Err(tonic::Status::invalid_argument(m)),
                     // The component stores no augmentation on this
                     // axis, so there is nothing an ACK could promise.
@@ -726,10 +704,11 @@ impl microgrid_server::Microgrid for MicrogridServer {
                     }
                 },
                 Err(status) => Err(status),
-            },
-            None => Err(tonic::Status::not_found(format!(
+            }
+        } else {
+            Err(tonic::Status::not_found(format!(
                 "component {id} not found"
-            ))),
+            )))
         };
 
         let outcome = match &response {
@@ -803,10 +782,44 @@ impl microgrid_server::Microgrid for MicrogridServer {
     }
 }
 
-fn setpoint_error_to_status(err: SetpointError) -> tonic::Status {
-    use SetpointError::*;
+fn gateway_error_to_status(err: GatewayError) -> tonic::Status {
     match err {
-        OutOfBounds { .. } => tonic::Status::failed_precondition(err.to_string()),
-        Unsupported => tonic::Status::unimplemented(err.to_string()),
+        GatewayError::NotFound(_) => tonic::Status::not_found(err.to_string()),
+        GatewayError::NoAxis { .. } => tonic::Status::unimplemented(err.to_string()),
+        GatewayError::NonFinite { .. } => tonic::Status::invalid_argument(err.to_string()),
+        GatewayError::OutOfEnvelope(_) | GatewayError::SiteReset => {
+            tonic::Status::failed_precondition(err.to_string())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each gateway refusal maps to today's status code.
+    #[test]
+    fn gateway_errors_map_to_todays_codes() {
+        use tonic::Code;
+        let code = |e| gateway_error_to_status(e).code();
+        assert_eq!(code(GatewayError::NotFound(1)), Code::NotFound);
+        assert_eq!(
+            code(GatewayError::NoAxis {
+                id: 1,
+                axis: SetpointAxis::Active
+            }),
+            Code::Unimplemented
+        );
+        assert_eq!(
+            code(GatewayError::NonFinite { value: f32::NAN }),
+            Code::InvalidArgument
+        );
+        assert_eq!(
+            code(GatewayError::OutOfEnvelope("x envelope".into())),
+            Code::FailedPrecondition
+        );
+        let reset = gateway_error_to_status(GatewayError::SiteReset);
+        assert_eq!(reset.code(), Code::FailedPrecondition);
+        assert!(reset.message().contains("site was reset"));
     }
 }
