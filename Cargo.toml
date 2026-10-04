@@ -34,7 +34,7 @@ frequenz-microgrid-component-graph = "0.6.2"
 # Dashboard tiles read from the same
 # LogicalMeterHandle::xxx<M>().subscribe() streams a production
 # downstream control app would consume.
-frequenz-microgrid = { git = "https://github.com/shsms/frequenz-microgrid-rs", branch = "steam-boiler" }
+frequenz-microgrid = "0.7.1"
 log = "0.4.22"
 simplelog = "0.12.2"
 rand = { version = "0.8.5", features = ["small_rng"] }

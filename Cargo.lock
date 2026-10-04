@@ -492,8 +492,9 @@ dependencies = [
 
 [[package]]
 name = "frequenz-microgrid"
-version = "0.7.0"
-source = "git+https://github.com/shsms/frequenz-microgrid-rs?branch=steam-boiler#a36489696b28c9ca3edb44b926691169388a63ce"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53164777a31b9c39a5564170b716edc24501beee091472088f23ac9517172dad"
 dependencies = [
  "async-trait",
  "chrono",
