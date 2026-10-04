@@ -1030,3 +1030,32 @@ async fn drive_soc_on_a_charger_is_undone_by_scenario_teardown() {
         "teardown must put the car back at the SoC it found: {after}"
     );
 }
+
+/// A microgrid registered by a REPL eval after start gets a runtime
+/// through the listener, and the list shows it running.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repl_registered_microgrid_is_running() {
+    let server = TestServer::start("nil").await;
+    let client = reqwest::Client::new();
+    eval_or_panic(
+        &client,
+        &server,
+        "(make-microgrid :id 71 :grpc-port 8971 :topology (lambda () nil))",
+    )
+    .await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let list = json(&client, format!("{}/api/microgrids", server.ui_url)).await;
+        let status = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == 71)
+            .and_then(|e| e["runtime"]["status"].as_str().map(str::to_string));
+        if status.as_deref() == Some("running") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "71 never ran: {list}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}

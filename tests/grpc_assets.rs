@@ -30,7 +30,7 @@ const TINY_TOPOLOGY: &str = r#"
 "#;
 
 async fn connect(s: &TestServer) -> PlatformAssetsClient<tonic::transport::Channel> {
-    PlatformAssetsClient::connect(s.grpc_url.clone())
+    PlatformAssetsClient::connect(s.assets_url.clone())
         .await
         .expect("grpc connect")
 }

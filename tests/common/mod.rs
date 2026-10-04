@@ -20,9 +20,7 @@ use std::time::Duration;
 
 use macrocosim::{
     assets_server::AssetsServer, lisp::Config,
-    proto::assets::platform_assets_server::PlatformAssetsServer as AssetsGrpcServer,
-    proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
-    server::MicrogridServer, sim::MicrogridSite, ui,
+    proto::assets::platform_assets_server::PlatformAssetsServer as AssetsGrpcServer, ui,
 };
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -44,6 +42,7 @@ static UNIQ: AtomicU64 = AtomicU64::new(0);
 pub struct TestServer {
     pub grpc_url: String,
     pub ui_url: String,
+    pub assets_url: String,
     pub config: Config,
     handles: Vec<JoinHandle<()>>,
     _tempdir: TempDir,
@@ -63,67 +62,64 @@ impl TestServer {
         std::fs::write(&path, wrapped).expect("write config");
 
         let config = Config::new(path.to_str().unwrap()).expect("config eval");
-        // Physics + history sampler match the prod boot sequence.
-        MicrogridSite::clone(&config.site()).spawn_physics();
-        MicrogridSite::clone(&config.site()).spawn_history_sampler();
-
-        // Bind both servers to OS-assigned ports so parallel tests
-        // don't collide. local_addr() reads back the chosen port
-        // before we hand the listener off to the server.
-        let ui_listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind ui port");
-        let ui_addr = ui_listener.local_addr().expect("ui addr");
-
-        let grpc_listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind grpc port");
-        let grpc_addr = grpc_listener.local_addr().expect("grpc addr");
-
+        // Same startup path as the binary: the runtimes start every
+        // registered microgrid, and the listener starts the ones a
+        // test registers later. Ephemeral ports keep parallel tests
+        // from colliding.
+        let runtimes = macrocosim::runtime::MicrogridRuntimes::new(
+            config.clone(),
+            macrocosim::runtime::RuntimeOptions {
+                ephemeral_ports: true,
+                bind_host: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            },
+        )
+        .expect("runtimes");
         let mut handles = Vec::new();
+        handles.push(runtimes.spawn_registration_listener().await);
 
-        let ui_config = config.clone();
-        // Loopback Microgrid client: same shape the binary uses.
-        // The grpc_addr we just bound is
-        // the URL — try_new retries lazily until the gRPC server
-        // task below comes up. Integration tests for the
-        // /api/microgrid/* endpoints exercise this whole loop.
-        let microgrid = ui::new_microgrid_slot();
-        ui::spawn_microgrid_loopback(
-            format!("http://{grpc_addr}"),
-            microgrid.clone(),
-            config.site(),
-        );
-        // Single-microgrid integration test: pin the gRPC frontend
-        // to the default registry entry (the one auto-seeded by
-        // Config::new when no `(make-microgrid)` form ran, or the
-        // id an explicit form in `config_body` chose) — matches
-        // what `get_microgrid` reports.
+        // Single-microgrid tests: the UI's primary slot and the gRPC
+        // address are those of the default registry entry (the one
+        // auto-seeded by Config::new, or the id an explicit form in
+        // `config_body` chose).
         let default_mg_id = {
             let reg = config.microgrids();
             let r = reg.lock();
             r.keys().copied().next().expect("default microgrid entry")
         };
-
-        // Single-microgrid integration test: inert runtimes whose
-        // loopbacks map holds one entry, keyed by the real microgrid
-        // id so the per-mg /api/mg/{id}/microgrid/* routes resolve.
-        // /api/microgrid/* keeps reading the primary slot.
-        let runtimes = macrocosim::runtime::MicrogridRuntimes::inert();
-        runtimes
+        let grpc_addr = runtimes
+            .status(default_mg_id)
+            .and_then(|v| v.grpc_addr)
+            .expect("the default microgrid started");
+        let microgrid = runtimes
             .loopbacks()
-            .write()
-            .insert(default_mg_id, microgrid.clone());
+            .read()
+            .get(&default_mg_id)
+            .cloned()
+            .expect("loopback slot");
+
+        // Bind the UI and assets servers to OS-assigned ports;
+        // local_addr() reads back the chosen port before the listener
+        // goes to its server.
+        let ui_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ui port");
+        let ui_addr = ui_listener.local_addr().expect("ui addr");
+        let ui_config = config.clone();
+        let ui_runtimes = runtimes.clone();
         handles.push(tokio::spawn(async move {
-            let _ = ui::serve_with_listener(ui_listener, ui_config, microgrid, runtimes).await;
+            let _ = ui::serve_with_listener(ui_listener, ui_config, microgrid, ui_runtimes).await;
         }));
-        let microgrid_server = MicrogridServer::new(config.clone(), default_mg_id, config.site());
+
+        // PlatformAssets has its own port, as in the binary.
+        let assets_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind assets port");
+        let assets_addr = assets_listener.local_addr().expect("assets addr");
         let assets_server = AssetsServer::new(config.clone());
         handles.push(tokio::spawn(async move {
             let _ = Server::builder()
-                .add_service(MicrogridGrpcServer::new(microgrid_server))
                 .add_service(AssetsGrpcServer::new(assets_server))
-                .serve_with_incoming(TcpListenerStream::new(grpc_listener))
+                .serve_with_incoming(TcpListenerStream::new(assets_listener))
                 .await;
         }));
 
@@ -155,6 +151,7 @@ impl TestServer {
         Self {
             grpc_url: format!("http://{grpc_addr}"),
             ui_url: format!("http://{ui_addr}"),
+            assets_url: format!("http://{assets_addr}"),
             config,
             handles,
             _tempdir: tempdir,
