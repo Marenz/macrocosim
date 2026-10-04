@@ -34,12 +34,12 @@ use events_ws::events_ws;
 
 /// Run the UI HTTP server on an already-bound listener.
 ///
-/// `microgrid` is the loopback client slot — the binary populates it
-/// via [`spawn_microgrid_loopback`] before / alongside the gRPC
-/// server starting. Pass an empty slot if the UI doesn't need
-/// aggregated Dashboard data (tests, etc.). `runtimes` starts and
-/// reports each microgrid's runtime, and holds the per-microgrid
-/// loopback slots the `/api/mg/{id}/microgrid/*` routes read.
+/// `microgrid` is the loopback client slot — `MicrogridRuntimes`
+/// populates it via [`spawn_microgrid_loopback`] when the microgrid
+/// first starts. Pass an empty slot if the UI doesn't need aggregated
+/// Dashboard data (tests, etc.). `runtimes` starts and reports each
+/// microgrid's runtime, and holds the per-microgrid loopback slots
+/// the `/api/mg/{id}/microgrid/*` routes read.
 pub async fn serve_with_listener(
     listener: tokio::net::TcpListener,
     config: Config,

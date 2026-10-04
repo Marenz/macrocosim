@@ -1129,6 +1129,7 @@ dependencies = [
  "frequenz-microgrid",
  "frequenz-microgrid-component-graph",
  "futures",
+ "hyper-util",
  "log",
  "notify",
  "parking_lot",

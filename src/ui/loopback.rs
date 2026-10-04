@@ -1,8 +1,9 @@
 //! gRPC loopback supervisor that mirrors macrocosim's own gRPC
 //! service back through `frequenz-microgrid`'s client + logical-
 //! meter actors. The metrics panel's charts and chips read from
-//! there, so the SPA exercises exactly the same path a downstream
-//! EMS would.
+//! there, so the SPA reads through the same client and logical-meter
+//! code a downstream EMS would, served by the same Microgrid service
+//! code.
 //!
 //! `spawn_microgrid_loopback` kicks the supervisor task; the
 //! supervisor watches `MicrogridSite` events and rebuilds the
@@ -26,21 +27,30 @@ use super::state::{
     HistorySample, MICROGRID_HISTORY_CAP, MicrogridSampleSnapshot, SharedMicrogrid,
 };
 
-/// Spawn a tokio task that constructs a [`Microgrid`] pointed at
-/// `grpc_url`, kicks off forwarders for the aggregated streams the
-/// metrics panel cares about, and stores the handle in `slot` once
-/// the connection succeeds. `Microgrid::try_new` already retries
-/// lazily until the gRPC server is reachable; this wrapper exists so
-/// the UI's `serve` doesn't block on the gRPC server coming up — UI
-/// startup proceeds, and the microgrid endpoints return 503 until
-/// the slot fills.
+/// Spawn a tokio task that builds a [`Microgrid`] on `client`, kicks
+/// off forwarders for the aggregated streams the metrics panel cares
+/// about, and stores the handle in `slot` once the graph is built.
+/// The UI's `serve` doesn't wait for the build: the microgrid
+/// endpoints return 503 until the slot fills.
+///
+/// The supervisor reuses `client` for every rebuild and never
+/// returns: it holds `site`, which owns the event sender, so its
+/// event stream cannot close. After the first successful build the
+/// slot's `Microgrid` holds a clone too. A dropped client closes its
+/// instructions channel, and frequenz-microgrid's
+/// `MicrogridClientActor` busy-spins at 100 % CPU on a closed channel
+/// (tracked upstream in frequenz-microgrid-rs).
 ///
 /// `site` is the sink the forwarders publish to via
 /// [`MicrogridSite::broadcast_microgrid_sample`]; the existing `/ws/events`
 /// stream then carries the samples to the SPA without any extra
 /// wiring — they ride the same `SiteEvent` discriminator the
 /// per-component samples already use.
-pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, site: MicrogridSite) {
+pub fn spawn_microgrid_loopback(
+    client: MicrogridClientHandle,
+    slot: SharedMicrogrid,
+    site: MicrogridSite,
+) {
     tokio::spawn(async move {
         // Subscribe BEFORE the initial build. The build can take a
         // while (the graph build loops until it succeeds), and a
@@ -48,19 +58,18 @@ pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, site: M
         // event here — otherwise the loopback would serve the
         // pre-change graph until the NEXT mutation, silently.
         let events = site.subscribe_events();
-        run_supervisor(grpc_url, slot, site, events).await;
+        run_supervisor(client, slot, site, events).await;
     });
 }
 
-/// Build a fresh `Microgrid` and wire up its forwarders. Same
-/// code path for the initial boot and every subsequent rebuild:
-/// `slot.client` is lazily initialised on first call via
-/// `MicrogridClientHandle::try_new(grpc_url)`, then reused
-/// forever. Each call builds a fresh `LogicalMeterHandle` against
-/// the current topology and assembles the `Microgrid` via
-/// `new_from_handles`. The old `Microgrid` (replaced in `slot`)
-/// drops normally; its `LogicalMeterActor` exits cleanly because
-/// it handles a closed instructions channel by breaking out.
+/// Build a fresh `Microgrid` and wire up its forwarders. Same code
+/// path for the initial boot and every subsequent rebuild, all on the
+/// one long-lived `client`. Each call builds a fresh
+/// `LogicalMeterHandle` against the current topology and assembles
+/// the `Microgrid` via `new_from_handles`. The old `Microgrid`
+/// (replaced in `slot`) drops normally; its `LogicalMeterActor` exits
+/// cleanly because it handles a closed instructions channel by
+/// breaking out.
 ///
 /// Forwarder subscriptions are awaited synchronously **before** the
 /// slot swap. The shared `MicrogridClientActor` caches a
@@ -71,25 +80,13 @@ pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, site: M
 /// handoff, so the stream task survives and samples reach the new
 /// forwarders without a multi-second silence.
 ///
-/// Returns false if the gRPC connect or graph build fails outright
-/// (which the crate normally retries through; a hard failure means
-/// something like a malformed URL).
-async fn build_microgrid(grpc_url: &str, slot: &SharedMicrogrid, site: &MicrogridSite) -> bool {
-    // Lazy client init. `MicrogridClientHandle::try_new` doesn't
-    // contact the server — the connection is established lazily on
-    // the first RPC — so this is cheap to call. It does validate
-    // the URL though, hence the Result.
-    let client = match slot
-        .client
-        .get_or_try_init(|| MicrogridClientHandle::try_new(grpc_url.to_owned()))
-        .await
-    {
-        Ok(c) => c.clone(),
-        Err(e) => {
-            log::error!("microgrid loopback: client try_new failed: {e}");
-            return false;
-        }
-    };
+/// Returns false if the logical-meter setup fails outright (which the
+/// crate normally retries through).
+async fn build_microgrid(
+    client: &MicrogridClientHandle,
+    slot: &SharedMicrogrid,
+    site: &MicrogridSite,
+) -> bool {
     // 1 Hz sample cadence matches the existing history sampler;
     // the metrics panel's charts and chips refresh at this rate.
     // LogicalMeterHandle's
@@ -104,7 +101,7 @@ async fn build_microgrid(grpc_url: &str, slot: &SharedMicrogrid, site: &Microgri
             return false;
         }
     };
-    let mut mg = Microgrid::new_from_handles(client, lm);
+    let mut mg = Microgrid::new_from_handles(client.clone(), lm);
     // First cursor reset, BEFORE the new forwarders spawn: a stream that
     // stalled long before this rebuild left an hours-old cursor, and a new
     // forwarder reviving it would otherwise integrate a trapezoid across
@@ -158,18 +155,18 @@ async fn build_microgrid(grpc_url: &str, slot: &SharedMicrogrid, site: &Microgri
 /// run the same check (defensive — a missed event might have been a
 /// topology change).
 async fn run_supervisor(
-    grpc_url: String,
+    client: MicrogridClientHandle,
     slot: SharedMicrogrid,
     site: MicrogridSite,
     mut events: tokio::sync::broadcast::Receiver<SiteEvent>,
 ) {
     let mut built = None;
-    build_if_needed(&grpc_url, &slot, &site, &mut built).await;
+    build_if_needed(&client, &slot, &site, &mut built).await;
     loop {
         match events.recv().await {
             Ok(SiteEvent::TopologyChanged { .. }) => {
                 debounce_topology_burst(&mut events).await;
-                build_if_needed(&grpc_url, &slot, &site, &mut built).await;
+                build_if_needed(&client, &slot, &site, &mut built).await;
             }
             Ok(_) => continue,
             Err(RecvError::Lagged(n)) => {
@@ -177,11 +174,13 @@ async fn run_supervisor(
                     "microgrid loopback supervisor: lagged {n} events, checking the graph defensively"
                 );
                 debounce_topology_burst(&mut events).await;
-                build_if_needed(&grpc_url, &slot, &site, &mut built).await;
+                build_if_needed(&client, &slot, &site, &mut built).await;
             }
             Err(RecvError::Closed) => {
-                log::info!("microgrid loopback supervisor: site events closed, exiting");
-                return;
+                // Unreachable while this task holds `site`. Park
+                // anyway: returning would drop `client`.
+                log::error!("microgrid loopback supervisor: site events closed; parking");
+                std::future::pending::<()>().await;
             }
         }
     }
@@ -217,12 +216,8 @@ async fn debounce_topology_burst(events: &mut tokio::sync::broadcast::Receiver<S
 /// the slot. The old `Microgrid` stays in the slot until then so the
 /// shared client's per-component broadcast Senders keep at least one
 /// live receiver across the handoff.
-///
-/// Only the `LogicalMeterHandle` inside the new Microgrid is
-/// rebuilt; the `MicrogridClientHandle` cached in `slot.client` is
-/// reused. See the field doc for why the client is long-lived.
 async fn build_if_needed(
-    grpc_url: &str,
+    client: &MicrogridClientHandle,
     slot: &SharedMicrogrid,
     site: &MicrogridSite,
     built: &mut Option<SiteShape>,
@@ -235,7 +230,7 @@ async fn build_if_needed(
         return;
     }
     log::debug!("microgrid loopback: building the graph handle");
-    if build_microgrid(grpc_url, slot, site).await {
+    if build_microgrid(client, slot, site).await {
         log::info!("microgrid loopback: graph built + forwarders running");
         *built = Some(shape);
     }

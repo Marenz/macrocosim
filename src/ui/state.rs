@@ -6,7 +6,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-use frequenz_microgrid::{Microgrid, MicrogridClientHandle};
+use frequenz_microgrid::Microgrid;
 use parking_lot::{Mutex, RwLock};
 use rust_embed::Embed;
 use serde::Serialize;
@@ -50,21 +50,6 @@ pub struct MicrogridSampleSnapshot {
 /// before doing any async work.
 pub struct MicrogridState {
     pub microgrid: RwLock<Option<Microgrid>>,
-    /// The microgrid client, built once on the first
-    /// `build_microgrid` call via `MicrogridClientHandle::try_new`
-    /// and reused for every rebuild — only the `LogicalMeterHandle`
-    /// (which embeds the graph snapshot) gets replaced when the
-    /// topology changes. A new client per rebuild would close the
-    /// previous one's instructions channel, and
-    /// `MicrogridClientActor` in frequenz-microgrid 0.4.1
-    /// busy-spins at 100 % CPU on a closed channel (tracked
-    /// upstream in frequenz-microgrid-rs). Keeping one handle
-    /// clone alive forever sidesteps the bug entirely.
-    ///
-    /// `tokio::sync::OnceCell` rather than `RwLock<Option<_>>`
-    /// because the value is set exactly once on the first
-    /// successful boot.
-    pub(crate) client: tokio::sync::OnceCell<MicrogridClientHandle>,
     /// Latest sample seen per stream name. Forwarders overwrite on
     /// each recv; the `/api/microgrid/latest` endpoint snapshots the
     /// whole map on each call. `parking_lot::RwLock` because writes
@@ -110,7 +95,6 @@ pub type SharedMicrogrid = Arc<MicrogridState>;
 pub fn new_microgrid_slot() -> SharedMicrogrid {
     Arc::new(MicrogridState {
         microgrid: RwLock::new(None),
-        client: tokio::sync::OnceCell::new(),
         latest: RwLock::new(HashMap::new()),
         history: RwLock::new(HashMap::new()),
         forwarders: Mutex::new(Vec::new()),

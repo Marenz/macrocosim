@@ -313,7 +313,10 @@ bind; a reload adopts a changed `:grpc-port` only for one that never
 bound. `/api/microgrids` entries carry `runtime: {status, grpc_addr,
 error} | null`, and create / import / load-as / snapshot-as-new wait
 for the start and report it; the microgrid card shows the address and
-a "failed" chip. macroctl's `--addr` points the gRPC client at
+a "failed" chip. The UI's loopback client reads a private copy of the
+Microgrid service through an in-memory channel, so a microgrid's live
+data reaches the UI whether or not its public port is bound.
+macroctl's `--addr` points the gRPC client at
 the first microgrid by default; pass `--addr http://[::1]:8810`
 etc. to reach others. The UI server binds `127.0.0.1:8801` by
 default; override the port with `--ui-port N`, or pass

@@ -28,10 +28,10 @@ futures = "0.3.30"
 # connection types in src/sim/graph_adapter.rs and runs the validator
 # at the end of each config-load / reload.
 frequenz-microgrid-component-graph = "0.6.2"
-# High-level Microgrid client + typed metric streams. The UI server
-# runs this as a client of macrocosim's own gRPC server on localhost
-# (the loopback supervisor in src/ui/loopback.rs): aggregated
-# Dashboard tiles read from the same
+# High-level Microgrid client + typed metric streams. The UI runs
+# this as a client of each microgrid's Microgrid service over an
+# in-memory channel (src/runtime.rs, supervised by
+# src/ui/loopback.rs): aggregated Dashboard tiles read from the same
 # LogicalMeterHandle::xxx<M>().subscribe() streams a production
 # downstream control app would consume.
 frequenz-microgrid = "0.7.1"
@@ -53,13 +53,15 @@ rust-embed = "8"
 # macroctl talks to the UI server's HTTP surface for scenario commands —
 # the scenario lifecycle isn't on gRPC.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# In-memory gRPC channel for the UI's loopback client (`runtime.rs`);
+# tower's `util` also serves the axum oneshot tests.
+tower = { version = "0.5", features = ["util"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 
 [build-dependencies]
 tonic-prost-build = { version = "0.14", features = ["cleanup-markdown"] }
 
 [dev-dependencies]
-# axum oneshot testing pattern — no live port needed
-tower = { version = "0.5", features = ["util"] }
 # Out-of-process integration tests in tests/ talk to the live
 # HTTP / gRPC surface; reqwest is already a regular dep for macroctl,
 # we just need a temp dir for per-test config files.
