@@ -29,7 +29,7 @@ use crate::timeout_tracker::{SetpointAxis, TimeoutTracker, deadline_after};
 
 mod step;
 #[cfg(test)]
-mod test_stubs;
+pub(crate) mod test_stubs;
 mod window;
 
 /// The refusal text for a request that outlived its site's run.
@@ -130,17 +130,19 @@ impl MicrogridGateway {
         let id = c.id();
         let mut st = self.state.lock();
         st.forget(id);
-        let settings = c.gateway_settings();
-        for axis in [SetpointAxis::Active, SetpointAxis::Reactive] {
-            if c.has_axis(axis) {
-                st.axes.insert(
-                    (id, axis),
-                    GatewayAxis::new(GatewayAxisConfig {
-                        command_delay: settings.delay(axis),
-                        ramp_rate_per_s: settings.ramp_rate(axis),
-                        initial: c.initial_value(axis),
-                    }),
-                );
+        if let Some(ctl) = c.controllable() {
+            let settings = ctl.gateway_settings();
+            for axis in [SetpointAxis::Active, SetpointAxis::Reactive] {
+                if ctl.has_axis(axis) {
+                    st.axes.insert(
+                        (id, axis),
+                        GatewayAxis::new(GatewayAxisConfig {
+                            command_delay: settings.delay(axis),
+                            ramp_rate_per_s: settings.ramp_rate(axis),
+                            initial: ctl.initial_value(axis),
+                        }),
+                    );
+                }
             }
         }
         if let (Some(protect), Some(rated), Some(soc)) =
@@ -277,7 +279,8 @@ impl<'a> Gateway<'a> {
     /// component's idle value, or 0 when it has none.
     fn reset_to_idle_locked(&self, st: &mut GatewayState, id: u64, axis: SetpointAxis) {
         if let (Some(ax), Some(c)) = (st.axes.get_mut(&(id, axis)), self.site.get(id)) {
-            ax.reset(c.idle_value(axis).unwrap_or(0.0));
+            let idle = c.controllable().and_then(|ctl| ctl.idle_value(axis));
+            ax.reset(idle.unwrap_or(0.0));
         }
     }
 
@@ -343,8 +346,9 @@ impl<'a> Gateway<'a> {
         c: &dyn SimulatedComponent,
         axis: SetpointAxis,
     ) -> Option<VecBounds> {
-        c.bounds_follow_physical_band(axis)
-            .then(|| c.physical_band(axis, self.site.physics_tick()))
+        let ctl = c.controllable()?;
+        ctl.bounds_follow_physical_band(axis)
+            .then(|| ctl.physical_band(axis, self.site.physics_tick()))
             .flatten()
     }
 

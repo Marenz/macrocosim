@@ -6,11 +6,12 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    Battery, BatteryInverter, Category, MicrogridSite, SimulatedComponent, Telemetry,
+    Battery, BatteryInverter, Category, Controllable, MicrogridSite, SimulatedComponent, Telemetry,
     battery::BatteryConfig,
     bounds::VecBounds,
     component::GatewaySettings,
     inverter::battery_inverter::BatteryInverterConfig,
+    reactive::ReactiveCapability,
     sim_clock::{NowSource, headless_base},
 };
 use crate::timeout_tracker::SetpointAxis;
@@ -152,6 +153,18 @@ impl SimulatedComponent for Hw {
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
         Some((-1000.0, 1000.0))
     }
+    fn controllable(&self) -> Option<&dyn Controllable> {
+        Some(self)
+    }
+    fn make_fn(&self) -> &'static str {
+        "%make-test-hw"
+    }
+    fn constructor_kwargs(&self) -> Vec<(&'static str, String)> {
+        Vec::new()
+    }
+}
+
+impl Controllable for Hw {
     fn has_axis(&self, axis: SetpointAxis) -> bool {
         axis == SetpointAxis::Active
     }
@@ -180,10 +193,83 @@ impl SimulatedComponent for Hw {
     fn gateway_settings(&self) -> GatewaySettings {
         self.settings
     }
+}
+
+/// A two-axis component whose measured P follows its last active
+/// command at once, with a pure 1 kVA reactive cap that is also its
+/// reactive physical band at that P. Always id 1.
+pub(crate) struct Pq {
+    pub p: Mutex<f32>,
+    pub q: Mutex<Option<f32>>,
+}
+
+impl Pq {
+    pub fn new() -> Self {
+        Self {
+            p: Mutex::new(0.0),
+            q: Mutex::new(None),
+        }
+    }
+}
+
+impl fmt::Display for Pq {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "pq")
+    }
+}
+
+impl SimulatedComponent for Pq {
+    fn id(&self) -> u64 {
+        1
+    }
+    fn category(&self) -> Category {
+        Category::Inverter
+    }
+    fn name(&self) -> &str {
+        "pq"
+    }
+    fn stream_interval(&self) -> Duration {
+        Duration::from_secs(1)
+    }
+    fn tick(&self, _: &MicrogridSite, _: DateTime<Utc>, _: Duration) {}
+    fn telemetry(&self, _: &MicrogridSite) -> Telemetry {
+        Telemetry::default()
+    }
+    fn active_power_w(&self, _: &MicrogridSite) -> Option<f32> {
+        Some(*self.p.lock())
+    }
+    fn rated_active_bounds(&self) -> Option<(f32, f32)> {
+        Some((-1000.0, 1000.0))
+    }
+    fn reactive_capability(&self) -> Option<ReactiveCapability> {
+        Some(ReactiveCapability {
+            pf_limit: None,
+            apparent_va: Some(1000.0),
+        })
+    }
+    fn controllable(&self) -> Option<&dyn Controllable> {
+        Some(self)
+    }
     fn make_fn(&self) -> &'static str {
-        "%make-test-hw"
+        "%make-test-pq"
     }
     fn constructor_kwargs(&self) -> Vec<(&'static str, String)> {
         Vec::new()
+    }
+}
+
+impl Controllable for Pq {
+    fn has_axis(&self, _: SetpointAxis) -> bool {
+        true
+    }
+    fn set_command(&self, axis: SetpointAxis, value: f32) {
+        match axis {
+            SetpointAxis::Active => *self.p.lock() = value,
+            SetpointAxis::Reactive => *self.q.lock() = Some(value),
+        }
+    }
+    fn physical_band(&self, axis: SetpointAxis, _: Duration) -> Option<VecBounds> {
+        let cap = self.reactive_capability()?;
+        (axis == SetpointAxis::Reactive).then(|| cap.q_band_at(*self.p.lock()))
     }
 }

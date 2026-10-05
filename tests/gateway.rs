@@ -130,10 +130,11 @@ fn the_hardware_alone_charges_to_full() {
     let (cfg, _dir) = headless(SMALL_PACK);
     let site = cfg.site();
     let inv = site.get(3).unwrap();
+    let ctl = inv.controllable().unwrap();
     let mut now = site.now();
     for _ in 0..3_000 {
         now += chrono::Duration::milliseconds(100);
-        inv.set_command(SetpointAxis::Active, 3_600.0);
+        ctl.set_command(SetpointAxis::Active, 3_600.0);
         for c in site.components().iter() {
             c.tick(&site, now, TICK);
         }
@@ -244,10 +245,11 @@ fn the_hardware_alone_stops_discharging_at_empty() {
     let (cfg, _dir) = headless(&SMALL_PACK.replace(":initial-soc 80.0", ":initial-soc 20.0"));
     let site = cfg.site();
     let inv = site.get(3).unwrap();
+    let ctl = inv.controllable().unwrap();
     let mut now = site.now();
     for _ in 0..3_000 {
         now += chrono::Duration::milliseconds(100);
-        inv.set_command(SetpointAxis::Active, -3_600.0);
+        ctl.set_command(SetpointAxis::Active, -3_600.0);
         for c in site.components().iter() {
             c.tick(&site, now, TICK);
         }

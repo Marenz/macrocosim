@@ -67,7 +67,10 @@ impl Gateway<'_> {
                 .get_mut(&(p.id, p.axis))
                 .expect("a planned axis is in the map");
             let out = ax.advance(p.target, now, dt, &ctx);
-            p.component.set_command(p.axis, out);
+            p.component
+                .controllable()
+                .expect("a planned component is controllable")
+                .set_command(p.axis, out);
         }
         drop(st);
         log_expired(&expired);
@@ -86,18 +89,21 @@ impl Gateway<'_> {
             let Some(c) = self.site.get(id) else {
                 continue;
             };
+            let Some(ctl) = c.controllable() else {
+                continue;
+            };
             if self.site.runtime_of(id).health != Health::Ok {
-                let keep = c.keeps_command_through_fault(axis);
+                let keep = ctl.keeps_command_through_fault(axis);
                 ax.trip(keep);
                 if !keep {
                     lifetimes.remove(id, axis);
                 }
-                c.set_command(axis, 0.0);
+                ctl.set_command(axis, 0.0);
                 continue;
             }
-            let target = ax.target(now, c.idle_value(axis));
+            let target = ax.target(now, ctl.idle_value(axis));
             let base = self.base_of(c.as_ref(), axis);
-            let physical = c.physical_band(axis, dt);
+            let physical = ctl.physical_band(axis, dt);
             planned.push(Planned {
                 id,
                 axis,
@@ -162,22 +168,19 @@ mod tests {
 
     use super::super::{
         Mode,
-        test_stubs::{Hw, instant_inverter, nearly_full_pack, put, ramping_inverter},
+        test_stubs::{Hw, Pq, instant_inverter, nearly_full_pack, put, ramping_inverter},
     };
-    use chrono::{DateTime, Utc};
-    use parking_lot::Mutex;
 
     use crate::sim::{
-        Battery, BatteryInverter, Category, MicrogridSite, SimulatedComponent, Telemetry,
+        Battery, BatteryInverter, MicrogridSite,
         battery::BatteryConfig,
         bounds::VecBounds,
         component::GatewaySettings,
         decay::{SocProtect, soc_protected_bounds},
         inverter::battery_inverter::BatteryInverterConfig,
-        reactive::ReactiveCapability,
         runtime::Health,
     };
-    use crate::timeout_tracker::SetpointAxis::{self, Active, Reactive};
+    use crate::timeout_tracker::SetpointAxis::{Active, Reactive};
 
     const DT: Duration = Duration::from_millis(100);
 
@@ -325,70 +328,6 @@ mod tests {
         );
     }
 
-    /// A two-axis component whose measured P follows its last active
-    /// command at once, with a pure 1 kVA reactive cap that is also
-    /// its reactive physical band at that P.
-    struct Pq {
-        p: Mutex<f32>,
-        q: Mutex<Option<f32>>,
-    }
-
-    impl std::fmt::Display for Pq {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "pq")
-        }
-    }
-
-    impl SimulatedComponent for Pq {
-        fn id(&self) -> u64 {
-            1
-        }
-        fn category(&self) -> Category {
-            Category::Inverter
-        }
-        fn name(&self) -> &str {
-            "pq"
-        }
-        fn stream_interval(&self) -> Duration {
-            Duration::from_secs(1)
-        }
-        fn tick(&self, _: &MicrogridSite, _: DateTime<Utc>, _: Duration) {}
-        fn telemetry(&self, _: &MicrogridSite) -> Telemetry {
-            Telemetry::default()
-        }
-        fn active_power_w(&self, _: &MicrogridSite) -> Option<f32> {
-            Some(*self.p.lock())
-        }
-        fn rated_active_bounds(&self) -> Option<(f32, f32)> {
-            Some((-1000.0, 1000.0))
-        }
-        fn reactive_capability(&self) -> Option<ReactiveCapability> {
-            Some(ReactiveCapability {
-                pf_limit: None,
-                apparent_va: Some(1000.0),
-            })
-        }
-        fn has_axis(&self, _: SetpointAxis) -> bool {
-            true
-        }
-        fn set_command(&self, axis: SetpointAxis, value: f32) {
-            match axis {
-                Active => *self.p.lock() = value,
-                Reactive => *self.q.lock() = Some(value),
-            }
-        }
-        fn physical_band(&self, axis: SetpointAxis, _: Duration) -> Option<VecBounds> {
-            let cap = self.reactive_capability()?;
-            (axis == Reactive).then(|| cap.q_band_at(*self.p.lock()))
-        }
-        fn make_fn(&self) -> &'static str {
-            "%make-test-pq"
-        }
-        fn constructor_kwargs(&self) -> Vec<(&'static str, String)> {
-            Vec::new()
-        }
-    }
-
     /// A reactive axis is clamped against the capability and the
     /// physical band at the P measured before the step, whichever
     /// axis is handed its command first: the active command moving P
@@ -398,13 +337,7 @@ mod tests {
         // Fresh sites, so the axes' map order varies between runs.
         for i in 0..32 {
             let site = MicrogridSite::new();
-            let pq = put(
-                &site,
-                Arc::new(Pq {
-                    p: Mutex::new(0.0),
-                    q: Mutex::new(None),
-                }),
-            );
+            let pq = put(&site, Arc::new(Pq::new()));
             let gw = site.gateway();
             gw.command(1, Active, 1000.0).unwrap();
             gw.command(1, Reactive, 500.0).unwrap();
@@ -868,10 +801,11 @@ mod tests {
         site.register(instant_inverter(2));
         site.connect(2, 1);
         let inv = site.get(2).unwrap();
+        let ctl = inv.controllable().unwrap();
         let mut now = site.now();
         for _ in 0..1_000 {
             now += chrono::Duration::milliseconds(100);
-            inv.set_command(Active, 3_600.0);
+            ctl.set_command(Active, 3_600.0);
             site.tick_hardware(now, DT);
         }
         let bat = site.get(1).unwrap();

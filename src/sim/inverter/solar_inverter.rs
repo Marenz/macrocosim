@@ -17,7 +17,7 @@ use rand::Rng;
 use tulisp::TulispContext;
 
 use crate::sim::{
-    Category, MicrogridSite, SimulatedComponent, Telemetry,
+    Category, Controllable, MicrogridSite, SimulatedComponent, Telemetry,
     bounds::VecBounds,
     component::{GatewaySettings, KnobKind, KnobSnapshot, ScalarReading},
     device_axis::DeviceAxis,
@@ -422,52 +422,8 @@ impl SimulatedComponent for SolarInverter {
         self.reactive.output()
     }
 
-    fn has_axis(&self, _axis: SetpointAxis) -> bool {
-        true
-    }
-
-    fn set_command(&self, axis: SetpointAxis, value: f32) {
-        match axis {
-            SetpointAxis::Active => self.active.set_command(value),
-            SetpointAxis::Reactive => self.reactive.set_command(value),
-        }
-    }
-
-    /// P: the sun band (not advertised and not checked by an
-    /// augmentation — a curtailment must be accepted at night). Q:
-    /// the caps at the last active output.
-    fn physical_band(&self, axis: SetpointAxis, _dt: Duration) -> Option<VecBounds> {
-        Some(match axis {
-            SetpointAxis::Active => self.sun_band(),
-            SetpointAxis::Reactive => self.q_band_at(self.active.output()),
-        })
-    }
-
-    /// Free-running PV tracks the sun, and an expired or reset
-    /// curtailment releases to the sunlight floor; Q holds.
-    fn idle_value(&self, axis: SetpointAxis) -> Option<f32> {
-        (axis == SetpointAxis::Active).then(|| self.min_avail_w())
-    }
-
-    fn initial_value(&self, axis: SetpointAxis) -> f32 {
-        match axis {
-            SetpointAxis::Active => self.active.output(),
-            SetpointAxis::Reactive => 0.0,
-        }
-    }
-
-    /// A curtailment survives a trip; a Q command does not.
-    fn keeps_command_through_fault(&self, axis: SetpointAxis) -> bool {
-        axis == SetpointAxis::Active
-    }
-
-    fn gateway_settings(&self) -> GatewaySettings {
-        GatewaySettings {
-            command_delay: self.cfg.command_delay,
-            ramp_rate_w_per_s: self.cfg.ramp_rate_w_per_s,
-            reactive_command_delay: self.cfg.reactive_command_delay,
-            reactive_ramp_rate_var_per_s: self.cfg.reactive_ramp_rate_var_per_s,
-        }
+    fn controllable(&self) -> Option<&dyn Controllable> {
+        Some(self)
     }
 
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
@@ -641,6 +597,56 @@ impl SimulatedComponent for SolarInverter {
             ));
         }
         kw
+    }
+}
+
+impl Controllable for SolarInverter {
+    fn has_axis(&self, _axis: SetpointAxis) -> bool {
+        true
+    }
+
+    fn set_command(&self, axis: SetpointAxis, value: f32) {
+        match axis {
+            SetpointAxis::Active => self.active.set_command(value),
+            SetpointAxis::Reactive => self.reactive.set_command(value),
+        }
+    }
+
+    /// P: the sun band (not advertised and not checked by an
+    /// augmentation — a curtailment must be accepted at night). Q:
+    /// the caps at the last active output.
+    fn physical_band(&self, axis: SetpointAxis, _dt: Duration) -> Option<VecBounds> {
+        Some(match axis {
+            SetpointAxis::Active => self.sun_band(),
+            SetpointAxis::Reactive => self.q_band_at(self.active.output()),
+        })
+    }
+
+    /// Free-running PV tracks the sun, and an expired or reset
+    /// curtailment releases to the sunlight floor; Q holds.
+    fn idle_value(&self, axis: SetpointAxis) -> Option<f32> {
+        (axis == SetpointAxis::Active).then(|| self.min_avail_w())
+    }
+
+    fn initial_value(&self, axis: SetpointAxis) -> f32 {
+        match axis {
+            SetpointAxis::Active => self.active.output(),
+            SetpointAxis::Reactive => 0.0,
+        }
+    }
+
+    /// A curtailment survives a trip; a Q command does not.
+    fn keeps_command_through_fault(&self, axis: SetpointAxis) -> bool {
+        axis == SetpointAxis::Active
+    }
+
+    fn gateway_settings(&self) -> GatewaySettings {
+        GatewaySettings {
+            command_delay: self.cfg.command_delay,
+            ramp_rate_w_per_s: self.cfg.ramp_rate_w_per_s,
+            reactive_command_delay: self.cfg.reactive_command_delay,
+            reactive_ramp_rate_var_per_s: self.cfg.reactive_ramp_rate_var_per_s,
+        }
     }
 }
 

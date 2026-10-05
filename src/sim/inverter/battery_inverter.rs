@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    Category, MicrogridSite, SimulatedComponent, Telemetry, bounds::VecBounds,
+    Category, Controllable, MicrogridSite, SimulatedComponent, Telemetry, bounds::VecBounds,
     component::GatewaySettings, device_axis::DeviceAxis, reactive::ReactiveCapability,
     runtime::Health,
 };
@@ -185,34 +185,8 @@ impl SimulatedComponent for BatteryInverter {
         Some(*self.measured_w.lock())
     }
 
-    fn has_axis(&self, _axis: SetpointAxis) -> bool {
-        true
-    }
-
-    fn set_command(&self, axis: SetpointAxis, value: f32) {
-        match axis {
-            SetpointAxis::Active => self.active.set_command(value),
-            SetpointAxis::Reactive => self.reactive.set_command(value),
-        }
-    }
-
-    fn physical_band(&self, axis: SetpointAxis, _dt: Duration) -> Option<VecBounds> {
-        match axis {
-            SetpointAxis::Active => None,
-            SetpointAxis::Reactive => {
-                let p = *self.measured_w.lock();
-                Some(self.q_band_at(p))
-            }
-        }
-    }
-
-    fn gateway_settings(&self) -> GatewaySettings {
-        GatewaySettings {
-            command_delay: self.cfg.command_delay,
-            ramp_rate_w_per_s: self.cfg.ramp_rate_w_per_s,
-            reactive_command_delay: self.cfg.reactive_command_delay,
-            reactive_ramp_rate_var_per_s: self.cfg.reactive_ramp_rate_var_per_s,
-        }
+    fn controllable(&self) -> Option<&dyn Controllable> {
+        Some(self)
     }
 
     fn aggregate_power_w(&self, _world: &MicrogridSite) -> f32 {
@@ -264,6 +238,38 @@ impl SimulatedComponent for BatteryInverter {
             reactive_ramp_rate_var_per_s: self.cfg.reactive_ramp_rate_var_per_s,
             device_delay: self.cfg.device_delay,
         })
+    }
+}
+
+impl Controllable for BatteryInverter {
+    fn has_axis(&self, _axis: SetpointAxis) -> bool {
+        true
+    }
+
+    fn set_command(&self, axis: SetpointAxis, value: f32) {
+        match axis {
+            SetpointAxis::Active => self.active.set_command(value),
+            SetpointAxis::Reactive => self.reactive.set_command(value),
+        }
+    }
+
+    fn physical_band(&self, axis: SetpointAxis, _dt: Duration) -> Option<VecBounds> {
+        match axis {
+            SetpointAxis::Active => None,
+            SetpointAxis::Reactive => {
+                let p = *self.measured_w.lock();
+                Some(self.q_band_at(p))
+            }
+        }
+    }
+
+    fn gateway_settings(&self) -> GatewaySettings {
+        GatewaySettings {
+            command_delay: self.cfg.command_delay,
+            ramp_rate_w_per_s: self.cfg.ramp_rate_w_per_s,
+            reactive_command_delay: self.cfg.reactive_command_delay,
+            reactive_ramp_rate_var_per_s: self.cfg.reactive_ramp_rate_var_per_s,
+        }
     }
 }
 
@@ -356,7 +362,9 @@ mod tests {
     fn reported_power_follows_the_battery_clip() {
         let (w, bat, invs) = setup_shared_battery(1, 3_000.0, 50.0);
         let inv = w.get(invs[0]).unwrap();
-        inv.set_command(SetpointAxis::Active, 5_000.0);
+        inv.controllable()
+            .unwrap()
+            .set_command(SetpointAxis::Active, 5_000.0);
         hardware_ticks(&w, 2);
         let accepted = w.get(bat).unwrap().aggregate_power_w(&w);
         assert!(
@@ -378,6 +386,8 @@ mod tests {
         let (w, _bat, invs) = setup_shared_battery(2, 3_000.0, 50.0);
         w.get(invs[0])
             .unwrap()
+            .controllable()
+            .unwrap()
             .set_command(SetpointAxis::Active, 4_000.0);
         hardware_ticks(&w, 2);
         let a = w.get(invs[0]).unwrap().aggregate_power_w(&w);
@@ -393,8 +403,12 @@ mod tests {
         let (w, bat, invs) = setup_shared_battery(2, 3_000.0, 50.0);
         w.get(invs[0])
             .unwrap()
+            .controllable()
+            .unwrap()
             .set_command(SetpointAxis::Active, 4_000.0);
         w.get(invs[1])
+            .unwrap()
+            .controllable()
             .unwrap()
             .set_command(SetpointAxis::Active, 2_000.0);
         hardware_ticks(&w, 2);

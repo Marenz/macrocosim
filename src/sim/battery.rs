@@ -323,8 +323,9 @@ mod tests {
 
         let inv_ref = w.get(2).unwrap();
         use crate::timeout_tracker::SetpointAxis;
-        inv_ref.set_command(SetpointAxis::Active, 4_000.0);
-        inv_ref.set_command(SetpointAxis::Reactive, 1_000.0);
+        let ctl = inv_ref.controllable().unwrap();
+        ctl.set_command(SetpointAxis::Active, 4_000.0);
+        ctl.set_command(SetpointAxis::Reactive, 1_000.0);
 
         let dt = Duration::from_millis(100);
         for _ in 0..2 {

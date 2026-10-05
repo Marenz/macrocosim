@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    Category, MicrogridSite, SimulatedComponent, Telemetry,
+    Category, Controllable, MicrogridSite, SimulatedComponent, Telemetry,
     bounds::VecBounds,
     component::{GatewaySettings, KnobKind, KnobSnapshot},
     decay::sanitize_soc_pct,
@@ -318,32 +318,8 @@ impl SimulatedComponent for EvCharger {
         Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
     }
 
-    fn has_axis(&self, axis: SetpointAxis) -> bool {
-        axis == SetpointAxis::Active
-    }
-
-    fn set_command(&self, axis: SetpointAxis, value: f32) {
-        if axis == SetpointAxis::Active {
-            self.limit.set_command(value);
-        }
-    }
-
-    /// With no command the charger offers nothing (`'paused`) or its
-    /// full rating (`'full`).
-    fn idle_value(&self, _axis: SetpointAxis) -> Option<f32> {
-        Some(self.cfg.idle_w())
-    }
-
-    fn keeps_command_through_fault(&self, _axis: SetpointAxis) -> bool {
-        self.cfg.resume_on_recovery
-    }
-
-    fn gateway_settings(&self) -> GatewaySettings {
-        GatewaySettings {
-            command_delay: self.cfg.command_delay,
-            ramp_rate_w_per_s: self.cfg.ramp_rate_w_per_s,
-            ..GatewaySettings::default()
-        }
+    fn controllable(&self) -> Option<&dyn Controllable> {
+        Some(self)
     }
 
     fn make_fn(&self) -> &'static str {
@@ -380,6 +356,42 @@ impl SimulatedComponent for EvCharger {
             kw.push((":resume-on-recovery", "t".to_string()));
         }
         kw
+    }
+}
+
+impl Controllable for EvCharger {
+    fn has_axis(&self, axis: SetpointAxis) -> bool {
+        axis == SetpointAxis::Active
+    }
+
+    fn set_command(&self, axis: SetpointAxis, value: f32) {
+        if axis == SetpointAxis::Active {
+            self.limit.set_command(value);
+        }
+    }
+
+    /// The offered limit has no physical band: the car draws what it
+    /// wants beneath it.
+    fn physical_band(&self, _axis: SetpointAxis, _dt: Duration) -> Option<VecBounds> {
+        None
+    }
+
+    /// With no command the charger offers nothing (`'paused`) or its
+    /// full rating (`'full`).
+    fn idle_value(&self, _axis: SetpointAxis) -> Option<f32> {
+        Some(self.cfg.idle_w())
+    }
+
+    fn keeps_command_through_fault(&self, _axis: SetpointAxis) -> bool {
+        self.cfg.resume_on_recovery
+    }
+
+    fn gateway_settings(&self) -> GatewaySettings {
+        GatewaySettings {
+            command_delay: self.cfg.command_delay,
+            ramp_rate_w_per_s: self.cfg.ramp_rate_w_per_s,
+            ..GatewaySettings::default()
+        }
     }
 }
 

@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::{Mutex, RwLock};
 
 use crate::sim::{
-    Category, MicrogridSite, SimulatedComponent, Telemetry,
+    Category, Controllable, MicrogridSite, SimulatedComponent, Telemetry,
     bounds::VecBounds,
     component::{GatewaySettings, KnobKind, KnobSnapshot, ScalarReading},
     device_axis::DeviceAxis,
@@ -287,38 +287,8 @@ impl SimulatedComponent for SteamBoiler {
         Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
     }
 
-    fn has_axis(&self, axis: SetpointAxis) -> bool {
-        axis == SetpointAxis::Active
-    }
-
-    fn set_command(&self, axis: SetpointAxis, value: f32) {
-        if axis == SetpointAxis::Active {
-            self.heater.set_command(value);
-        }
-    }
-
-    fn physical_band(&self, axis: SetpointAxis, dt: Duration) -> Option<VecBounds> {
-        (axis == SetpointAxis::Active).then(|| self.heat_band(dt))
-    }
-
-    /// No command: gas holds pressure, the heater draws nothing.
-    fn idle_value(&self, _axis: SetpointAxis) -> Option<f32> {
-        Some(0.0)
-    }
-
-    /// On the active axis the need is part of the reported bounds,
-    /// and an augmentation disjoint from it would park the heater at
-    /// 0 W for its whole lifetime, so it is refused.
-    fn bounds_follow_physical_band(&self, axis: SetpointAxis) -> bool {
-        axis == SetpointAxis::Active
-    }
-
-    fn gateway_settings(&self) -> GatewaySettings {
-        GatewaySettings {
-            command_delay: self.cfg.command_delay,
-            ramp_rate_w_per_s: self.cfg.ramp_rate_w_per_s,
-            ..GatewaySettings::default()
-        }
+    fn controllable(&self) -> Option<&dyn Controllable> {
+        Some(self)
     }
 
     fn set_pressure_bar(&self, bar: f32) -> bool {
@@ -432,6 +402,42 @@ impl SimulatedComponent for SteamBoiler {
             kw.push((":stream-jitter-pct", lf(self.cfg.stream_jitter_pct)));
         }
         kw
+    }
+}
+
+impl Controllable for SteamBoiler {
+    fn has_axis(&self, axis: SetpointAxis) -> bool {
+        axis == SetpointAxis::Active
+    }
+
+    fn set_command(&self, axis: SetpointAxis, value: f32) {
+        if axis == SetpointAxis::Active {
+            self.heater.set_command(value);
+        }
+    }
+
+    fn physical_band(&self, axis: SetpointAxis, dt: Duration) -> Option<VecBounds> {
+        (axis == SetpointAxis::Active).then(|| self.heat_band(dt))
+    }
+
+    /// No command: gas holds pressure, the heater draws nothing.
+    fn idle_value(&self, _axis: SetpointAxis) -> Option<f32> {
+        Some(0.0)
+    }
+
+    /// On the active axis the need is part of the reported bounds,
+    /// and an augmentation disjoint from it would park the heater at
+    /// 0 W for its whole lifetime, so it is refused.
+    fn bounds_follow_physical_band(&self, axis: SetpointAxis) -> bool {
+        axis == SetpointAxis::Active
+    }
+
+    fn gateway_settings(&self) -> GatewaySettings {
+        GatewaySettings {
+            command_delay: self.cfg.command_delay,
+            ramp_rate_w_per_s: self.cfg.ramp_rate_w_per_s,
+            ..GatewaySettings::default()
+        }
     }
 }
 

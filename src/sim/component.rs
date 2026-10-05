@@ -10,7 +10,10 @@ use crate::sim::{
     meter::{ConstructedReactive, ReactiveSource},
     microgrid_site::MicrogridSite,
 };
-use crate::timeout_tracker::SetpointAxis;
+
+mod controllable;
+
+pub use controllable::{Controllable, GatewaySettings};
 
 /// High-level kind of a component, mirroring the proto category enum but
 /// kept Rust-side so non-gRPC code does not need to depend on protobuf.
@@ -164,46 +167,6 @@ impl fmt::Display for AugmentError {
             ),
             Self::NotFound(id) => write!(f, "component {id} not found"),
             Self::SiteReset => write!(f, "{}", crate::sim::gateway::SITE_RESET),
-        }
-    }
-}
-
-/// The gateway delay and ramp knobs of a component's axes. They live
-/// in the component's config so `constructor_kwargs` renders them;
-/// the gateway reads them once, on registration.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GatewaySettings {
-    pub command_delay: Duration,
-    pub ramp_rate_w_per_s: f32,
-    pub reactive_command_delay: Duration,
-    pub reactive_ramp_rate_var_per_s: f32,
-}
-
-impl Default for GatewaySettings {
-    fn default() -> Self {
-        Self {
-            command_delay: Duration::ZERO,
-            ramp_rate_w_per_s: f32::INFINITY,
-            reactive_command_delay: Duration::ZERO,
-            reactive_ramp_rate_var_per_s: f32::INFINITY,
-        }
-    }
-}
-
-impl GatewaySettings {
-    /// The gateway delay of `axis`.
-    pub fn delay(&self, axis: SetpointAxis) -> Duration {
-        match axis {
-            SetpointAxis::Active => self.command_delay,
-            SetpointAxis::Reactive => self.reactive_command_delay,
-        }
-    }
-
-    /// The ramp rate of `axis`, per second.
-    pub fn ramp_rate(&self, axis: SetpointAxis) -> f32 {
-        match axis {
-            SetpointAxis::Active => self.ramp_rate_w_per_s,
-            SetpointAxis::Reactive => self.reactive_ramp_rate_var_per_s,
         }
     }
 }
@@ -397,11 +360,11 @@ pub enum KnobSnapshot {
 /// Reading order:
 ///   - **Identity**: id, category, name, subtype, is_hidden.
 ///   - **Lifecycle**: stream_interval, stream_jitter_pct, tick, telemetry.
-///   - **Hardware facts the gateway reads**: has_axis, set_command,
-///     physical_band, idle_value, initial_value,
-///     keeps_command_through_fault, bounds_follow_physical_band,
-///     gateway_settings, soc_window, soc_pct. The Microgrid API rules
-///     themselves live in `sim::gateway`, never here.
+///   - **Capability groups**: controllable ([`Controllable`]). Each
+///     accessor answers `Some` on the components that have the group.
+///   - **Hardware facts the gateway reads**: soc_window, soc_pct. The
+///     Microgrid API rules themselves live in `sim::gateway`, never
+///     here.
 ///   - **Stimuli**: set_active_power_override, set_soc_pct, plug_ev,
 ///     …
 ///   - **Bounds**: rated_active_bounds, reactive_capability,
@@ -493,56 +456,16 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         self.telemetry(site).active_power_w
     }
 
+    // ── capability groups ────────────────────────────────────────────
+
+    /// The gateway-driven side of this component: `Some` when it
+    /// takes a command on at least one axis. The gateway owns axes
+    /// only for a component that answers `Some`.
+    fn controllable(&self) -> Option<&dyn Controllable> {
+        None
+    }
+
     // ── hardware facts the gateway reads ─────────────────────────────
-
-    /// Whether this component takes a command on `axis`. The gateway
-    /// owns one `GatewayAxis` for every axis that answers `true`.
-    fn has_axis(&self, _axis: SetpointAxis) -> bool {
-        false
-    }
-
-    /// The command input of `axis`: the output moves to `value` after
-    /// the device delay. The gateway calls it every tick; a frontend
-    /// without the API rules may call it directly.
-    fn set_command(&self, _axis: SetpointAxis, _value: f32) {}
-
-    /// The current physical limit on `axis` (PV sunlight, boiler heat
-    /// need, the reactive caps at the live P), computed fresh from
-    /// the component's state for a tick of length `dt`. Contains 0.
-    fn physical_band(&self, _axis: SetpointAxis, _dt: Duration) -> Option<VecBounds> {
-        None
-    }
-
-    /// What `axis` aims at with no command standing; `None` holds the
-    /// last target. An expired or reset command ramps to it, or to 0
-    /// when `None`.
-    fn idle_value(&self, _axis: SetpointAxis) -> Option<f32> {
-        None
-    }
-
-    /// Where `axis` starts on registration.
-    fn initial_value(&self, _axis: SetpointAxis) -> f32 {
-        0.0
-    }
-
-    /// Whether a health fault keeps the standing command on `axis`.
-    fn keeps_command_through_fault(&self, _axis: SetpointAxis) -> bool {
-        false
-    }
-
-    /// Whether `axis`'s bounds follow the physical band: the bounds
-    /// reported for it include the band, and an augmentation on it
-    /// must overlap the band. Answered per axis, so a component can
-    /// opt in one axis only.
-    fn bounds_follow_physical_band(&self, _axis: SetpointAxis) -> bool {
-        false
-    }
-
-    /// The gateway delay and ramp knobs; the defaults for a component
-    /// that sets none.
-    fn gateway_settings(&self) -> GatewaySettings {
-        GatewaySettings::default()
-    }
 
     /// A battery's usable SoC window (`:soc-lower`, `:soc-upper`,
     /// `:soc-protect-margin`); `None` for everything else.
@@ -955,10 +878,68 @@ pub const FIRST_AUTO_ID: u64 = 1000;
 
 #[cfg(test)]
 mod tests {
-    use super::Telemetry;
+    use std::time::Duration;
+
+    use super::{SimulatedComponent, Telemetry};
     use crate::proto::common::metrics::Bounds;
     use crate::sim::bounds::VecBounds;
+    use crate::sim::gateway::test_stubs::{Hw, Pq};
     use crate::sim::history::Metric;
+    use crate::sim::{
+        Battery, BatteryInverter, Category, EvCharger, Grid, Marker, Meter, SolarInverter,
+        SteamBoiler,
+    };
+
+    /// Whether a component answers `Some` from one group accessor.
+    type Has = fn(&dyn SimulatedComponent) -> bool;
+
+    /// Every capability-group accessor on `SimulatedComponent`, by
+    /// group name.
+    const GROUPS: &[(&str, Has)] = &[("controllable", |c| c.controllable().is_some())];
+
+    /// The names of the groups `c` has, in `GROUPS` order.
+    fn groups_of(c: &dyn SimulatedComponent) -> Vec<&'static str> {
+        GROUPS
+            .iter()
+            .filter(|(_, has)| has(c))
+            .map(|(name, _)| *name)
+            .collect()
+    }
+
+    /// Each component answers `Some` from the accessors of exactly
+    /// the groups it implements. A row lists its groups in `GROUPS`
+    /// order.
+    #[test]
+    fn capability_table() {
+        let sec = Duration::from_secs(1);
+        let rows: Vec<(Box<dyn SimulatedComponent>, &[&str])> = vec![
+            (Box::new(Grid::new(1, 0, None, 0.0)), &[]),
+            (Box::new(Meter::new(2, sec, None, None, 0.0, false)), &[]),
+            (Box::new(Marker::new(3, Category::Chp, 0.0)), &[]),
+            (Box::new(Battery::new(4, sec, Default::default())), &[]),
+            (
+                Box::new(BatteryInverter::new(5, sec, Default::default())),
+                &["controllable"],
+            ),
+            (
+                Box::new(SolarInverter::new(6, sec, Default::default())),
+                &["controllable"],
+            ),
+            (
+                Box::new(EvCharger::new(7, sec, Default::default())),
+                &["controllable"],
+            ),
+            (
+                Box::new(SteamBoiler::new(8, sec, Default::default())),
+                &["controllable"],
+            ),
+            (Box::new(Hw::new(9)), &["controllable"]),
+            (Box::new(Pq::new()), &["controllable"]),
+        ];
+        for (c, want) in &rows {
+            assert_eq!(groups_of(c.as_ref()), *want, "{c}");
+        }
+    }
 
     /// Bounds metrics read the envelope extremes: a two-segment
     /// VecBounds (disjoint augmentation) reports the first segment's
