@@ -709,6 +709,18 @@ impl MicrogridSite {
             .collect()
     }
 
+    /// `parent`'s healthy children that take a DC push, in edge
+    /// order: the batteries a battery inverter splits its push across
+    /// equally. The gateway's window shares use the same set.
+    pub fn healthy_dc_children(&self, parent: u64) -> Vec<Arc<dyn SimulatedComponent>> {
+        self.children_of(parent)
+            .into_iter()
+            .filter(|id| self.runtime_of(*id).health == Health::Ok)
+            .filter_map(|id| self.get(id))
+            .filter(|c| c.takes_dc_power())
+            .collect()
+    }
+
     /// Children of `parent` paired with each child's total parent
     /// count, gathered under a single connections-lock read. The
     /// meter aggregation walk runs per telemetry read (physics tick,

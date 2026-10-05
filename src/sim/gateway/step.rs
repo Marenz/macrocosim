@@ -118,10 +118,9 @@ impl Gateway<'_> {
         for p in planned.iter().filter(|p| p.axis == SetpointAxis::Active) {
             let batteries: Vec<u64> = self
                 .site
-                .children_of(p.id)
-                .into_iter()
-                .filter(|b| self.site.runtime_of(*b).health == Health::Ok)
-                .filter(|b| self.site.get(*b).is_some_and(|c| c.takes_dc_power()))
+                .healthy_dc_children(p.id)
+                .iter()
+                .map(|c| c.id())
                 .collect();
             if batteries.is_empty() {
                 continue;

@@ -142,13 +142,7 @@ impl SimulatedComponent for BatteryInverter {
         // as having accepted a share. Each child accumulates pushes
         // over the tick, so N inverters on one bus settle to the
         // clamped sum.
-        let healthy: Vec<std::sync::Arc<dyn SimulatedComponent>> = site
-            .children_of(self.id)
-            .into_iter()
-            .filter(|id| site.runtime_of(*id).health == Health::Ok)
-            .filter_map(|id| site.get(id))
-            .filter(|c| c.takes_dc_power())
-            .collect();
+        let healthy = site.healthy_dc_children(self.id);
         if healthy.is_empty() {
             // No child accepted the push → no AC output. The device
             // output stays at its command, so delivery resumes the
