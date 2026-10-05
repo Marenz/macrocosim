@@ -461,13 +461,13 @@ impl SimulatedComponent for SolarInverter {
         axis == SetpointAxis::Active
     }
 
-    fn gateway_settings(&self) -> Option<GatewaySettings> {
-        Some(GatewaySettings {
+    fn gateway_settings(&self) -> GatewaySettings {
+        GatewaySettings {
             command_delay: self.cfg.command_delay,
             ramp_rate_w_per_s: self.cfg.ramp_rate_w_per_s,
             reactive_command_delay: self.cfg.reactive_command_delay,
             reactive_ramp_rate_var_per_s: self.cfg.reactive_ramp_rate_var_per_s,
-        })
+        }
     }
 
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {

@@ -573,10 +573,10 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         false
     }
 
-    /// The gateway delay and ramp knobs; `None` for a component with
-    /// no axis.
-    fn gateway_settings(&self) -> Option<GatewaySettings> {
-        None
+    /// The gateway delay and ramp knobs; the defaults for a component
+    /// that sets none.
+    fn gateway_settings(&self) -> GatewaySettings {
+        GatewaySettings::default()
     }
 
     /// A battery's usable SoC window (`:soc-lower`, `:soc-upper`,

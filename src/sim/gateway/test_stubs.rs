@@ -119,8 +119,8 @@ impl SimulatedComponent for Hw {
     fn bounds_follow_physical_band(&self, axis: SetpointAxis) -> bool {
         axis == SetpointAxis::Active && self.follows_physical
     }
-    fn gateway_settings(&self) -> Option<GatewaySettings> {
-        Some(self.settings)
+    fn gateway_settings(&self) -> GatewaySettings {
+        self.settings
     }
     fn make_fn(&self) -> &'static str {
         "%make-test-hw"

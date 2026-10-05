@@ -367,9 +367,6 @@ mod tests {
             let cap = self.reactive_capability()?;
             (axis == Reactive).then(|| cap.q_band_at(*self.p.lock()))
         }
-        fn gateway_settings(&self) -> Option<GatewaySettings> {
-            Some(GatewaySettings::default())
-        }
         fn make_fn(&self) -> &'static str {
             "%make-test-pq"
         }

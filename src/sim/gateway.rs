@@ -128,7 +128,7 @@ impl MicrogridGateway {
         let id = c.id();
         let mut st = self.state.lock();
         st.forget(id);
-        let settings = c.gateway_settings().unwrap_or_default();
+        let settings = c.gateway_settings();
         for axis in [SetpointAxis::Active, SetpointAxis::Reactive] {
             if c.has_axis(axis) {
                 st.axes.insert(

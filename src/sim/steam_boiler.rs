@@ -313,12 +313,12 @@ impl SimulatedComponent for SteamBoiler {
         axis == SetpointAxis::Active
     }
 
-    fn gateway_settings(&self) -> Option<GatewaySettings> {
-        Some(GatewaySettings {
+    fn gateway_settings(&self) -> GatewaySettings {
+        GatewaySettings {
             command_delay: self.cfg.command_delay,
             ramp_rate_w_per_s: self.cfg.ramp_rate_w_per_s,
             ..GatewaySettings::default()
-        })
+        }
     }
 
     fn set_pressure_bar(&self, bar: f32) -> bool {
