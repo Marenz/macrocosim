@@ -7,11 +7,7 @@
 //! `/api/history` (time series) and `/api/setpoints` (the raw event
 //! log) — this is "what does the component look like right now".
 
-use axum::{
-    Json,
-    extract::{Path, Query, State},
-    http::StatusCode,
-};
+use axum::extract::State;
 use chrono::{Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +17,7 @@ use crate::sim::setpoints::{SetpointKind, SetpointOutcome};
 use crate::timeout_tracker::SetpointAxis;
 
 use super::resolve_site;
+use crate::ui::api::{ApiError, Json, Path, Query};
 
 #[derive(Deserialize)]
 pub(in crate::ui) struct ComponentQuery {
@@ -88,7 +85,7 @@ struct Envelope {
 pub(in crate::ui) async fn component(
     State(config): State<Config>,
     Query(q): Query<ComponentQuery>,
-) -> Result<Json<ComponentStateResponse>, (StatusCode, String)> {
+) -> Result<Json<ComponentStateResponse>, ApiError> {
     component_state(&config.legacy_site(), q.id).map(Json)
 }
 
@@ -96,7 +93,7 @@ pub(in crate::ui) async fn component_for_mg(
     State(config): State<Config>,
     Path(mg_id): Path<u64>,
     Query(q): Query<ComponentQuery>,
-) -> Result<Json<ComponentStateResponse>, (StatusCode, String)> {
+) -> Result<Json<ComponentStateResponse>, ApiError> {
     let site = resolve_site(&config, mg_id)?;
     component_state(&site, q.id).map(Json)
 }
@@ -191,10 +188,10 @@ fn setpoints_for(site: &crate::sim::MicrogridSite, id: u64) -> Vec<ActiveSetpoin
 fn component_state(
     site: &crate::sim::MicrogridSite,
     id: u64,
-) -> Result<ComponentStateResponse, (StatusCode, String)> {
+) -> Result<ComponentStateResponse, ApiError> {
     let c = site
         .get(id)
-        .ok_or((StatusCode::NOT_FOUND, format!("component {id} not found")))?;
+        .ok_or_else(|| ApiError::not_found(format!("component {id} not found")))?;
 
     Ok(ComponentStateResponse {
         id,

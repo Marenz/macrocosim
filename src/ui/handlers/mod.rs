@@ -2,10 +2,9 @@
 //! `register` in `super::router` wires every route through one of
 //! the `pub(in crate::ui)` fns exported here.
 
-use axum::http::StatusCode;
-
 use crate::lisp::Config;
 
+use super::api::ApiError;
 use super::state::{MicrogridLoopbacks, SharedMicrogrid};
 
 pub(in crate::ui) mod assets;
@@ -33,28 +32,22 @@ pub(in crate::ui) mod weather;
 pub(in crate::ui) fn resolve_site(
     config: &Config,
     mg_id: u64,
-) -> Result<crate::sim::MicrogridSite, (StatusCode, String)> {
+) -> Result<crate::sim::MicrogridSite, ApiError> {
     config
         .microgrids()
         .lock()
         .get(&mg_id)
         .map(|e| e.site.clone())
-        .ok_or((
-            StatusCode::NOT_FOUND,
-            format!("microgrid {mg_id} not registered"),
-        ))
+        .ok_or_else(|| ApiError::not_registered(mg_id))
 }
 
 /// Guard for per-mg handlers that don't need the site itself: 404
 /// (same shape as [`resolve_site`]) when `mg_id` isn't registered.
-pub(in crate::ui) fn require_mg(config: &Config, mg_id: u64) -> Result<(), (StatusCode, String)> {
+pub(in crate::ui) fn require_mg(config: &Config, mg_id: u64) -> Result<(), ApiError> {
     if config.microgrids().lock().contains_key(&mg_id) {
         Ok(())
     } else {
-        Err((
-            StatusCode::NOT_FOUND,
-            format!("microgrid {mg_id} not registered"),
-        ))
+        Err(ApiError::not_registered(mg_id))
     }
 }
 
@@ -64,13 +57,10 @@ pub(in crate::ui) fn require_mg(config: &Config, mg_id: u64) -> Result<(), (Stat
 /// mapping.
 pub(in crate::ui) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, (StatusCode, String)> {
-    tokio::task::spawn_blocking(f).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("task panicked: {e}"),
-        )
-    })
+) -> Result<T, ApiError> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| ApiError::internal(format!("task panicked: {e}")))
 }
 
 /// [`blocking`] under the create lock, for a route that claims a
@@ -80,7 +70,7 @@ pub(in crate::ui) async fn blocking<T: Send + 'static>(
 pub(in crate::ui) async fn blocking_under_create_lock<T: Send + 'static>(
     config: &Config,
     f: impl FnOnce(&Config) -> T + Send + 'static,
-) -> Result<T, (StatusCode, String)> {
+) -> Result<T, ApiError> {
     let guard = config.create_lock().lock_owned().await;
     let config = config.clone();
     blocking(move || {
@@ -96,9 +86,10 @@ pub(in crate::ui) async fn blocking_under_create_lock<T: Send + 'static>(
 pub(in crate::ui) fn resolve_loopback(
     loopbacks: &MicrogridLoopbacks,
     mg_id: u64,
-) -> Result<SharedMicrogrid, (StatusCode, String)> {
-    loopbacks.read().get(&mg_id).cloned().ok_or((
-        StatusCode::NOT_FOUND,
-        format!("microgrid {mg_id} not registered"),
-    ))
+) -> Result<SharedMicrogrid, ApiError> {
+    loopbacks
+        .read()
+        .get(&mg_id)
+        .cloned()
+        .ok_or_else(|| ApiError::not_registered(mg_id))
 }

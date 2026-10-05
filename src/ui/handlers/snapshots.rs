@@ -3,14 +3,11 @@
 //! does blocking file IO (and, for load, a reload) on the blocking
 //! pool.
 
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::StatusCode,
-};
+use axum::{extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::lisp::{Config, SnapshotError};
+use crate::ui::api::{ApiError, Json, Path};
 
 #[derive(Serialize)]
 pub(in crate::ui) struct SnapshotsListResp {
@@ -20,7 +17,7 @@ pub(in crate::ui) struct SnapshotsListResp {
 pub(in crate::ui) async fn snapshots_list_for_mg(
     State(config): State<Config>,
     Path(mg_id): Path<u64>,
-) -> Result<Json<SnapshotsListResp>, (StatusCode, String)> {
+) -> Result<Json<SnapshotsListResp>, ApiError> {
     super::require_mg(&config, mg_id)?;
     Ok(Json(SnapshotsListResp {
         snapshots: config.list_snapshots_for(mg_id),
@@ -36,7 +33,7 @@ pub(in crate::ui) async fn snapshots_save_for_mg(
     State(config): State<Config>,
     Path(mg_id): Path<u64>,
     Json(body): Json<SnapshotsSaveBody>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let path = super::blocking(move || config.save_snapshot_for(mg_id, &body.name))
         .await?
         .map_err(status_for)?;
@@ -60,7 +57,7 @@ pub(in crate::ui) async fn snapshots_load_for_mg(
     axum::Extension(runtimes): axum::Extension<crate::runtime::MicrogridRuntimes>,
     Path(mg_id): Path<u64>,
     Json(body): Json<SnapshotsLoadBody>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let as_id = body.as_id;
     let load = move |cfg: &Config| cfg.load_snapshot_for(mg_id, &body.name, body.as_id);
     // Loading `as_id` is a load-as: it claims an id and a port.
@@ -86,12 +83,12 @@ pub(in crate::ui) async fn snapshots_load_for_mg(
 /// Map a snapshot failure onto the status code that describes it:
 /// the caller's fault (name, missing snapshot, unmanaged microgrid)
 /// versus ours (IO, a failed reload).
-fn status_for(e: SnapshotError) -> (StatusCode, String) {
+fn status_for(e: SnapshotError) -> ApiError {
     let status = match e {
         SnapshotError::InvalidName(_) => StatusCode::BAD_REQUEST,
         SnapshotError::NotFound(_) => StatusCode::NOT_FOUND,
         SnapshotError::Unmanaged(_) => StatusCode::CONFLICT,
         SnapshotError::Failed(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
-    (status, e.to_string())
+    ApiError::new(status, e.to_string())
 }

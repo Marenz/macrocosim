@@ -1,7 +1,7 @@
 //! `/api/defaults` — read every `*-defaults` plist out of the
 //! running interpreter, pretty-printed for the side-panel editor.
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::extract::State;
 use serde::Serialize;
 
 // `DEFAULT_CATEGORIES` names the `*-defaults` alists this endpoint
@@ -10,6 +10,7 @@ use serde::Serialize;
 // category is skipped — `eval_silent` on an unbound symbol fails and
 // the entry is dropped.
 use crate::lisp::{Config, DEFAULT_CATEGORIES};
+use crate::ui::api::{ApiError, Json};
 
 /// One per `*-defaults` alist defined in `sim/defaults.lisp`. The
 /// `var_name` is the actual Lisp variable; `value` is its current
@@ -29,7 +30,7 @@ pub(in crate::ui) struct DefaultsResponse {
 
 pub(in crate::ui) async fn defaults(
     State(config): State<Config>,
-) -> Result<Json<DefaultsResponse>, (StatusCode, String)> {
+) -> Result<Json<DefaultsResponse>, ApiError> {
     // Read each *-defaults variable via eval_silent so reading the
     // current state doesn't itself look like an edit. spawn_blocking
     // because eval acquires the std-RwLock-backed ctx.

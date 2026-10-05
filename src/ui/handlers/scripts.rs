@@ -6,14 +6,11 @@
 
 use std::path::Path;
 
-use axum::{
-    Json,
-    extract::{Query, State},
-    http::StatusCode,
-};
+use axum::extract::State;
 use serde::{Deserialize, Serialize};
 
 use crate::lisp::Config;
+use crate::ui::api::{ApiError, Json, Query};
 
 #[derive(Deserialize)]
 pub(in crate::ui) struct ScriptsQuery {
@@ -36,15 +33,15 @@ pub(in crate::ui) struct ScriptsListing {
 pub(in crate::ui) async fn scripts_list(
     State(config): State<Config>,
     Query(q): Query<ScriptsQuery>,
-) -> Result<Json<ScriptsListing>, (StatusCode, String)> {
+) -> Result<Json<ScriptsListing>, ApiError> {
     if q.dir.contains("..") || q.dir.contains('\\') || Path::new(&q.dir).is_absolute() {
-        return Err((StatusCode::BAD_REQUEST, "invalid dir".into()));
+        return Err(ApiError::bad_request("invalid dir"));
     }
     let rel = q.dir.trim_matches('/').to_string();
     let root = config
         .state_dir()
         .canonicalize()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("state dir: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("state dir: {e}")))?;
     let target = if rel.is_empty() {
         root.clone()
     } else {
@@ -56,15 +53,12 @@ pub(in crate::ui) async fn scripts_list(
     // state dir must not open the rest of the filesystem to listing).
     let canon = target
         .canonicalize()
-        .map_err(|_| (StatusCode::NOT_FOUND, "no such directory".to_string()))?;
+        .map_err(|_| ApiError::not_found("no such directory".to_string()))?;
     if !canon.starts_with(&root) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "directory is outside the state dir".into(),
-        ));
+        return Err(ApiError::bad_request("directory is outside the state dir"));
     }
-    let entries = std::fs::read_dir(&canon)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("read dir: {e}")))?;
+    let entries =
+        std::fs::read_dir(&canon).map_err(|e| ApiError::internal(format!("read dir: {e}")))?;
     let mut dirs = Vec::new();
     let mut files = Vec::new();
     for entry in entries.flatten() {

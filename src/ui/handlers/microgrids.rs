@@ -9,11 +9,12 @@
 //! the load, and the runtime listener starts it; create, import and
 //! load-as then wait for that runtime and report it.
 
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::lisp::Config;
 use crate::runtime::{MicrogridRuntimes, RuntimeView};
+use crate::ui::api::{ApiError, Json, Path};
 
 /// One `/api/microgrids` entry: the registry's view of the microgrid
 /// plus its runtime, `null` when none was started.
@@ -97,7 +98,7 @@ pub(in crate::ui) async fn microgrids_create(
     State(config): State<Config>,
     axum::Extension(runtimes): axum::Extension<MicrogridRuntimes>,
     Json(body): Json<CreateMicrogridBody>,
-) -> Result<Json<CreateMicrogridResp>, (StatusCode, String)> {
+) -> Result<Json<CreateMicrogridResp>, ApiError> {
     let mut created = create_serialized(
         &config,
         &body.name,
@@ -130,7 +131,7 @@ async fn create_serialized(
     id: Option<u64>,
     grpc_port: Option<u16>,
     tso: Option<&str>,
-) -> Result<CreateMicrogridResp, (StatusCode, String)> {
+) -> Result<CreateMicrogridResp, ApiError> {
     let (name, tso) = (name.to_string(), tso.map(str::to_string));
     super::blocking_under_create_lock(config, move |cfg| {
         create_core(cfg, &name, id, grpc_port, tso.as_deref())
@@ -152,12 +153,12 @@ fn create_core(
     want_id: Option<u64>,
     want_port: Option<u16>,
     tso: Option<&str>,
-) -> Result<CreateMicrogridResp, (StatusCode, String)> {
+) -> Result<CreateMicrogridResp, ApiError> {
     use crate::lisp::microgrid_file as file;
     use crate::sim::microgrids::{MicrogridDef, next_free_id_in, next_free_port_in};
     let name = name.trim().to_string();
     if name.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "name must be non-empty".into()));
+        return Err(ApiError::bad_request("name must be non-empty"));
     }
     // Id + port from one look at the registry: a requested one has to
     // be free, an omitted one is allocated. Both are still valid when
@@ -169,24 +170,20 @@ fn create_core(
         let r = registry.lock();
         let id = match want_id {
             Some(id) if r.contains_key(&id) => {
-                return Err((
-                    StatusCode::CONFLICT,
-                    format!("microgrid {id} is already registered"),
-                ));
+                return Err(ApiError::conflict(format!(
+                    "microgrid {id} is already registered"
+                )));
             }
             Some(id) => id,
             None => next_free_id_in(&r),
         };
         let grpc_port = match want_port {
             Some(0) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    "grpc_port must be 1..=65535".into(),
-                ));
+                return Err(ApiError::bad_request("grpc_port must be 1..=65535"));
             }
             Some(p) => {
                 crate::sim::microgrids::check_port(&r, &reserved, id, p)
-                    .map_err(|c| (StatusCode::CONFLICT, format!("gRPC port {p} {c}")))?;
+                    .map_err(|c| ApiError::conflict(format!("gRPC port {p} {c}")))?;
                 p
             }
             None => next_free_port_in(&r, &reserved),
@@ -200,18 +197,14 @@ fn create_core(
     };
     let path = config.microgrids_dir().join(format!("{}.lisp", def.id));
     if path.exists() {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("{} already exists; refusing to clobber", path.display()),
-        ));
+        return Err(ApiError::conflict(format!(
+            "{} already exists; refusing to clobber",
+            path.display()
+        )));
     }
     let text = file::compose(&file::render_empty_block(&def), file::FRESH_SCRIPT_HEADER);
-    file::write_atomic(&path, &text).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("write {}: {e}", path.display()),
-        )
-    })?;
+    file::write_atomic(&path, &text)
+        .map_err(|e| ApiError::internal(format!("write {}: {e}", path.display())))?;
     config.record_self_write(&path, &text);
     // A file that fails to load leaves no live microgrid, so the copy
     // on disk would be an orphan the next reload trips over — drop it
@@ -222,7 +215,7 @@ fn create_core(
             crate::lisp::LoadError::Collision { .. } => StatusCode::CONFLICT,
             crate::lisp::LoadError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        return Err((status, e.to_string()));
+        return Err(ApiError::new(status, e.to_string()));
     }
     Ok(CreateMicrogridResp {
         id: def.id,
@@ -287,9 +280,9 @@ pub(in crate::ui) async fn microgrids_import(
     State(config): State<Config>,
     axum::Extension(runtimes): axum::Extension<MicrogridRuntimes>,
     Json(body): Json<ImportMicrogridBody>,
-) -> Result<Json<ImportMicrogridResp>, (StatusCode, String)> {
+) -> Result<Json<ImportMicrogridResp>, ApiError> {
     let import = crate::sim::site_import::parse(body.components, body.connections)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+        .map_err(ApiError::bad_request)?;
     // One import at a time, from here to the eval that registers
     // the components. The collision check below is authoritative
     // only while no other import can add components between the
@@ -327,13 +320,10 @@ pub(in crate::ui) async fn microgrids_import(
             .filter(|id| sites.iter().any(|s| s.get(*id).is_some()))
             .collect();
         if !taken.is_empty() {
-            return Err((
-                StatusCode::CONFLICT,
-                format!(
-                    "component ids already exist in other microgrids: {taken:?} \
+            return Err(ApiError::conflict(format!(
+                "component ids already exist in other microgrids: {taken:?} \
                      (component ids are enterprise-unique)"
-                ),
-            ));
+            )));
         }
     }
     // The requested microgrid id (or None for the lowest free one)
@@ -364,13 +354,10 @@ pub(in crate::ui) async fn microgrids_import(
         // The microgrid is already registered, so this cannot roll
         // back cleanly; the parse + collision checks above make this
         // a should-not-happen. Name the leftover so the user can act.
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!(
-                "import failed while building components: {e} \
+        return Err(ApiError::internal(format!(
+            "import failed while building components: {e} \
                  (microgrid {id} was created but is incomplete)"
-            ),
-        ));
+        )));
     }
     // Starting the runtime binds a port and can be slow; the next
     // import need not wait for it.
@@ -413,7 +400,7 @@ pub(in crate::ui) struct LoadBody {
 pub(in crate::ui) async fn load_file(
     State(config): State<Config>,
     Json(body): Json<LoadBody>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let cfg = config.clone();
     let path = std::path::PathBuf::from(&body.path);
     let loaded = super::blocking(move || cfg.load_file(&path)).await?;
@@ -432,7 +419,7 @@ pub(in crate::ui) async fn load_file(
             let suggested = crate::sim::microgrids::next_free_id(&config.microgrids());
             Err(collision_response(&config, &body.path, id, suggested))
         }
-        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(ApiError::bad_request(e.to_string())),
     }
 }
 
@@ -444,19 +431,16 @@ fn collision_response(
     path: &str,
     collision_id: u64,
     suggested_id: u64,
-) -> (StatusCode, String) {
+) -> ApiError {
     let resolved = config.resolve_in_state_dir(std::path::Path::new(path));
     let managed = std::fs::read_to_string(&resolved)
         .ok()
         .and_then(|text| crate::lisp::microgrid_file::parse(&text).ok())
         .is_some_and(|parsed| parsed.generated.is_some());
-    let body = serde_json::json!({
-        "error": format!("microgrid {collision_id} is already loaded"),
-        "collision_id": collision_id,
-        "managed": managed,
-        "suggested_id": suggested_id,
-    });
-    (StatusCode::CONFLICT, body.to_string())
+    ApiError::conflict(format!("microgrid {collision_id} is already loaded"))
+        .with("collision_id", collision_id)
+        .with("managed", managed)
+        .with("suggested_id", suggested_id)
 }
 
 #[derive(Deserialize)]
@@ -484,7 +468,7 @@ pub(in crate::ui) async fn load_file_as(
     State(config): State<Config>,
     axum::Extension(runtimes): axum::Extension<MicrogridRuntimes>,
     Json(body): Json<LoadAsBody>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let path = std::path::PathBuf::from(&body.path);
     let id = body.id;
     match super::blocking_under_create_lock(&config, move |cfg| cfg.load_as(&path, id)).await? {
@@ -502,7 +486,7 @@ pub(in crate::ui) async fn load_file_as(
                 "runtime": start_and_report(&runtimes, *id).await,
                 "warning": e.to_string(),
             }))),
-            crate::lisp::LoadAsError::Other(_) => Err((StatusCode::CONFLICT, e.to_string())),
+            crate::lisp::LoadAsError::Other(_) => Err(ApiError::conflict(e.to_string())),
         },
     }
 }
@@ -520,8 +504,8 @@ pub(in crate::ui) async fn load_file_as(
 /// fresh `microgrids/{id}.lisp` instead.
 pub(in crate::ui) async fn adopt_for_mg(
     State(config): State<Config>,
-    axum::extract::Path(mg_id): axum::extract::Path<u64>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    Path(mg_id): Path<u64>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     let warnings = super::blocking(move || adopt(&config, mg_id)).await??;
     Ok(Json(
         serde_json::json!({ "ok": true, "warnings": warnings }),
@@ -530,23 +514,21 @@ pub(in crate::ui) async fn adopt_for_mg(
 
 /// [`adopt_for_mg`]'s body: all blocking (file read + write) work.
 /// Returns the warnings the caller should show.
-fn adopt(config: &Config, mg_id: u64) -> Result<Vec<String>, (StatusCode, String)> {
+fn adopt(config: &Config, mg_id: u64) -> Result<Vec<String>, ApiError> {
     use crate::lisp::microgrid_file as file;
 
     let registry = config.microgrids();
     let (def, site, source, managed) = {
         let r = registry.lock();
-        let e = r.get(&mg_id).ok_or((
-            StatusCode::NOT_FOUND,
-            format!("microgrid {mg_id} not registered"),
-        ))?;
+        let e = r
+            .get(&mg_id)
+            .ok_or_else(|| ApiError::not_registered(mg_id))?;
         (e.def.clone(), e.site.clone(), e.source.clone(), e.managed)
     };
     if managed {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("microgrid {mg_id} is already managed"),
-        ));
+        return Err(ApiError::conflict(format!(
+            "microgrid {mg_id} is already managed"
+        )));
     }
     // Live state the generated block cannot write down — a
     // lambda-bound input, or a value poked in at runtime that was
@@ -580,23 +562,16 @@ fn adopt(config: &Config, mg_id: u64) -> Result<Vec<String>, (StatusCode, String
                 .filter(|e| e.source.as_deref() == Some(path.as_path()))
                 .count();
             if sharers > 1 {
-                return Err((
-                    StatusCode::CONFLICT,
-                    format!(
-                        "{} declares {sharers} microgrids; split the file first, one \
+                return Err(ApiError::conflict(format!(
+                    "{} declares {sharers} microgrids; split the file first, one \
                          microgrid per file",
-                        path.display()
-                    ),
-                ));
+                    path.display()
+                )));
             }
-            let original = std::fs::read_to_string(&path).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("cannot read {}: {e}", path.display()),
-                )
-            })?;
+            let original = std::fs::read_to_string(&path)
+                .map_err(|e| ApiError::internal(format!("cannot read {}: {e}", path.display())))?;
             let script = comment_out_make_microgrid(&original, mg_id)
-                .map_err(|e| (StatusCode::CONFLICT, format!("{}: {e}", path.display())))?;
+                .map_err(|e| ApiError::conflict(format!("{}: {e}", path.display())))?;
             (path, file::compose(&block, &script))
         }
         // Nothing on disk backs this microgrid yet — give it the same
@@ -604,20 +579,16 @@ fn adopt(config: &Config, mg_id: u64) -> Result<Vec<String>, (StatusCode, String
         None => {
             let path = config.microgrids_dir().join(format!("{mg_id}.lisp"));
             if path.exists() {
-                return Err((
-                    StatusCode::CONFLICT,
-                    format!("{} already exists; refusing to clobber", path.display()),
-                ));
+                return Err(ApiError::conflict(format!(
+                    "{} already exists; refusing to clobber",
+                    path.display()
+                )));
             }
             (path, file::compose(&block, file::FRESH_SCRIPT_HEADER))
         }
     };
-    file::write_atomic(&path, &text).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("write {}: {e}", path.display()),
-        )
-    })?;
+    file::write_atomic(&path, &text)
+        .map_err(|e| ApiError::internal(format!("write {}: {e}", path.display())))?;
     // Our own write: the watcher must not read it back as a human
     // edit and reload the file underneath us.
     config.record_self_write(&path, &text);

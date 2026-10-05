@@ -349,10 +349,11 @@ async fn site_import_refuses_a_taken_microgrid_id() {
         reqwest::StatusCode::CONFLICT,
         "a taken id must be refused"
     );
-    let text = resp.text().await.unwrap();
+    let body: Value = resp.json().await.unwrap();
+    let error = body["error"].as_str().unwrap();
     assert!(
-        text.contains(&wanted.to_string()),
-        "the refusal must name the id: {text}"
+        error.contains(&wanted.to_string()),
+        "the refusal must name the id: {error}"
     );
 
     // The refused import left nothing behind — no second microgrid,
@@ -631,8 +632,9 @@ async fn weather_http_round_trip() {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
-    let text = resp.text().await.unwrap();
-    assert!(text.contains("no weather configured"), "{text}");
+    let body: Value = resp.json().await.unwrap();
+    let error = body["error"].as_str().unwrap();
+    assert!(error.contains("no weather configured"), "{error}");
 
     // A cloud-only POST on a weatherless site is a 400, the same
     // answer `(pass-cloud …)` gives — NOT a silent "install a whole
@@ -646,8 +648,9 @@ async fn weather_http_round_trip() {
         .await
         .unwrap();
     assert_eq!(orphan.status(), reqwest::StatusCode::BAD_REQUEST);
-    let text = orphan.text().await.unwrap();
-    assert!(text.contains("no weather on this site"), "{text}");
+    let body: Value = orphan.json().await.unwrap();
+    let error = body["error"].as_str().unwrap();
+    assert!(error.contains("no weather on this site"), "{error}");
 
     // …and it really installed nothing: the site is still weatherless.
     let resp = client
@@ -1012,7 +1015,7 @@ async fn ev_route_reports_plug_state() {
     let not_charger = client.get(format!("{base}/ev/2")).send().await.unwrap();
     assert_eq!(not_charger.status(), 400);
     assert_eq!(
-        not_charger.text().await.unwrap(),
+        not_charger.json::<Value>().await.unwrap()["error"],
         "component 2 is not an EV charger"
     );
     let missing = client.get(format!("{base}/ev/99")).send().await.unwrap();

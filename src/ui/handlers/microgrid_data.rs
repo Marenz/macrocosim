@@ -3,11 +3,7 @@
 
 use std::collections::HashMap;
 
-use axum::{
-    Extension, Json,
-    extract::{Path, State},
-    http::StatusCode,
-};
+use axum::{Extension, extract::State, http::StatusCode};
 use serde::Serialize;
 
 use crate::lisp::Config;
@@ -16,6 +12,7 @@ use super::super::state::{
     HistorySample, MicrogridLoopbacks, MicrogridSampleSnapshot, SharedMicrogrid,
 };
 use super::resolve_loopback;
+use crate::ui::api::{ApiError, Json, Path};
 
 #[derive(Serialize)]
 pub(in crate::ui) struct MicrogridStatusResp {
@@ -32,7 +29,7 @@ pub(in crate::ui) struct MicrogridStatusResp {
 pub(in crate::ui) async fn microgrid_status_for_mg(
     Extension(loopbacks): Extension<MicrogridLoopbacks>,
     Path(mg_id): Path<u64>,
-) -> Result<(StatusCode, Json<MicrogridStatusResp>), (StatusCode, String)> {
+) -> Result<(StatusCode, Json<MicrogridStatusResp>), ApiError> {
     let slot = resolve_loopback(&loopbacks, mg_id)?;
     Ok(microgrid_status_body(&slot))
 }
@@ -40,7 +37,7 @@ pub(in crate::ui) async fn microgrid_status_for_mg(
 pub(in crate::ui) async fn microgrid_latest_for_mg(
     Extension(loopbacks): Extension<MicrogridLoopbacks>,
     Path(mg_id): Path<u64>,
-) -> Result<Json<HashMap<&'static str, MicrogridSampleSnapshot>>, (StatusCode, String)> {
+) -> Result<Json<HashMap<&'static str, MicrogridSampleSnapshot>>, ApiError> {
     let slot = resolve_loopback(&loopbacks, mg_id)?;
     Ok(Json(slot.latest.read().clone()))
 }
@@ -48,7 +45,7 @@ pub(in crate::ui) async fn microgrid_latest_for_mg(
 pub(in crate::ui) async fn microgrid_history_for_mg(
     Extension(loopbacks): Extension<MicrogridLoopbacks>,
     Path(mg_id): Path<u64>,
-) -> Result<Json<HashMap<&'static str, Vec<HistorySample>>>, (StatusCode, String)> {
+) -> Result<Json<HashMap<&'static str, Vec<HistorySample>>>, ApiError> {
     let slot = resolve_loopback(&loopbacks, mg_id)?;
     Ok(Json(microgrid_history_body(&slot)))
 }
@@ -71,7 +68,7 @@ fn microgrid_history_body(state: &SharedMicrogrid) -> HashMap<&'static str, Vec<
 pub(in crate::ui) async fn microgrid_formulas_for_mg(
     Extension(loopbacks): Extension<MicrogridLoopbacks>,
     Path(mg_id): Path<u64>,
-) -> Result<(StatusCode, Json<HashMap<&'static str, String>>), (StatusCode, String)> {
+) -> Result<(StatusCode, Json<HashMap<&'static str, String>>), ApiError> {
     let slot = resolve_loopback(&loopbacks, mg_id)?;
     Ok(microgrid_formulas_body(&slot))
 }

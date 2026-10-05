@@ -3,14 +3,11 @@
 //! `MicrogridDispatchService` gRPC server mutates, so all write paths
 //! share construction + validation.
 
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::StatusCode,
-};
+use axum::{extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::lisp::Config;
+use crate::ui::api::{ApiError, Json, Path};
 
 /// JSON shape for one dispatch in the per-microgrid Dispatches view.
 /// Timestamps are epoch-millis so the SPA formats them client-side via
@@ -126,22 +123,19 @@ pub(in crate::ui) async fn dispatch_create_for_mg(
     State(config): State<Config>,
     Path(mg_id): Path<u64>,
     Json(req): Json<DispatchCreateReq>,
-) -> Result<(StatusCode, Json<DispatchView>), (StatusCode, String)> {
+) -> Result<(StatusCode, Json<DispatchView>), ApiError> {
     // A typo'd mg id would otherwise create a phantom entry that
     // accumulates forever (dispatches have no TTL) — guard with the
     // registry like the sibling per-mg routes (eval, overrides).
     super::require_mg(&config, mg_id)?;
-    let target = crate::sim::dispatch::parse_target(&req.target)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let target = crate::sim::dispatch::parse_target(&req.target).map_err(ApiError::bad_request)?;
     let payload = match req.payload {
         None | Some(serde_json::Value::Null) => None,
-        Some(value) => Some(
-            crate::sim::dispatch::json_to_struct(&value)
-                .map_err(|e| (StatusCode::BAD_REQUEST, e))?,
-        ),
+        Some(value) => {
+            Some(crate::sim::dispatch::json_to_struct(&value).map_err(ApiError::bad_request)?)
+        }
     };
-    let recurrence =
-        recurrence_from_req(req.recurrence.as_ref()).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let recurrence = recurrence_from_req(req.recurrence.as_ref()).map_err(ApiError::bad_request)?;
     let start_immediately = req.start_ms.is_none();
     let start_time = req.start_ms.map(|ms| prost_types::Timestamp {
         seconds: ms.div_euclid(1000),
@@ -175,7 +169,7 @@ pub(in crate::ui) async fn dispatch_set_active_for_mg(
     State(config): State<Config>,
     Path((mg_id, dispatch_id)): Path<(u64, u64)>,
     Json(req): Json<DispatchSetActiveReq>,
-) -> Result<Json<DispatchView>, (StatusCode, String)> {
+) -> Result<Json<DispatchView>, ApiError> {
     let dispatch = config
         .dispatches()
         .set_active(mg_id, dispatch_id, req.active)
@@ -186,21 +180,25 @@ pub(in crate::ui) async fn dispatch_set_active_for_mg(
 pub(in crate::ui) async fn dispatch_delete_for_mg(
     State(config): State<Config>,
     Path((mg_id, dispatch_id)): Path<(u64, u64)>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    config.dispatches().remove(mg_id, dispatch_id).ok_or((
-        StatusCode::NOT_FOUND,
-        format!("dispatch {dispatch_id} not found for microgrid {mg_id}"),
-    ))?;
+) -> Result<StatusCode, ApiError> {
+    config
+        .dispatches()
+        .remove(mg_id, dispatch_id)
+        .ok_or_else(|| {
+            ApiError::not_found(format!(
+                "dispatch {dispatch_id} not found for microgrid {mg_id}"
+            ))
+        })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn dispatch_err_to_http(err: crate::sim::dispatch::DispatchError) -> (StatusCode, String) {
+fn dispatch_err_to_http(err: crate::sim::dispatch::DispatchError) -> ApiError {
     use crate::sim::dispatch::DispatchError;
     let code = match err {
         DispatchError::MissingStartTime => StatusCode::BAD_REQUEST,
         DispatchError::NotFound => StatusCode::NOT_FOUND,
     };
-    (code, err.to_string())
+    ApiError::new(code, err.to_string())
 }
 
 fn dispatch_to_view(d: &crate::proto::dispatch::Dispatch) -> DispatchView {

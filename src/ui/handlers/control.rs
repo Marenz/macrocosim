@@ -8,17 +8,14 @@
 //! must remember to check. `/api/eval` remains the escape hatch for
 //! dynamic (lambda / symbol) drive sources and everything else Lisp.
 
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::StatusCode,
-};
-use serde::{Deserialize, Serialize};
+use axum::{extract::State, http::StatusCode};
+use serde::Deserialize;
 
 use crate::lisp::Config;
 use crate::sim::component::KnobKind;
 use crate::sim::microgrid_site::{MicrogridSite, SocRefusal};
 use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
+use crate::ui::api::{ApiError, Json, Path};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -75,25 +72,10 @@ pub(in crate::ui) struct DriveRequest {
     clear_sunlight: bool,
 }
 
-/// Empty JSON on success; the error text on any rejection.
-#[derive(Serialize)]
-pub(in crate::ui) struct ControlError {
-    error: String,
-}
+/// Empty JSON on success.
+type ControlResult = Result<Json<serde_json::Value>, ApiError>;
 
-type ControlResult = Result<Json<serde_json::Value>, (StatusCode, Json<ControlError>)>;
-
-/// `pub(super)`: the weather routes (`weather.rs`, a sibling handler
-/// module) reuse this to shape their own 4xx bodies in the same
-/// `{"error": "..."}` style as every other control endpoint.
-pub(super) fn reject(status: StatusCode, error: String) -> (StatusCode, Json<ControlError>) {
-    (status, Json(ControlError { error }))
-}
-
-pub(super) fn site_for(
-    config: &Config,
-    mg_id: Option<u64>,
-) -> Result<MicrogridSite, (StatusCode, Json<ControlError>)> {
+pub(super) fn site_for(config: &Config, mg_id: Option<u64>) -> Result<MicrogridSite, ApiError> {
     match mg_id {
         // The default is the FIRST registered microgrid — deterministic,
         // and the same default the Python client uses for gRPC reads.
@@ -106,21 +88,13 @@ pub(super) fn site_for(
             .lock()
             .get(&id)
             .map(|entry| entry.site.clone())
-            .ok_or_else(|| {
-                reject(
-                    StatusCode::NOT_FOUND,
-                    format!("microgrid {id} not registered"),
-                )
-            }),
+            .ok_or_else(|| ApiError::not_registered(id)),
     }
 }
 
 fn apply_status(site: &MicrogridSite, id: u64, req: &StatusRequest) -> ControlResult {
     if site.get(id).is_none() {
-        return Err(reject(
-            StatusCode::NOT_FOUND,
-            format!("component {id} not found"),
-        ));
+        return Err(ApiError::not_found(format!("component {id} not found")));
     }
     // Parse and validate everything first, apply after: a request
     // with one bad field changes nothing (no half-applied status).
@@ -132,26 +106,23 @@ fn apply_status(site: &MicrogridSite, id: u64, req: &StatusRequest) -> ControlRe
     // setter runs, so a rejected request leaves the state untouched.
     let mode = site.operational_mode(id);
     if telemetry == Some(TelemetryMode::Normal) && !mode.provides_telemetry() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!("component {id} has operational mode {mode}, which streams no telemetry"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "component {id} has operational mode {mode}, which streams no telemetry"
+        )));
     }
     if command == Some(CommandMode::Normal) && !mode.accepts_control() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!("component {id} has operational mode {mode}, which accepts no commands"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "component {id} has operational mode {mode}, which accepts no commands"
+        )));
     }
     // Health wins for an errored device: `health=error` forces the
     // command channel to Error, and an explicit `command_mode=normal`
     // in the same request must not re-open it. The Lisp constructors
     // enforce the same rule (see apply_initial_modes in lisp/make.rs).
     if health == Some(Health::Error) && command == Some(CommandMode::Normal) {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!("component {id}: health=error forbids command_mode=normal in the same request"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "component {id}: health=error forbids command_mode=normal in the same request"
+        )));
     }
     // NOTE: the mode checks above and the setters below take no
     // common lock, so a concurrent (set-component-operational-mode
@@ -159,16 +130,15 @@ fn apply_status(site: &MicrogridSite, id: u64, req: &StatusRequest) -> ControlRe
     // The window is a few instructions wide; closing it needs an
     // atomic multi-knob setter on the site (tracked in todo.org).
     if let Some(h) = health {
-        site.set_health(id, h)
-            .map_err(|e| reject(StatusCode::BAD_REQUEST, e))?;
+        site.set_health(id, h).map_err(ApiError::bad_request)?;
     }
     if let Some(m) = command {
         site.set_command_mode(id, m)
-            .map_err(|e| reject(StatusCode::BAD_REQUEST, e))?;
+            .map_err(ApiError::bad_request)?;
     }
     if let Some(m) = telemetry {
         site.set_telemetry_mode(id, m)
-            .map_err(|e| reject(StatusCode::BAD_REQUEST, e))?;
+            .map_err(ApiError::bad_request)?;
     }
     Ok(Json(serde_json::json!({})))
 }
@@ -176,13 +146,13 @@ fn apply_status(site: &MicrogridSite, id: u64, req: &StatusRequest) -> ControlRe
 fn parse_enum<T: std::str::FromStr>(
     value: &Option<String>,
     field: &str,
-) -> Result<Option<T>, (StatusCode, Json<ControlError>)> {
+) -> Result<Option<T>, ApiError> {
     match value {
         None => Ok(None),
         Some(s) => s
             .parse::<T>()
             .map(Some)
-            .map_err(|_| reject(StatusCode::BAD_REQUEST, format!("invalid {field}: {s:?}"))),
+            .map_err(|_| ApiError::bad_request(format!("invalid {field}: {s:?}"))),
     }
 }
 
@@ -190,26 +160,20 @@ fn parse_enum<T: std::str::FromStr>(
 /// `no_car_status`: a 400 when validation finds it, a 409 when the
 /// car left between validation and the write. A component with no
 /// SoC is always a 400.
-fn soc_rejection(
-    id: u64,
-    no_car_status: StatusCode,
-    refusal: SocRefusal,
-) -> (StatusCode, Json<ControlError>) {
+fn soc_rejection(id: u64, no_car_status: StatusCode, refusal: SocRefusal) -> ApiError {
     match refusal {
-        SocRefusal::NoCar => reject(no_car_status, format!("charger {id} has no EV plugged in")),
-        SocRefusal::NoStorage => reject(
-            StatusCode::BAD_REQUEST,
-            format!("component {id} does not take soc_pct (not a battery)"),
-        ),
+        SocRefusal::NoCar => {
+            ApiError::new(no_car_status, format!("charger {id} has no EV plugged in"))
+        }
+        SocRefusal::NoStorage => ApiError::bad_request(format!(
+            "component {id} does not take soc_pct (not a battery)"
+        )),
     }
 }
 
 fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResult {
     let Some(component) = site.get(id) else {
-        return Err(reject(
-            StatusCode::NOT_FOUND,
-            format!("component {id} not found"),
-        ));
+        return Err(ApiError::not_found(format!("component {id} not found")));
     };
     // Validate every field first, apply after (same contract as
     // apply_status): a request with one inapplicable field changes
@@ -219,19 +183,17 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
     // this same reference.
     let meter = component.meter_drive();
     if req.power_w.is_some() && meter.is_none() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!("component {id} does not take power_w (not a meter)"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "component {id} does not take power_w (not a meter)"
+        )));
     }
     // The apply phase writes the sunlight fields through this same
     // reference, so it changes nothing this check did not allow.
     let sunlight = component.sunlight_drive();
     if req.sunlight_pct.is_some() && sunlight.is_none() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!("component {id} does not take sunlight_pct (not a solar inverter)"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "component {id} does not take sunlight_pct (not a solar inverter)"
+        )));
     }
     // A charger takes soc_pct exactly while a car is plugged in —
     // the SoC is the car's.
@@ -244,99 +206,79 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
     // the same `MeterDrive` methods `set-meter-reactive-power` /
     // `set-meter-power-factor` call in Lisp.
     if req.reactive_var.is_some() && meter.is_none() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!("component {id} does not take reactive_var (not a meter)"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "component {id} does not take reactive_var (not a meter)"
+        )));
     }
     if req.power_factor.is_some() && meter.is_none() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!("component {id} does not take power_factor (not a meter)"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "component {id} does not take power_factor (not a meter)"
+        )));
     }
     // `reactive_var` and `power_factor` set the same slot, so a request
     // carrying both would apply one and then overwrite it — a silent
     // no-op for the loser. Same mutual exclusion `%make-meter` enforces.
     if req.reactive_var.is_some() && req.power_factor.is_some() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "component {id}: reactive_var and power_factor are mutually \
+        return Err(ApiError::bad_request(format!(
+            "component {id}: reactive_var and power_factor are mutually \
                  exclusive; send one or the other"
-            ),
-        ));
+        )));
     }
     // `leading` only means something alongside `power_factor` — same
     // shape as the health/command_mode cross-field check above.
     if req.leading.is_some() && req.power_factor.is_none() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!("component {id}: leading requires power_factor in the same request"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "component {id}: leading requires power_factor in the same request"
+        )));
     }
     // Like `sunlight`, the apply phase writes the steam fields
     // through this same reference.
     let steam = component.steam_drive();
     if req.steam_demand_kg_h.is_some() && steam.is_none() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!("component {id} does not take steam_demand_kg_h (not a steam boiler)"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "component {id} does not take steam_demand_kg_h (not a steam boiler)"
+        )));
     }
     if req.pressure_bar.is_some() && steam.is_none() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!("component {id} does not take pressure_bar (not a steam boiler)"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "component {id} does not take pressure_bar (not a steam boiler)"
+        )));
     }
     // Each clear is mutually exclusive with the value it would
     // immediately undo — clearing and setting the same axis in one
     // request is ambiguous, not a defined "set then clear" ordering.
     if req.clear_power && meter.is_none() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!("component {id} does not take clear_power (not a meter)"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "component {id} does not take clear_power (not a meter)"
+        )));
     }
     if req.clear_reactive && meter.is_none() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!("component {id} does not take clear_reactive (not a meter)"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "component {id} does not take clear_reactive (not a meter)"
+        )));
     }
     if req.clear_sunlight && sunlight.is_none() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!("component {id} does not take clear_sunlight (not a solar inverter)"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "component {id} does not take clear_sunlight (not a solar inverter)"
+        )));
     }
     if req.clear_sunlight && req.sunlight_pct.is_some() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "component {id}: clear_sunlight and sunlight_pct are mutually exclusive; \
+        return Err(ApiError::bad_request(format!(
+            "component {id}: clear_sunlight and sunlight_pct are mutually exclusive; \
                  send one or the other"
-            ),
-        ));
+        )));
     }
     if req.clear_power && req.power_w.is_some() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "component {id}: clear_power and power_w are mutually exclusive; \
+        return Err(ApiError::bad_request(format!(
+            "component {id}: clear_power and power_w are mutually exclusive; \
                  send one or the other"
-            ),
-        ));
+        )));
     }
     if req.clear_reactive && (req.reactive_var.is_some() || req.power_factor.is_some()) {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "component {id}: clear_reactive and reactive_var/power_factor are \
+        return Err(ApiError::bad_request(format!(
+            "component {id}: clear_reactive and reactive_var/power_factor are \
                  mutually exclusive; send one or the other"
-            ),
-        ));
+        )));
     }
     // Value sanity, same validate-first contract. The f64→f32 cast
     // turns any JSON number beyond f32 range into ±inf, and the meter
@@ -354,10 +296,9 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
         if let Some(v) = v
             && !(v as f32).is_finite()
         {
-            return Err(reject(
-                StatusCode::BAD_REQUEST,
-                format!("{field} must be a finite number, got {v}"),
-            ));
+            return Err(ApiError::bad_request(format!(
+                "{field} must be a finite number, got {v}"
+            )));
         }
     }
     // `MeterDrive::set_power_factor` does no range validation of its
@@ -367,10 +308,9 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
     if let Some(pf) = req.power_factor
         && !(pf > 0.0 && pf <= 1.0)
     {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            format!("power_factor must be in (0.0, 1.0], got {pf}"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "power_factor must be in (0.0, 1.0], got {pf}"
+        )));
     }
     // Every mutation below is preceded by a `scenario_snapshot_knob`
     // for the knob it touches — the same first-snapshot-wins capture
@@ -936,16 +876,22 @@ mod tests {
     /// The one rejection the apply phase can still give: the car left
     /// after validation passed, so the SoC write is a 409 naming the
     /// charger.
-    #[test]
-    fn drive_soc_on_a_charger_whose_car_left_is_a_conflict() {
+    #[tokio::test]
+    async fn drive_soc_on_a_charger_whose_car_left_is_a_conflict() {
+        use axum::response::IntoResponse;
         let site = MicrogridSite::new();
         site.register(CarLeavesMidRequest);
         let req: DriveRequest = serde_json::from_str(r#"{"soc_pct": 50.0}"#).unwrap();
-        let Err((status, Json(body))) = apply_drive(&site, 6, &req) else {
+        let Err(err) = apply_drive(&site, 6, &req) else {
             panic!("a SoC write the charger refused must not be a 200");
         };
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(body.error, "charger 6 has no EV plugged in");
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "charger 6 has no EV plugged in");
     }
 
     /// The typed drive route snapshots exactly like the Lisp

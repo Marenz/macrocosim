@@ -1,14 +1,10 @@
 //! `/api/eval` + per-mg variant + `/api/format` (tulisp-fmt).
 
-use axum::{
-    Json,
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::IntoResponse,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 
 use crate::lisp::Config;
+use crate::ui::api::{ApiError, Json, Path, Query, Text};
 
 #[derive(Serialize)]
 pub(in crate::ui) struct EvalResponse {
@@ -28,14 +24,17 @@ pub(in crate::ui) struct EvalResponse {
 /// Always returns 200 — application-layer success/failure rides in
 /// the JSON body. Reserves HTTP 4xx/5xx for transport-level problems
 /// (bad UTF-8, the spawn_blocking task panicking, etc.).
-pub(in crate::ui) async fn eval(State(config): State<Config>, body: String) -> impl IntoResponse {
+pub(in crate::ui) async fn eval(
+    State(config): State<Config>,
+    Text(body): Text,
+) -> impl IntoResponse {
     eval_response(tokio::task::spawn_blocking(move || config.eval(&body)).await)
 }
 
 pub(in crate::ui) async fn eval_for_mg(
     State(config): State<Config>,
     Path(mg_id): Path<u64>,
-    body: String,
+    Text(body): Text,
 ) -> impl IntoResponse {
     if !config.microgrids().lock().contains_key(&mg_id) {
         return (
@@ -100,15 +99,15 @@ pub(in crate::ui) struct FormatQuery {
 /// and surface the diagnostic.
 pub(in crate::ui) async fn format(
     Query(q): Query<FormatQuery>,
-    body: String,
-) -> Result<String, (StatusCode, String)> {
+    Text(body): Text,
+) -> Result<String, ApiError> {
     let width = q.width.unwrap_or(80).clamp(20, 200);
     // spawn_blocking like every other CPU-bound handler: a large,
     // deeply nested body would otherwise stall a tokio worker.
     tokio::task::spawn_blocking(move || {
         tulisp_fmt::format_with_width(&body, width)
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+            .map_err(|e| ApiError::bad_request(e.to_string()))
     })
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| ApiError::internal(e.to_string()))?
 }

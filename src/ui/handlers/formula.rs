@@ -11,9 +11,7 @@
 
 use std::collections::BTreeSet;
 
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
-use axum::response::Json;
+use axum::extract::State;
 use frequenz_microgrid_component_graph::{ComponentGraphConfig, ErrorKind, Formula};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -21,6 +19,7 @@ use serde_json::{Value, json};
 use super::resolve_site;
 use crate::lisp::Config;
 use crate::sim::graph_adapter;
+use crate::ui::api::{ApiError, Json, Path, Query};
 
 #[derive(Deserialize)]
 pub(in crate::ui) struct FormulaQuery {
@@ -50,7 +49,7 @@ pub(in crate::ui) async fn formula_for_mg(
     State(config): State<Config>,
     Path(mg_id): Path<u64>,
     Query(query): Query<FormulaQuery>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, ApiError> {
     let site = resolve_site(&config, mg_id)?;
     // spawn_blocking like the other CPU-bound handlers: on a large
     // imported site the graph validation + formula generation is real
@@ -62,7 +61,7 @@ pub(in crate::ui) async fn formula_for_mg(
 fn formula_body(
     site: crate::sim::MicrogridSite,
     query: FormulaQuery,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, ApiError> {
     let graph_config = ComponentGraphConfig::builder()
         .prefer_meters_in_component_formulas(query.prefer_meters)
         .include_phantom_loads_in_consumer_formula(query.phantom_loads)

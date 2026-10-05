@@ -1,10 +1,6 @@
 //! `/api/history` + setpoint event log readers.
 
-use axum::{
-    Json,
-    extract::{Path, Query, State},
-    http::StatusCode,
-};
+use axum::extract::State;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +9,7 @@ use crate::sim::history::Metric;
 use crate::sim::setpoints::SetpointEvent;
 
 use super::resolve_site;
+use crate::ui::api::{ApiError, Json, Path, Query};
 
 #[derive(Deserialize)]
 pub(in crate::ui) struct HistoryQuery {
@@ -46,7 +43,7 @@ pub(in crate::ui) struct HistoryResponse {
 pub(in crate::ui) async fn history(
     State(config): State<Config>,
     Query(q): Query<HistoryQuery>,
-) -> Result<Json<HistoryResponse>, (StatusCode, String)> {
+) -> Result<Json<HistoryResponse>, ApiError> {
     history_body(&config.legacy_site(), q)
 }
 
@@ -54,7 +51,7 @@ pub(in crate::ui) async fn history_for_mg(
     State(config): State<Config>,
     Path(mg_id): Path<u64>,
     Query(q): Query<HistoryQuery>,
-) -> Result<Json<HistoryResponse>, (StatusCode, String)> {
+) -> Result<Json<HistoryResponse>, ApiError> {
     let site = resolve_site(&config, mg_id)?;
     history_body(&site, q)
 }
@@ -62,13 +59,11 @@ pub(in crate::ui) async fn history_for_mg(
 fn history_body(
     site: &crate::sim::MicrogridSite,
     q: HistoryQuery,
-) -> Result<Json<HistoryResponse>, (StatusCode, String)> {
-    let metric: Metric = q.metric.parse().map_err(|_| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("unknown metric '{}'", q.metric),
-        )
-    })?;
+) -> Result<Json<HistoryResponse>, ApiError> {
+    let metric: Metric = q
+        .metric
+        .parse()
+        .map_err(|_| ApiError::bad_request(format!("unknown metric '{}'", q.metric)))?;
     // Clamp: chrono panics on |seconds| near i64::MAX, and a huge
     // finite window would panic in the subtraction below. One year
     // is far past any real query.
@@ -115,7 +110,7 @@ pub(in crate::ui) async fn setpoints_for_mg(
     State(config): State<Config>,
     Path(mg_id): Path<u64>,
     Query(q): Query<SetpointsQuery>,
-) -> Result<Json<SetpointsResponse>, (StatusCode, String)> {
+) -> Result<Json<SetpointsResponse>, ApiError> {
     let site = resolve_site(&config, mg_id)?;
     Ok(setpoints_body(&site, q))
 }

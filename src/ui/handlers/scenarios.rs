@@ -3,18 +3,13 @@
 //! stage-mutation endpoints (next/prev/jump) are gone with the
 //! day-stage model.
 
-use axum::{
-    Json,
-    body::Body,
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::Response,
-};
+use axum::{body::Body, extract::State, response::Response};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::lisp::Config;
 use crate::sim::microgrid_site::{ScenarioReport, ScenarioSummary};
+use crate::ui::api::{ApiError, Json, Path, Query};
 
 pub(in crate::ui) async fn scenarios_list(
     State(config): State<Config>,
@@ -28,12 +23,12 @@ pub(in crate::ui) async fn scenarios_list(
 pub(in crate::ui) async fn scenarios_start(
     State(config): State<Config>,
     Path(name): Path<String>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let res = super::blocking(move || {
         crate::sim::scenarios::start(&config.interpreter(), &config.scenarios(), &name)
     })
     .await?;
-    res.map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    res.map_err(ApiError::bad_request)?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -42,9 +37,9 @@ pub(in crate::ui) async fn scenarios_start(
 /// report + flushes any CSV sinks via the `scenario-stop` defun.
 pub(in crate::ui) async fn scenarios_stop(
     State(config): State<Config>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let res = super::blocking(move || config.eval("(scenario-stop)").map(|_| ())).await?;
-    res.map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    res.map_err(ApiError::bad_request)?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -125,16 +120,16 @@ pub(in crate::ui) async fn scenario_csv_list(
 pub(in crate::ui) async fn scenario_csv_file(
     State(config): State<Config>,
     Path(file): Path<String>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<Response, ApiError> {
     if file.contains('/') || file.contains('\\') || file.contains("..") || !file.ends_with(".csv") {
-        return Err((StatusCode::BAD_REQUEST, "invalid filename".into()));
+        return Err(ApiError::bad_request("invalid filename"));
     }
     let (dir, files) = config
         .legacy_site()
         .scenario_csv_listing()
-        .ok_or((StatusCode::NOT_FOUND, "no recording".into()))?;
+        .ok_or_else(|| ApiError::not_found("no recording"))?;
     if !files.contains(&file) {
-        return Err((StatusCode::NOT_FOUND, "no such file".into()));
+        return Err(ApiError::not_found("no such file"));
     }
     // Defense in depth: resolve symlinks and confirm the entry is a
     // regular file that stays inside the recording directory, so a
@@ -143,15 +138,15 @@ pub(in crate::ui) async fn scenario_csv_file(
     // guards the entry it resolves to.
     let canon_dir = dir
         .canonicalize()
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+        .map_err(|e| ApiError::not_found(e.to_string()))?;
     let canon = dir
         .join(&file)
         .canonicalize()
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+        .map_err(|e| ApiError::not_found(e.to_string()))?;
     if !canon.starts_with(&canon_dir) || !canon.is_file() {
-        return Err((StatusCode::BAD_REQUEST, "invalid file".into()));
+        return Err(ApiError::bad_request("invalid file"));
     }
-    let body = std::fs::read(&canon).map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    let body = std::fs::read(&canon).map_err(|e| ApiError::not_found(e.to_string()))?;
     Response::builder()
         .header("content-type", "text/csv")
         .header(
@@ -159,7 +154,7 @@ pub(in crate::ui) async fn scenario_csv_file(
             format!("attachment; filename=\"{file}\""),
         )
         .body(Body::from(body))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .map_err(|e| ApiError::internal(e.to_string()))
 }
 
 /// Aggregate metrics for the running scenario (peak grid power so

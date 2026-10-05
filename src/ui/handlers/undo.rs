@@ -6,20 +6,17 @@
 //! keeps no stacks of its own — a reload of the page, or a second
 //! browser tab, sees the same history.
 
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::StatusCode,
-};
+use axum::extract::State;
 
 use crate::lisp::{Config, UndoDepths};
+use crate::ui::api::{ApiError, Json, Path};
 
 /// GET /api/mg/{mg_id}/undo — how deep each stack is, so the UI can
 /// enable or grey out its buttons without trying a step first.
 pub(in crate::ui) async fn undo_depths_for_mg(
     State(config): State<Config>,
     Path(mg_id): Path<u64>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     super::require_mg(&config, mg_id)?;
     Ok(Json(depths_json(config.undo_depths(mg_id))))
 }
@@ -28,7 +25,7 @@ pub(in crate::ui) async fn undo_depths_for_mg(
 pub(in crate::ui) async fn undo_for_mg(
     State(config): State<Config>,
     Path(mg_id): Path<u64>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     step(config, mg_id, true).await
 }
 
@@ -36,7 +33,7 @@ pub(in crate::ui) async fn undo_for_mg(
 pub(in crate::ui) async fn redo_for_mg(
     State(config): State<Config>,
     Path(mg_id): Path<u64>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     step(config, mg_id, false).await
 }
 
@@ -46,7 +43,7 @@ async fn step(
     config: Config,
     mg_id: u64,
     backwards: bool,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     super::require_mg(&config, mg_id)?;
     let depths = super::blocking(move || {
         if backwards {
@@ -60,7 +57,7 @@ async fn step(
     // world's current state, not a server fault; so is an unmanaged
     // microgrid. Everything reaching here is one of those or an IO
     // failure, and 409 keeps the UI from treating it as a crash.
-    .map_err(|e| (StatusCode::CONFLICT, e))?;
+    .map_err(ApiError::conflict)?;
     Ok(Json(depths_json(depths)))
 }
 

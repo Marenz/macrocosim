@@ -11,16 +11,13 @@
 //! plugged in, so the inspector builds its dropdown from the server's
 //! list instead of a copy of it.
 
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::StatusCode,
-};
+use axum::extract::State;
 use serde::Serialize;
 
 use super::resolve_site;
 use crate::lisp::Config;
 use crate::sim::ev_presets::PRESETS;
+use crate::ui::api::{ApiError, Json, Path};
 
 #[derive(Serialize, Default)]
 pub(in crate::ui) struct EvResponse {
@@ -51,16 +48,15 @@ pub(in crate::ui) struct EvResponse {
 pub(in crate::ui) async fn ev_for_mg(
     State(config): State<Config>,
     Path((mg_id, id)): Path<(u64, u64)>,
-) -> Result<Json<EvResponse>, (StatusCode, String)> {
+) -> Result<Json<EvResponse>, ApiError> {
     let site = resolve_site(&config, mg_id)?;
     let c = site
         .get(id)
-        .ok_or((StatusCode::NOT_FOUND, format!("component {id} not found")))?;
+        .ok_or_else(|| ApiError::not_found(format!("component {id} not found")))?;
     let Some(port) = c.ev_port() else {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("component {id} is not an EV charger"),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "component {id} is not an EV charger"
+        )));
     };
     let presets = PRESETS.iter().map(|p| p.name).collect();
     Ok(Json(match port.ev_info() {

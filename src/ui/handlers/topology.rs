@@ -3,16 +3,13 @@
 //! is registered — and `/api/mg/{id}/topology` the per-microgrid
 //! view.
 
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::StatusCode,
-};
+use axum::extract::State;
 use serde::Serialize;
 
 use crate::lisp::Config;
 
 use super::resolve_site;
+use crate::ui::api::{ApiError, Json, Path};
 
 #[derive(Serialize)]
 pub(in crate::ui) struct TopologySnapshot {
@@ -70,7 +67,7 @@ pub(in crate::ui) async fn topology(State(config): State<Config>) -> Json<Topolo
 pub(in crate::ui) async fn topology_for_mg(
     State(config): State<Config>,
     Path(mg_id): Path<u64>,
-) -> Result<Json<TopologySnapshot>, (StatusCode, String)> {
+) -> Result<Json<TopologySnapshot>, ApiError> {
     let site = resolve_site(&config, mg_id)?;
     Ok(Json(topology_snapshot(&site)))
 }

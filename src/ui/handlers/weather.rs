@@ -11,11 +11,7 @@
 //! doors enforce, so a request that would be rejected in the console
 //! is rejected here too, and vice versa.
 
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::StatusCode,
-};
+use axum::extract::State;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -23,10 +19,11 @@ use crate::lisp::Config;
 use crate::sim::microgrid_site::MicrogridSite;
 use crate::sim::sim_clock::parse_time_of_day;
 use crate::sim::weather::{self as weather, WeatherPatch};
+use crate::ui::api::{ApiError, Json, Path};
 
-use super::control::{ControlError, reject, site_for};
+use super::control::site_for;
 
-type WeatherResult = Result<Json<WeatherResponse>, (StatusCode, Json<ControlError>)>;
+type WeatherResult = Result<Json<WeatherResponse>, ApiError>;
 
 /// `GET`/`POST /api/weather` response — the config the panel can
 /// edit, plus the live readout it repaints from. Times print back as
@@ -101,7 +98,7 @@ fn read_weather(config: &Config, mg_id: Option<u64>) -> WeatherResult {
     let site = site_for(config, mg_id)?;
     snapshot(&site)
         .map(Json)
-        .ok_or_else(|| reject(StatusCode::NOT_FOUND, "no weather configured".to_string()))
+        .ok_or_else(|| ApiError::not_found("no weather configured".to_string()))
 }
 
 pub(in crate::ui) async fn weather_get(State(config): State<Config>) -> WeatherResult {
@@ -234,7 +231,7 @@ fn apply_weather_over(
             weather::validate::pass_cloud_args(p.depth_pct, p.duration_s, p.ramp_s.unwrap_or(0.0))
         })
         .transpose()
-        .map_err(|e| reject(StatusCode::BAD_REQUEST, format!("pass_cloud: {e}")))?;
+        .map_err(|e| ApiError::bad_request(format!("pass_cloud: {e}")))?;
 
     let had_weather = existing.is_some();
 
@@ -245,8 +242,7 @@ fn apply_weather_over(
     // A body that also carries a config field still creates, same as
     // `(set-weather …)` on a fresh site.
     if !had_weather && pass_cloud.is_some() && !req.has_config_field() {
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
+        return Err(ApiError::bad_request(
             "pass_cloud: no weather on this site — set a config field in the same request, or \
              call (make-weather …) first"
                 .to_string(),
@@ -259,7 +255,7 @@ fn apply_weather_over(
     // taken above.
     patch_of(req)
         .and_then(|patch| patch.install_over(site, weather::WeatherDoor::Http, existing))
-        .map_err(|e| reject(StatusCode::BAD_REQUEST, e))?;
+        .map_err(ApiError::bad_request)?;
 
     if let Some((depth_pct, duration, ramp)) = pass_cloud {
         site.with_weather(|w| w.pass_cloud(depth_pct, duration, ramp));
@@ -273,12 +269,9 @@ fn apply_weather_over(
     // config change and the scripted cloud both went nowhere; the
     // missing snapshot is simply where that becomes visible. Report
     // the conflict instead of panicking on an `expect`.
-    snapshot(site).map(Json).ok_or_else(|| {
-        reject(
-            StatusCode::CONFLICT,
-            "weather was removed while applying".to_string(),
-        )
-    })
+    snapshot(site)
+        .map(Json)
+        .ok_or_else(|| ApiError::conflict("weather was removed while applying".to_string()))
 }
 
 pub(in crate::ui) async fn weather_post(
@@ -299,6 +292,8 @@ pub(in crate::ui) async fn weather_post_for_mg(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
 
     /// The wiring itself, pinned: this door hands its ONE reading to
     /// `install_over` rather than letting the install re-probe. The
@@ -321,7 +316,7 @@ mod tests {
         let seen_before_the_reset = Some(weather::WeatherConfig::default());
         let status = apply_weather_over(&site, &req, seen_before_the_reset)
             .err()
-            .map(|(s, _)| s);
+            .map(|e| e.into_response().status());
         assert_eq!(
             status,
             Some(StatusCode::CONFLICT),
@@ -340,7 +335,7 @@ mod tests {
         let existing = site.with_weather(|w| w.config().clone());
         let peak = apply_weather_over(&site, &req, existing)
             .ok()
-            .map(|body| body.peak_pct);
+            .map(|Json(body)| body.peak_pct);
         assert_eq!(
             peak,
             Some(80.0),

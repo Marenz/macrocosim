@@ -12,7 +12,11 @@
 //! - `events_ws` — WebSocket push channel.
 //! - `handlers` — one submodule per HTTP topic (topology, eval,
 //!   history, scenarios, microgrids, …).
+//! - `api` — the error type every handler fails with, and the
+//!   extractors and fallbacks that answer axum's own failures with
+//!   it.
 
+mod api;
 mod events_ws;
 mod handlers;
 mod loopback;
@@ -191,6 +195,8 @@ fn router(
             post(dispatch_set_active_for_mg),
         )
         .route("/ws/events", get(events_ws))
+        .fallback(api::no_route)
+        .method_not_allowed_fallback(api::method_not_allowed)
         .layer(Extension(microgrid))
         .layer(Extension(runtimes.loopbacks()))
         .layer(Extension(runtimes))
@@ -234,7 +240,8 @@ async fn origin_guard(
     if let Some(host) = host
         && !is_loopback_host(authority_host(host))
     {
-        return (StatusCode::FORBIDDEN, "non-loopback Host rejected\n").into_response();
+        return api::ApiError::new(StatusCode::FORBIDDEN, "non-loopback Host rejected")
+            .into_response();
     }
     if let Some(origin) = req.headers().get(header::ORIGIN) {
         // `Origin: null` (sandboxed iframe, file://) and malformed
@@ -247,7 +254,8 @@ async fn origin_guard(
             .zip(host)
             .is_some_and(|(o_auth, host)| o_auth.eq_ignore_ascii_case(host));
         if !matches_host {
-            return (StatusCode::FORBIDDEN, "cross-origin request rejected\n").into_response();
+            return api::ApiError::new(StatusCode::FORBIDDEN, "cross-origin request rejected")
+                .into_response();
         }
     }
     next.run(req).await

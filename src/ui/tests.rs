@@ -95,6 +95,17 @@ fn post(path: &str, body: &str) -> Request<Body> {
         .unwrap()
 }
 
+/// The `error` field of a JSON error body; panics with the raw body
+/// when it is not one.
+fn error_of(body: &[u8]) -> String {
+    let v: serde_json::Value = serde_json::from_slice(body)
+        .unwrap_or_else(|_| panic!("not JSON: {}", String::from_utf8_lossy(body)));
+    v["error"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no error field: {v}"))
+        .to_string()
+}
+
 #[tokio::test]
 async fn index_serves_embedded_shell() {
     let cfg = config_with("").await;
@@ -237,7 +248,7 @@ async fn format_endpoint_returns_400_on_parse_error() {
     let cfg = config_with("").await;
     let (status, body) = call(cfg, post("/api/format", "(unbalanced")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(!String::from_utf8_lossy(&body).is_empty());
+    assert!(!error_of(&body).is_empty());
 }
 
 #[tokio::test]
@@ -267,7 +278,7 @@ async fn history_endpoint_rejects_unknown_metric() {
     let cfg = config_with("").await;
     let (status, body) = call(cfg, get("/api/history?id=1&metric=foo")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(String::from_utf8_lossy(&body).contains("unknown metric"));
+    assert!(error_of(&body).contains("unknown metric"));
 }
 
 #[tokio::test]
@@ -893,14 +904,16 @@ async fn control_drive_rejects_wrong_category() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // An unknown field name is a client error too (deny_unknown_fields
-    // -> axum's 422), not a silently ignored typo.
-    let (status, _) = call(
+    // An unknown field name is a client error too
+    // (deny_unknown_fields -> axum's 422 naming the field), not a
+    // silently ignored typo.
+    let (status, body) = call(
         cfg,
         post_json("/api/component/7/drive", r#"{"powr_w": 1.0}"#),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(error_of(&body).contains("powr_w"), "{}", error_of(&body));
 }
 
 /// Battery topology used by the formula tests:
@@ -1131,7 +1144,7 @@ async fn microgrids_import_rejects_id_collisions_atomically() {
     }"#;
     let (status, resp) = call(cfg.clone(), post_json("/api/microgrids/import", body)).await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert!(String::from_utf8_lossy(&resp).contains("enterprise-unique"));
+    assert!(error_of(&resp).contains("enterprise-unique"));
     // Nothing was created.
     let (_, list) = call(cfg, get("/api/microgrids")).await;
     let list: serde_json::Value = serde_json::from_slice(&list).unwrap();
@@ -1185,7 +1198,7 @@ async fn microgrids_import_rejects_unsupported_category() {
     }"#;
     let (status, resp) = call(cfg, post_json("/api/microgrids/import", body)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(String::from_utf8_lossy(&resp).contains("cannot simulate"));
+    assert!(error_of(&resp).contains("cannot simulate"));
 }
 
 /// set-component-operational-mode is a CONFIG change: the runtime
@@ -1289,7 +1302,9 @@ async fn load_endpoint_offers_load_as_on_collision() {
     .await;
     assert_eq!(st, StatusCode::CONFLICT);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error"], "microgrid 9 is already loaded");
     assert_eq!(v["collision_id"], 9);
+    assert_eq!(v["managed"], true);
     let suggested = v["suggested_id"].as_u64().unwrap();
     let (st, _) = call(
         config.clone(),
@@ -1430,9 +1445,9 @@ async fn a_repeated_load_as_is_an_error_not_a_fabricated_warning() {
         String::from_utf8_lossy(&body)
     );
     assert!(
-        !String::from_utf8_lossy(&body).contains("script section"),
+        !error_of(&body).contains("script section"),
         "and must not claim a script section failed: {}",
-        String::from_utf8_lossy(&body)
+        error_of(&body)
     );
 }
 
@@ -1613,8 +1628,8 @@ async fn create_refuses_a_reserved_port() {
         )
         .await;
         assert_eq!(st, StatusCode::CONFLICT);
-        let body = String::from_utf8_lossy(&body);
-        assert!(body.contains("reserved"), "unexpected error: {body}");
+        let error = error_of(&body);
+        assert!(error.contains("reserved"), "unexpected error: {error}");
     }
 }
 
@@ -1756,9 +1771,9 @@ async fn adopt_refuses_a_file_declaring_two_microgrids() {
     let (st, body) = call(config.clone(), post("/api/mg/9/adopt", "")).await;
     assert_eq!(st, StatusCode::CONFLICT);
     assert!(
-        String::from_utf8_lossy(&body).contains("split the file first"),
+        error_of(&body).contains("split the file first"),
         "{}",
-        String::from_utf8_lossy(&body)
+        error_of(&body)
     );
     assert!(!config.microgrids().lock().get(&9).unwrap().managed);
 }
@@ -1891,8 +1906,24 @@ async fn eval_body_is_capped_by_the_default_limit() {
     // future extractor or layer reshuffle can't silently drop the
     // cap on the code-execution endpoint.
     let config = config_with("").await;
-    let (st, _) = call(config, post("/api/eval", &"x".repeat(3 * 1024 * 1024))).await;
+    let (st, body) = call(config, post("/api/eval", &"x".repeat(3 * 1024 * 1024))).await;
     assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(!error_of(&body).is_empty());
+}
+
+/// A body that is not UTF-8 is rejected with axum's status and a
+/// JSON error.
+#[tokio::test]
+async fn a_non_utf8_eval_body_is_a_json_error() {
+    let config = config_with("").await;
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/eval")
+        .body(Body::from(vec![0xff, 0xfe, 0xfd]))
+        .unwrap();
+    let (st, body) = call(config, req).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    assert!(!error_of(&body).is_empty());
 }
 
 #[tokio::test]
@@ -2414,4 +2445,75 @@ async fn component_snapshot_lists_exactly_the_knobs_each_kind_has() {
             .collect();
         assert_eq!(got, names, "component {id}");
     }
+}
+
+/// An unknown path answers the JSON 404, naming the method and path.
+#[tokio::test]
+async fn an_unknown_path_is_a_json_404() {
+    let cfg = config_with("").await;
+    let (status, body) = call(cfg, get("/api/nope")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(error_of(&body), "no route for GET /api/nope");
+}
+
+/// A wrong method on a known path answers the JSON 405.
+#[tokio::test]
+async fn a_wrong_method_is_a_json_405() {
+    let cfg = config_with("").await;
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/api/microgrids/import")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = call(cfg, req).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(error_of(&body), "no route for GET /api/microgrids/import");
+}
+
+/// A malformed JSON body is a 400 whose error carries axum's
+/// rejection text.
+#[tokio::test]
+async fn a_malformed_json_body_is_a_json_400() {
+    let cfg = config_with("").await;
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/mg/2200/component/1/drive")
+        .header("content-type", "application/json")
+        .body(Body::from("{not json"))
+        .unwrap();
+    let (status, body) = call(cfg, req).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(!error_of(&body).is_empty());
+}
+
+/// A missing required query parameter is a JSON 400.
+#[tokio::test]
+async fn a_missing_query_parameter_is_a_json_400() {
+    let cfg = config_with("").await;
+    let (status, body) = call(cfg, get("/api/mg/2200/formula")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(error_of(&body).contains("metric"), "{}", error_of(&body));
+}
+
+/// The origin guard rejects with JSON and no trailing newline.
+#[tokio::test]
+async fn the_origin_guard_rejects_with_json() {
+    let cfg = config_with("").await;
+    let req = Request::builder()
+        .uri("/api/microgrids")
+        .header("host", "evil.example")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = call(cfg, req).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(error_of(&body), "non-loopback Host rejected");
+}
+
+/// A handler error keeps its message and comes back as JSON.
+#[tokio::test]
+async fn a_handler_error_is_json_with_its_old_text() {
+    let cfg = config_with("").await;
+    let (status, body) = call(cfg, get("/api/scripts?dir=..")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error_of(&body), "invalid dir");
 }
