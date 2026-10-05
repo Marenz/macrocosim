@@ -191,10 +191,10 @@ impl GatewayAxis {
     }
 
     /// Expiry or explicit reset: clear the command and ramp toward
-    /// `park` at the ramp rate.
-    pub fn reset(&mut self, park: f32) {
+    /// `idle` at the ramp rate.
+    pub fn reset(&mut self, idle: f32) {
         self.delay.reset();
-        self.ramp.set_target(park);
+        self.ramp.set_target(idle);
     }
 
     /// Health trip: the ramp snaps to 0; the command is cleared
@@ -714,10 +714,10 @@ mod tests {
         assert_eq!(step(&mut kept, t0, dt, None, &plain(&rated)), 2_000.0);
     }
 
-    /// A reset clears the command and ramps toward the park value
+    /// A reset clears the command and ramps toward the idle value
     /// without snapping.
     #[test]
-    fn reset_ramps_toward_the_park_value() {
+    fn reset_ramps_toward_the_idle_value() {
         let mut ax = ramped(1_000.0, Duration::ZERO);
         let rated = VecBounds::single(-10_000.0, 10_000.0);
         let t0 = Utc::now();
@@ -732,7 +732,7 @@ mod tests {
             None,
             &plain(&rated),
         );
-        assert!((v - 500.0).abs() < 1.0, "ramps toward the park value: {v}");
+        assert!((v - 500.0).abs() < 1.0, "ramps toward the idle value: {v}");
     }
 
     /// The gateway delay holds a command back; the ramp then slews.

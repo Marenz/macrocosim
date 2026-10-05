@@ -61,7 +61,7 @@ exercises the simulator:
 | `(set-component-telemetry-mode ID K)`  | `'normal` / `'silent` / `'closed`                        |
 | `(set-component-command-mode ID K)`    | `'normal` / `'timeout` / `'error`                        |
 | `(set-active-power ID W &OPTIONAL MS CLAMP)` | gRPC-style setpoint; MS = lifetime in ms, non-nil CLAMP clamps into the live envelope instead of rejecting, and an empty envelope yields 0 |
-| `(set-reactive-power ID VAR &OPTIONAL MS CLAMP)` | same for the reactive axis; CLAMP pulls into the gateway's Q validation envelope (own PF / kVA band at the live P ∩ children's Q bands ∩ live augmentations), falling back to the component's own band when no child reports one; an empty envelope yields 0 |
+| `(set-reactive-power ID VAR &OPTIONAL MS CLAMP)` | same for the reactive axis; CLAMP pulls into the gateway's setpoint envelope (own PF / kVA band at the live P ∩ live augmentations ∩ children's Q bands), falling back to the component's own band when no child reports one; an empty envelope yields 0 |
 | `(augment-active-bounds ID BOUNDS &OPTIONAL MS)` | gRPC-style bounds augmentation: BOUNDS is `(LO HI)` or a list of bands, e.g. `'((-10000 -1000) (1000 10000))` for an exclusion zone; nil edge = unbounded; MS = lifetime in ms (default `default-augment-lifetime-ms`) |
 | `(augment-reactive-bounds ID BOUNDS &OPTIONAL MS)` | same for the reactive axis |
 | `(set-meter-reactive-power ID VAL)`    | drive a meter's `:reactive-power` (number / lambda / `'symbol`)  |

@@ -1,11 +1,9 @@
-//! Two orthogonal control-loop primitives shared by inverters, EV
-//! chargers, anything else that does not respond instantly to a
-//! set-point command.
-//!
-//! A real inverter takes some time to acknowledge a SCADA command (the
-//! `CommandDelay`) and then ramps power toward the target at a slew
-//! rate (the `Ramp`) — exceeding the slew rate would damage capacitors,
-//! breakers, or the battery itself. Tests for both live next to the
+//! The two primitives behind a gateway axis (`GatewayAxis`): the
+//! `CommandDelay`, the API overhead between accepting a command and
+//! acting on it, and the `Ramp`, which slews the axis toward its
+//! target at a set rate. A component's own response time is its
+//! `DeviceAxis`. `is_due` and `TICK_JITTER`, the release rule both
+//! delay lines share, live here too. Tests live next to the
 //! implementations.
 
 use std::time::Duration;
@@ -36,26 +34,24 @@ pub(crate) fn is_due(stamp: DateTime<Utc>, delay: chrono::Duration, now: DateTim
 /// Holds a pending set-point that becomes "armed" only after `delay`
 /// has elapsed on the tick clock.
 ///
-/// Models a device that takes `delay` to execute each command. A
-/// command carries no clock when submitted — the first `poll` after
-/// it arrives stamps it with the tick clock, and it arms one `delay`
-/// later on that same clock. Submission happens on gRPC/UI threads
-/// with no access to the site's clock, and stamping there with wall
-/// time would break simulated/stepped clocks (a command stamped in
-/// wall-2026 never looks due to a sim-2020 poll).
+/// The gateway axis's command delay: each accepted command takes
+/// `delay` before the axis acts on it. A command carries no clock
+/// when submitted — the first `poll` after it arrives stamps it with
+/// the tick clock, and it arms one `delay` later on that same clock,
+/// so its stamp and its due time always come from one clock.
 ///
 /// While one command executes, only the newest later arrival is kept
 /// (a one-deep waiting slot). A controller that re-sends faster than
 /// `delay` therefore trails by about one delay but always makes
 /// progress — a fresh command must never restart the executing
-/// command's clock, or a fast re-send cadence would starve the device
+/// command's clock, or a fast re-send cadence would starve the axis
 /// forever.
 #[derive(Debug)]
 pub struct CommandDelay {
     state: State,
     delay: Duration,
     /// `delay` converted once — `poll` runs every tick for every
-    /// delayed component, so the conversion must not repeat per call.
+    /// gateway axis, so the conversion must not repeat per call.
     delay_chrono: chrono::Duration,
 }
 
@@ -81,7 +77,7 @@ impl State {
         if let Some((stamp @ None, _)) = &mut self.waiting {
             *stamp = Some(now);
         }
-        // Arm at most one command per poll: a device applies commands
+        // Arm at most one command per poll: the axis applies commands
         // one at a time, so a burst never collapses into "only the
         // newest value was ever visible".
         if let Some((Some(set_at), v)) = self.executing
@@ -147,8 +143,9 @@ impl CommandDelay {
 /// Slew-rate-limited tracker: `actual` moves toward `target` at most
 /// `rate_w_per_s` per second.
 ///
-/// Use `rate = f32::INFINITY` to make the tracker pass-through (the
-/// behaviour of microsim's inverters today).
+/// Use `rate = f32::INFINITY` to make the tracker pass-through, the
+/// default for an axis whose component sets no ramp
+/// (`GatewaySettings::default`).
 #[derive(Debug)]
 pub struct Ramp {
     state: RampState,
@@ -291,7 +288,7 @@ mod tests {
     }
 
     /// A controller re-sending faster than the delay must not starve
-    /// the device: the executing command keeps its own due time, so
+    /// the axis: the executing command keeps its own due time, so
     /// commands keep arming even under a continuous fast stream.
     #[test]
     fn command_delay_survives_fast_resend_cadence() {
@@ -308,8 +305,8 @@ mod tests {
             armed = cd.poll(t0 + chrono::Duration::milliseconds(100 * tick));
         }
         // At t0+4.5s the stream has been running for 9+ commands; the
-        // device must have armed several of them by now, not none.
-        assert!(armed.is_some(), "fast re-sends starved the device");
+        // axis must have armed several of them by now, not none.
+        assert!(armed.is_some(), "fast re-sends starved the axis");
         // And it keeps progressing: the newest command arms within a
         // couple more polls (one command arms per poll).
         cd.poll(t0 + chrono::Duration::seconds(60));
@@ -319,7 +316,7 @@ mod tests {
 
     /// A wall clock that steps back (an NTP step) leaves the
     /// executing command stamped after `now`. It counts as due, so
-    /// the device keeps arming commands instead of stalling until the
+    /// the axis keeps arming commands instead of stalling until the
     /// clock catches up.
     #[test]
     fn command_delay_survives_a_backward_clock_step() {

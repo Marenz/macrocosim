@@ -246,11 +246,13 @@ impl<'a> Gateway<'a> {
         Ok(deadline_after(now, lifetime))
     }
 
-    /// Clear `id`'s `axis` command and lifetime and park the axis.
+    /// Clear `id`'s `axis` command and lifetime and ramp the axis
+    /// toward its idle value.
+    #[cfg(test)]
     pub fn reset(&self, id: u64, axis: SetpointAxis) {
         let mut st = self.gw.state.lock();
         st.lifetimes.remove(id, axis);
-        self.park_locked(&mut st, id, axis);
+        self.reset_to_idle_locked(&mut st, id, axis);
     }
 
     /// Time left on the site clock before `id`'s `axis` command
@@ -266,14 +268,14 @@ impl<'a> Gateway<'a> {
     fn expire_locked(&self, st: &mut GatewayState, now: DateTime<Utc>) -> Vec<(u64, SetpointAxis)> {
         let expired = st.lifetimes.drain_expired(now);
         for &(id, axis) in &expired {
-            self.park_locked(st, id, axis);
+            self.reset_to_idle_locked(st, id, axis);
         }
         expired
     }
 
     /// Clear `id`'s `axis` command and ramp the axis toward the
     /// component's idle value, or 0 when it has none.
-    fn park_locked(&self, st: &mut GatewayState, id: u64, axis: SetpointAxis) {
+    fn reset_to_idle_locked(&self, st: &mut GatewayState, id: u64, axis: SetpointAxis) {
         if let (Some(ax), Some(c)) = (st.axes.get_mut(&(id, axis)), self.site.get(id)) {
             ax.reset(c.idle_value(axis).unwrap_or(0.0));
         }
@@ -403,7 +405,7 @@ impl<'a> Gateway<'a> {
         axis: SetpointAxis,
     ) -> Option<VecBounds> {
         self.site
-            .sum_child_bounds(id, |child| self.bounds_of_locked(st, child, axis))
+            .sum_child_bounds(id, |child_id| self.bounds_of_locked(st, child_id, axis))
     }
 
     /// Own ∩ children; `None` when no child reports bounds.
