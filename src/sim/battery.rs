@@ -326,13 +326,9 @@ mod tests {
         inv_ref.set_command(SetpointAxis::Active, 4_000.0);
         inv_ref.set_command(SetpointAxis::Reactive, 1_000.0);
 
-        // Hardware only: tick in registration order with no gateway
-        // step, so the written commands stand.
         let dt = Duration::from_millis(100);
         for _ in 0..2 {
-            for c in w.components().iter() {
-                c.tick(&w, Utc::now(), dt);
-            }
+            w.tick_hardware(Utc::now(), dt);
         }
 
         let bat_ref = w.get(1).unwrap();

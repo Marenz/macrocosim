@@ -345,9 +345,7 @@ mod tests {
         let mut now = Utc::now();
         for _ in 0..rounds {
             now += chrono::Duration::milliseconds(100);
-            for c in w.components().iter() {
-                c.tick(w, now, DT);
-            }
+            w.tick_hardware(now, DT);
         }
     }
 

@@ -738,9 +738,7 @@ mod tests {
         for _ in 0..1_000 {
             now += chrono::Duration::milliseconds(100);
             inv.set_command(Active, 3_600.0);
-            for c in site.components().iter() {
-                c.tick(&site, now, DT);
-            }
+            site.tick_hardware(now, DT);
         }
         let bat = site.get(1).unwrap();
         assert!((bat.telemetry(&site).soc_pct.unwrap() - 100.0).abs() < 1e-3);

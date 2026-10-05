@@ -1412,6 +1412,15 @@ impl MicrogridSite {
         }
         now
     }
+
+    /// One round of hardware ticks at `now`: every component ticks in
+    /// registration order and no gateway step runs, so a command
+    /// written with `set_command` stands.
+    pub(crate) fn tick_hardware(&self, now: DateTime<Utc>, dt: Duration) {
+        for c in self.components().iter() {
+            c.tick(self, now, dt);
+        }
+    }
 }
 
 /// Is `to` reachable from `from` over the directed `(parent, child)`
