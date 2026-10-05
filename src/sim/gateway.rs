@@ -101,7 +101,9 @@ impl GatewayState {
     /// Drop everything held for `id`.
     fn forget(&mut self, id: u64) {
         self.lifetimes.remove_component(id);
-        self.axes.retain(|(cid, _), _| *cid != id);
+        for axis in [SetpointAxis::Active, SetpointAxis::Reactive] {
+            self.axes.remove(&(id, axis));
+        }
         self.batteries.remove(&id);
     }
 }
@@ -368,7 +370,7 @@ impl<'a> Gateway<'a> {
         axis: SetpointAxis,
     ) -> Option<VecBounds> {
         self.site
-            .sum_child_bounds(id, |child| self.bounds_of_locked(st, child.id(), axis))
+            .sum_child_bounds(id, |child| self.bounds_of_locked(st, child, axis))
     }
 
     /// Own ∩ children; `None` when no child reports bounds.

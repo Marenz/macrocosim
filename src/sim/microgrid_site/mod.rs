@@ -790,14 +790,14 @@ impl MicrogridSite {
     pub(crate) fn sum_child_bounds(
         &self,
         parent: u64,
-        bounds_of: impl Fn(&dyn SimulatedComponent) -> Option<crate::sim::bounds::VecBounds>,
+        bounds_of: impl Fn(u64) -> Option<crate::sim::bounds::VecBounds>,
     ) -> Option<crate::sim::bounds::VecBounds> {
         use crate::sim::bounds::VecBounds;
         let bounds: Vec<VecBounds> = self
             .children_with_parent_counts(parent)
             .into_iter()
             .filter_map(|(id, pc)| {
-                let b = bounds_of(self.get(id)?.as_ref())?;
+                let b = bounds_of(id)?;
                 Some(b.scale(1.0 / pc.max(1) as f32))
             })
             .collect();
