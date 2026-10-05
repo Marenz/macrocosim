@@ -17,7 +17,7 @@ use tulisp::{AsPlist, Error, Plist, TulispContext};
 use crate::lisp::value::LispValue;
 use crate::sim::{
     Battery, BatteryInverter, Category, ComponentHandle, EvCharger, Grid, Marker, Meter,
-    MicrogridSite, OperationalMode, ReactiveSource, SolarInverter, SteamBoiler,
+    MicrogridSite, OperationalMode, ReactiveSource, SolarInverter, SteamBoiler, SunlightDrive,
     battery::BatteryConfig,
     dynamic_scalar::DynamicScalar,
     ev_charger::{EvChargerConfig, EvIdle},
@@ -1395,12 +1395,22 @@ mod tests {
         let site = run(r#"(%make-solar-inverter :id 13 :rated-lower -10000.0)
                (%make-solar-inverter :id 14 :rated-lower -10000.0 :sunlight% 40.0)"#);
         assert_eq!(
-            site.get(13).unwrap().sunlight_reading().unwrap().expr,
+            site.get(13)
+                .unwrap()
+                .sunlight_drive()
+                .unwrap()
+                .sunlight_reading()
+                .expr,
             Some("weather".into()),
             "no :sunlight% ⇒ follows the weather"
         );
         assert_eq!(
-            site.get(14).unwrap().sunlight_reading().unwrap().expr,
+            site.get(14)
+                .unwrap()
+                .sunlight_drive()
+                .unwrap()
+                .sunlight_reading()
+                .expr,
             None,
             "an explicit :sunlight% stays manual"
         );

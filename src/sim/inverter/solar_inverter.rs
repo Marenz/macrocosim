@@ -19,7 +19,7 @@ use tulisp::TulispContext;
 use crate::sim::{
     Category, Controllable, MicrogridSite, ReactiveLimits, SimulatedComponent, Telemetry,
     bounds::VecBounds,
-    component::{GatewaySettings, KnobKind, KnobSnapshot, ScalarReading},
+    component::{GatewaySettings, KnobKind, KnobSnapshot, ScalarReading, SunlightDrive},
     device_axis::DeviceAxis,
     dynamic_scalar::DynamicScalar,
     reactive::ReactiveCapability,
@@ -237,27 +237,6 @@ impl SolarInverter {
         }
     }
 
-    /// Replace the cloud-cover source with a Lisp expression that
-    /// `refresh_inputs` re-resolves each tick. The make-path uses
-    /// this when `:sunlight%` is a lambda or symbol; the default is
-    /// a constant seeded from `cfg.sunlight_pct`. Like every other
-    /// driven value this installs a `Manual` source, displacing a
-    /// `Follow` one if that is what was there.
-    pub fn set_sunlight_source(&self, scalar: DynamicScalar) {
-        *self.sunlight_source.write() = SunlightSource::manual(scalar);
-    }
-
-    /// Replace the cloud-cover source with a constant. Drives the
-    /// per-tick `min_avail = max(-array_peak_w × sunlight_pct / 100, rated_lower_w)`
-    /// clamp the inverter applies to incoming setpoints. Values are
-    /// applied as-is; the per-tick clamp happens in [`Self::min_avail_w`].
-    /// Collapses any prior source — a dynamic expression or a
-    /// weather `Follow` — so subsequent refreshes and ticks are
-    /// no-ops on it until something calls [`Self::clear_sunlight`].
-    pub fn set_sunlight_pct(&self, pct: f32) {
-        *self.sunlight_source.write() = SunlightSource::manual(DynamicScalar::constant(pct));
-    }
-
     /// Drop whatever drove the sunlight knob and go back to
     /// following the site's weather — the way back from
     /// `set_sunlight_pct` / `set_sunlight_source`, mirroring the
@@ -430,6 +409,10 @@ impl SimulatedComponent for SolarInverter {
         Some(self)
     }
 
+    fn sunlight_drive(&self) -> Option<&dyn SunlightDrive> {
+        Some(self)
+    }
+
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
         Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
     }
@@ -440,39 +423,6 @@ impl SimulatedComponent for SolarInverter {
 
     fn stream_jitter_pct(&self) -> f32 {
         self.cfg.stream_jitter_pct
-    }
-
-    fn set_sunlight_pct(&self, pct: f32) -> bool {
-        SolarInverter::set_sunlight_pct(self, pct);
-        true
-    }
-
-    fn takes_sunlight_pct(&self) -> bool {
-        true
-    }
-
-    fn set_sunlight_source(&self, scalar: DynamicScalar) {
-        SolarInverter::set_sunlight_source(self, scalar);
-    }
-
-    fn clear_sunlight_source(&self) -> bool {
-        SolarInverter::clear_sunlight(self);
-        true
-    }
-
-    fn sunlight_reading(&self) -> Option<ScalarReading> {
-        let s = self.sunlight_source.read();
-        Some(ScalarReading {
-            value: self.pct_of(&s),
-            // `Follow` has no Lisp source text, but it is not a plain
-            // constant either — the inspector shows the "weather"
-            // marker in the same slot a lambda's printed form goes,
-            // so a reader can tell a tracked sky from a driven number.
-            expr: match &*s {
-                SunlightSource::Follow => Some("weather".into()),
-                SunlightSource::Manual(scalar) => scalar.source_text(),
-            },
-        })
     }
 
     fn snapshot_knob(&self, kind: KnobKind) -> Option<KnobSnapshot> {
@@ -589,6 +539,42 @@ impl SimulatedComponent for SolarInverter {
             ));
         }
         kw
+    }
+}
+
+impl SunlightDrive for SolarInverter {
+    /// Drives the per-tick `min_avail = max(-array_peak_w ×
+    /// sunlight_pct / 100, rated_lower_w)` clamp the inverter applies
+    /// to incoming setpoints. Values are applied as-is; the per-tick
+    /// clamp happens in `SolarInverter::min_avail_w`.
+    fn set_sunlight_pct(&self, pct: f32) {
+        *self.sunlight_source.write() = SunlightSource::manual(DynamicScalar::constant(pct));
+    }
+
+    /// Like every other driven value this installs a `Manual` source,
+    /// displacing a `Follow` one if that is what was there.
+    fn set_sunlight_source(&self, scalar: DynamicScalar) {
+        *self.sunlight_source.write() = SunlightSource::manual(scalar);
+    }
+
+    fn clear_sunlight_source(&self) {
+        self.clear_sunlight();
+    }
+
+    fn sunlight_reading(&self) -> ScalarReading {
+        let s = self.sunlight_source.read();
+        ScalarReading {
+            value: self.pct_of(&s),
+            // `Follow` has no Lisp source text, but it is not a plain
+            // constant either — the inspector shows the "weather"
+            // marker in the same slot a lambda's printed form goes,
+            // so a reader can tell a tracked sky from a driven
+            // number.
+            expr: match &*s {
+                SunlightSource::Follow => Some("weather".into()),
+                SunlightSource::Manual(scalar) => scalar.source_text(),
+            },
+        }
     }
 }
 
@@ -710,7 +696,7 @@ mod tests {
         // 100% sun: 45 kW of array clamped to the 30 kW rating.
         assert!((oversized.min_avail_w() - (-30_000.0)).abs() < 1e-3);
         // 50% sun: 22.5 kW — inside the rating, no clamp.
-        SolarInverter::set_sunlight_pct(&oversized, 50.0);
+        oversized.set_sunlight_pct(50.0);
         assert!((oversized.min_avail_w() - (-22_500.0)).abs() < 1e-3);
     }
 
@@ -1075,7 +1061,7 @@ mod tests {
             "following the weather renders by omission",
         );
 
-        SolarInverter::set_sunlight_pct(&inv, 30.0);
+        inv.set_sunlight_pct(30.0);
         assert!(
             inv.has_unrenderable_source(),
             "a constant with no constructed kwarg to carry it",
@@ -1132,18 +1118,18 @@ mod tests {
         let lambda = ctx.eval_string("(lambda () 33.0)").unwrap();
         let scalar = DynamicScalar::from_lisp(&lambda, 50.0).unwrap();
         inv.set_sunlight_source(scalar);
-        let text_before = inv.sunlight_reading().unwrap().expr;
+        let text_before = inv.sunlight_reading().expr;
         assert!(text_before.is_some());
 
         let snap = inv.snapshot_knob(KnobKind::Sunlight).unwrap();
 
         // A scenario collapses it to a constant.
         inv.set_sunlight_pct(10.0);
-        assert!(inv.sunlight_reading().unwrap().expr.is_none());
+        assert!(inv.sunlight_reading().expr.is_none());
         assert!(!inv.has_unrenderable_source());
 
         assert!(inv.restore_knob(snap));
-        assert_eq!(inv.sunlight_reading().unwrap().expr, text_before);
+        assert_eq!(inv.sunlight_reading().expr, text_before);
         assert!(inv.has_unrenderable_source(), "dynamic source restored");
     }
 
@@ -1182,7 +1168,7 @@ mod tests {
         // With weather, at solar noon: the clear-sky peak.
         w.set_weather(Some(Weather::new(WeatherConfig::default())));
         w.tick_once(noon, dt);
-        let r = inv.sunlight_reading().unwrap();
+        let r = inv.sunlight_drive().unwrap().sunlight_reading();
         assert!(
             (r.value - 100.0).abs() < 0.01,
             "solar noon → 100, got {}",
@@ -1198,7 +1184,7 @@ mod tests {
         // also what drives the cache OFF 100, giving the fallback
         // check below something to move back from.
         w.tick_once(morning, dt);
-        let pct = inv.sunlight_reading().unwrap().value;
+        let pct = inv.sunlight_drive().unwrap().sunlight_reading().value;
         let expect = 100.0 * (std::f32::consts::PI * 0.25).sin();
         assert!((pct - expect).abs() < 0.1, "expected {expect}, got {pct}");
 
@@ -1208,7 +1194,7 @@ mod tests {
         // Skip the fallback and the cache would still read ≈70.7.
         w.set_weather(None);
         w.tick_once(morning, dt);
-        let pct = inv.sunlight_reading().unwrap().value;
+        let pct = inv.sunlight_drive().unwrap().sunlight_reading().value;
         assert!((pct - 100.0).abs() < 0.01, "no weather → 100, got {pct}");
     }
 
@@ -1245,23 +1231,23 @@ mod tests {
         // nothing about what the cache last held.
         w.tick_once(night, Duration::from_millis(100));
         assert_eq!(
-            inv.sunlight_reading().unwrap().value,
+            inv.sunlight_drive().unwrap().sunlight_reading().value,
             0.0,
             "the Follow tick resolves the night sky into the cache"
         );
 
-        assert!(inv.set_sunlight_pct(42.0));
+        inv.sunlight_drive().unwrap().set_sunlight_pct(42.0);
         w.tick_once(night, Duration::from_millis(100));
-        assert!((inv.sunlight_reading().unwrap().value - 42.0).abs() < 0.01);
-        assert!(inv.clear_sunlight_source(), "solar takes the clear");
+        assert!((inv.sunlight_drive().unwrap().sunlight_reading().value - 42.0).abs() < 0.01);
+        inv.sunlight_drive().unwrap().clear_sunlight_source();
         assert_eq!(
-            inv.sunlight_reading().unwrap().value,
+            inv.sunlight_drive().unwrap().sunlight_reading().value,
             0.0,
             "the clear reads the last resolved sky at once, before any tick"
         );
         w.tick_once(night, Duration::from_millis(100));
         assert_eq!(
-            inv.sunlight_reading().unwrap().value,
+            inv.sunlight_drive().unwrap().sunlight_reading().value,
             0.0,
             "night sky via Follow"
         );
@@ -1293,7 +1279,7 @@ mod tests {
         let noon = chrono::Utc.with_ymd_and_hms(2026, 6, 1, 13, 0, 0).unwrap();
 
         w.tick_once(noon, Duration::from_millis(100));
-        let pct = inv.sunlight_reading().unwrap().value;
+        let pct = inv.sunlight_drive().unwrap().sunlight_reading().value;
         let an_hour_ago = 100.0 * (std::f32::consts::PI * 6.0 / 14.0).sin();
         assert!(
             (pct - an_hour_ago).abs() < 0.05,
@@ -1361,12 +1347,19 @@ mod tests {
         w.tick_once(noon - chrono::Duration::seconds(30), dt);
         w.with_weather(|wx| wx.pass_cloud(100.0, Duration::from_secs(600), Duration::ZERO));
         w.tick_once(noon, dt);
-        let lagged = w.get(lagged_id).unwrap().sunlight_reading().unwrap().value;
+        let lagged = w
+            .get(lagged_id)
+            .unwrap()
+            .sunlight_drive()
+            .unwrap()
+            .sunlight_reading()
+            .value;
         let instant = w
             .get(lagged_id + 200)
             .unwrap()
-            .sunlight_reading()
+            .sunlight_drive()
             .unwrap()
+            .sunlight_reading()
             .value;
         assert!(
             instant < 1.0,
@@ -1404,7 +1397,7 @@ mod tests {
         let mut seen = Vec::new();
         for _ in 0..12 {
             w.tick_once(noon, Duration::from_millis(100));
-            seen.push(inv.sunlight_reading().unwrap().value);
+            seen.push(inv.sunlight_drive().unwrap().sunlight_reading().value);
         }
         assert!(
             seen.windows(2).any(|p| (p[0] - p[1]).abs() > f32::EPSILON),
@@ -1431,7 +1424,7 @@ mod tests {
             },
         );
         let snap = inv.snapshot_knob(KnobKind::Sunlight).unwrap();
-        SolarInverter::set_sunlight_pct(&inv, 5.0);
+        inv.set_sunlight_pct(5.0);
         assert!(inv.restore_knob(snap));
         assert!(matches!(
             &*inv.sunlight_source.read(),
@@ -1456,19 +1449,16 @@ mod tests {
             },
         );
         // Something drove the knob to 42 before the scenario started.
-        SolarInverter::set_sunlight_pct(&inv, 42.0);
+        inv.set_sunlight_pct(42.0);
         let snap = inv.snapshot_knob(KnobKind::Sunlight).unwrap();
 
         // The scenario clears it back to weather-following...
         inv.clear_sunlight();
-        assert_eq!(
-            inv.sunlight_reading().unwrap().expr.as_deref(),
-            Some("weather")
-        );
+        assert_eq!(inv.sunlight_reading().expr.as_deref(), Some("weather"));
 
         // ... and teardown puts the driven constant back.
         assert!(inv.restore_knob(snap));
-        let r = inv.sunlight_reading().unwrap();
+        let r = inv.sunlight_reading();
         assert!(
             (r.value - 42.0).abs() < 0.01,
             "restored 42, got {}",

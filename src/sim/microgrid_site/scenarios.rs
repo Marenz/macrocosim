@@ -415,7 +415,7 @@ impl MicrogridSite {
                 }
             },
             KnobKind::Sunlight => {
-                let (value, expr) = match component.sunlight_reading() {
+                let (value, expr) = match component.sunlight_drive().map(|s| s.sunlight_reading()) {
                     Some(r) => (Some(r.value), r.expr),
                     None => (None, None),
                 };

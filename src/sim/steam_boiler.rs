@@ -157,7 +157,7 @@ impl SteamBoiler {
 
     /// Replace the steam-demand source with a Lisp expression that
     /// `refresh_inputs` re-resolves each tick. Mirrors
-    /// `SolarInverter::set_sunlight_source`.
+    /// `SunlightDrive::set_sunlight_source`.
     pub fn set_steam_demand_source(&self, scalar: DynamicScalar) {
         *self.demand_source.write() = scalar;
     }

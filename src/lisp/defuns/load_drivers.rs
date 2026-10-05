@@ -307,8 +307,14 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                 None
             };
             w.scenario_snapshot_knob(id as u64, KnobKind::Sunlight);
+            // Lenient: a component without a sunlight knob is left
+            // as it is, but the snapshot, the broadcast and the `t`
+            // still happen.
+            let sun = c.sunlight_drive();
             if let Some(pct) = pct {
-                let _ = c.set_sunlight_pct(pct);
+                if let Some(sun) = sun {
+                    sun.set_sunlight_pct(pct);
+                }
                 w.note_knob_changed(id as u64, "solar-sunlight", Some(pct), None, None);
             } else if let Some(scalar) =
                 crate::sim::dynamic_scalar::DynamicScalar::from_lisp(&value, 100.0)
@@ -317,7 +323,9 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                 // construction — same pattern as set-meter-power above.
                 let printed = value.to_string();
                 let resolved_now = scalar.get();
-                c.set_sunlight_source(scalar);
+                if let Some(sun) = sun {
+                    sun.set_sunlight_source(scalar);
+                }
                 w.note_knob_changed(
                     id as u64,
                     "solar-sunlight",
@@ -338,8 +346,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     // knob never had one. Drops whatever is driving the slot and
     // returns the inverter to following the site's weather, exactly
     // as a freshly-constructed one with no `:sunlight%` does.
-    // Gated on the trait door: `false` means "not a component that
-    // takes a sunlight clear".
+    // Strict: a component without a sunlight knob errors.
     let r = router.clone();
     ctx.defun(
         "clear-solar-sunlight",
@@ -351,21 +358,22 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                 )));
             };
             w.scenario_snapshot_knob(id as u64, KnobKind::Sunlight);
-            if !c.clear_sunlight_source() {
+            let Some(sun) = c.sunlight_drive() else {
                 return Err(Error::invalid_argument(format!(
                     "clear-solar-sunlight: component {id} does not take a sunlight clear"
                 )));
-            }
+            };
+            sun.clear_sunlight_source();
             // Unlike clear-meter-power, the cleared slot is not
             // "nothing" — a `Follow` source has a live percentage of
             // its own (the last sky the inverter resolved, which is
             // full sun until its first tick), so the inspector gets
             // that value rather than a blanked input.
-            let now_pct = c.sunlight_reading().map(|r| r.value);
+            let now_pct = sun.sunlight_reading().value;
             w.note_knob_changed(
                 id as u64,
                 "solar-sunlight",
-                now_pct,
+                Some(now_pct),
                 Some("weather".into()),
                 None,
             );
@@ -1117,13 +1125,17 @@ mod tests {
         let (cfg, _dir) = config_with("(%make-solar-inverter :id 8 :sunlight% 40)");
         let site = cfg.site();
         let inv = site.get(8).unwrap();
-        assert_eq!(inv.sunlight_reading().unwrap().expr, None, "starts manual");
+        assert_eq!(
+            inv.sunlight_drive().unwrap().sunlight_reading().expr,
+            None,
+            "starts manual"
+        );
 
         cfg.eval("(set-solar-sunlight 8 10.0)").unwrap();
         let mut rx = site.subscribe_events();
         cfg.eval("(clear-solar-sunlight 8)").unwrap();
         assert_eq!(
-            inv.sunlight_reading().unwrap().expr,
+            inv.sunlight_drive().unwrap().sunlight_reading().expr,
             Some("weather".into()),
             "cleared back to following the weather"
         );
@@ -1144,7 +1156,7 @@ mod tests {
             "no matching KnobChanged with the weather marker on the bus; saw: {seen:?}"
         );
 
-        // Non-solar: the default trait door returns false.
+        // Non-solar: no sunlight knob, so the clear errors.
         let (cfg2, _dir2) = config_with("(%make-meter :id 7)");
         assert_eq!(
             err_line(&cfg2, "(clear-solar-sunlight 7)"),
@@ -1183,7 +1195,13 @@ mod tests {
         cfg.eval(&format!("(%make-solar-inverter :id 9 {kwargs})"))
             .unwrap();
         assert_eq!(
-            cfg.site().get(9).unwrap().sunlight_reading().unwrap().expr,
+            cfg.site()
+                .get(9)
+                .unwrap()
+                .sunlight_drive()
+                .unwrap()
+                .sunlight_reading()
+                .expr,
             Some("weather".into()),
             "the rebuilt inverter follows the weather, not Manual(100)"
         );
@@ -1197,7 +1215,12 @@ mod tests {
         cfg.eval("(set-solar-sunlight 4 63)").unwrap();
         cfg.refresh_once();
         let site = cfg.site();
-        let r = site.get(4).unwrap().sunlight_reading().expect("reading");
+        let r = site
+            .get(4)
+            .unwrap()
+            .sunlight_drive()
+            .expect("reading")
+            .sunlight_reading();
         assert_eq!(r.value, 63.0);
     }
 
@@ -1271,7 +1294,7 @@ mod tests {
         cfg.eval("(set-solar-sunlight 8 'sun-src)").unwrap();
         cfg.refresh_once();
         let inv = cfg.site().get(8).unwrap();
-        let before = inv.sunlight_reading().unwrap();
+        let before = inv.sunlight_drive().unwrap().sunlight_reading();
         assert!(
             before.expr.is_some(),
             "baseline is the dynamic symbol source"
@@ -1281,12 +1304,16 @@ mod tests {
         cfg.eval("(scenario-start \"sun\")").unwrap();
         cfg.eval("(set-solar-sunlight 8 10.0)").unwrap();
         assert!(
-            inv.sunlight_reading().unwrap().expr.is_none(),
+            inv.sunlight_drive()
+                .unwrap()
+                .sunlight_reading()
+                .expr
+                .is_none(),
             "scenario collapsed it to a constant"
         );
 
         cfg.eval("(scenario-stop)").unwrap();
-        let after = inv.sunlight_reading().unwrap();
+        let after = inv.sunlight_drive().unwrap().sunlight_reading();
         assert!(after.expr.is_some(), "dynamic source restored");
         assert_eq!(after.expr, before.expr);
 
@@ -1295,7 +1322,7 @@ mod tests {
         // not a frozen snapshot of its last-read value.
         cfg.eval("(setq sun-src 77.0)").unwrap();
         cfg.refresh_once();
-        assert_eq!(inv.sunlight_reading().unwrap().value, 77.0);
+        assert_eq!(inv.sunlight_drive().unwrap().sunlight_reading().value, 77.0);
     }
 
     /// The sunlight twin of
@@ -1320,9 +1347,9 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        assert_eq!(inv.sunlight_reading().unwrap().value, 40.0);
+        assert_eq!(inv.sunlight_drive().unwrap().sunlight_reading().value, 40.0);
         assert_eq!(
-            inv.sunlight_reading().unwrap().expr,
+            inv.sunlight_drive().unwrap().sunlight_reading().expr,
             None,
             "the constructed baseline is Manual, markerless"
         );
@@ -1331,7 +1358,7 @@ mod tests {
         cfg.eval("(scenario-start \"clear-sun\")").unwrap();
         cfg.eval("(clear-solar-sunlight 8)").unwrap();
         assert_eq!(
-            inv.sunlight_reading().unwrap().expr,
+            inv.sunlight_drive().unwrap().sunlight_reading().expr,
             Some("weather".into()),
             "the clear must really clear while the scenario runs"
         );
@@ -1342,9 +1369,9 @@ mod tests {
         );
 
         cfg.eval("(scenario-stop)").unwrap();
-        assert_eq!(inv.sunlight_reading().unwrap().value, 40.0);
+        assert_eq!(inv.sunlight_drive().unwrap().sunlight_reading().value, 40.0);
         assert_eq!(
-            inv.sunlight_reading().unwrap().expr,
+            inv.sunlight_drive().unwrap().sunlight_reading().expr,
             None,
             "back to Manual 40, not left following the weather"
         );

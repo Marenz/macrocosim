@@ -68,3 +68,33 @@ pub trait MeterDrive: Send + Sync {
     /// while the meter is summing its children.
     fn meter_reactive_reading(&self) -> Option<ReactiveReading>;
 }
+
+/// The solar inverter's sunlight knob: the cloud-cover percentage
+/// that caps its output. One built without `:sunlight%` follows the
+/// site's weather until something drives it.
+pub trait SunlightDrive: Send + Sync {
+    /// Drive the sunlight percentage with a constant. Used by
+    /// `(set-solar-sunlight id PCT)` with a number and by the HTTP
+    /// drive op. Collapses any prior source — a Lisp expression or
+    /// the weather — until [`Self::clear_sunlight_source`].
+    fn set_sunlight_pct(&self, pct: f32);
+
+    /// Drive the sunlight percentage with a Lisp expression that
+    /// `refresh_inputs` re-resolves each tick. Used by
+    /// `(set-solar-sunlight id (lambda () …))` and by a `:sunlight%`
+    /// bound to a lambda or symbol at construction.
+    fn set_sunlight_source(&self, scalar: DynamicScalar);
+
+    /// Drop whatever drives the sunlight percentage — a constant or
+    /// a Lisp expression — and go back to following the site's
+    /// weather: the way back from [`Self::set_sunlight_pct`] and
+    /// [`Self::set_sunlight_source`]. A cleared inverter renders
+    /// without `:sunlight%`, so a save/reload follows the weather
+    /// too.
+    fn clear_sunlight_source(&self);
+
+    /// The live percentage, with the printed Lisp source of a dynamic
+    /// source, or the `"weather"` marker while following the weather
+    /// (`None` for a constant).
+    fn sunlight_reading(&self) -> ScalarReading;
+}

@@ -141,9 +141,9 @@ fn knobs_for(c: &dyn crate::sim::SimulatedComponent) -> Vec<KnobState> {
         }
         Category::Inverter => {
             if c.subtype() == Some("solar")
-                && let Some(r) = c.sunlight_reading()
+                && let Some(sun) = c.sunlight_drive()
             {
-                knobs.push(scalar_knob("solar-sunlight", r));
+                knobs.push(scalar_knob("solar-sunlight", sun.sunlight_reading()));
             }
             if let Some(r) = c.reactive_limits() {
                 let cap = r.reactive_capability();

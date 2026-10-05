@@ -16,7 +16,7 @@ mod knobs;
 mod reactive_limits;
 
 pub use controllable::{Controllable, GatewaySettings};
-pub use knobs::MeterDrive;
+pub use knobs::{MeterDrive, SunlightDrive};
 pub use reactive_limits::ReactiveLimits;
 
 /// High-level kind of a component, mirroring the proto category enum but
@@ -366,8 +366,9 @@ pub enum KnobSnapshot {
 ///   - **Lifecycle**: stream_interval, stream_jitter_pct, tick, telemetry.
 ///   - **Capability groups**: controllable ([`Controllable`]),
 ///     reactive_limits ([`ReactiveLimits`]), meter_drive
-///     ([`MeterDrive`]). Each accessor answers `Some` on the
-///     components that have the group.
+///     ([`MeterDrive`]), sunlight_drive ([`SunlightDrive`]). Each
+///     accessor answers `Some` on the components that have the
+///     group.
 ///   - **Hardware facts the gateway reads**: soc_window, soc_pct. The
 ///     Microgrid API rules themselves live in `sim::gateway`, never
 ///     here.
@@ -479,6 +480,11 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         None
     }
 
+    /// The solar inverter's sunlight knob.
+    fn sunlight_drive(&self) -> Option<&dyn SunlightDrive> {
+        None
+    }
+
     // ── hardware facts the gateway reads ─────────────────────────────
 
     /// A battery's usable SoC window (`:soc-lower`, `:soc-upper`,
@@ -542,41 +548,6 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         false
     }
 
-    /// Update the live cloud-cover percentage on a solar inverter.
-    /// Used by `(set-solar-sunlight id PCT)` with a numeric
-    /// argument. Default no-op for non-solar components.
-    /// Returns whether the component models sunlight (the typed
-    /// control API rejects a `false`); the default is an unsupported
-    /// no-op.
-    fn set_sunlight_pct(&self, _pct: f32) -> bool {
-        false
-    }
-
-    /// Whether [`Self::set_sunlight_pct`] applies to this component.
-    /// See [`Self::takes_soc_pct`] for why the predicates exist.
-    fn takes_sunlight_pct(&self) -> bool {
-        false
-    }
-
-    /// Replace the solar inverter's `:sunlight%` source with a Lisp
-    /// expression. PV analogue of
-    /// [`MeterDrive::set_active_power_source`];
-    /// used by `(set-solar-sunlight id (lambda () …))`. Default
-    /// no-op for non-solar components.
-    fn set_sunlight_source(&self, _scalar: DynamicScalar) {}
-
-    /// Drop whatever was driving the solar inverter's `:sunlight%` —
-    /// a constant poke or a Lisp expression — and return it to
-    /// following the site's weather. The PV analogue of
-    /// [`MeterDrive::clear_active_power_source`]: the one-way trip
-    /// `set_sunlight_pct` / `set_sunlight_source` otherwise has no
-    /// way back. Returns whether the component supports the stimulus
-    /// (a solar inverter always does, even with nothing to clear);
-    /// the default is an unsupported no-op.
-    fn clear_sunlight_source(&self) -> bool {
-        false
-    }
-
     /// Steam boiler: constant steam demand in kg/h. Collapses any
     /// prior dynamic source, like `set_sunlight_pct`.
     fn set_steam_demand_kg_h(&self, _kg_h: f32) -> bool {
@@ -637,13 +608,6 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     }
 
     // ── knob read-back (inspector snapshot) ──────────────────────────
-
-    /// The PV inverter's cloud-cover knob — always present once a
-    /// solar inverter exists (it defaults to a constant), so `None`
-    /// here just means "not a solar inverter".
-    fn sunlight_reading(&self) -> Option<ScalarReading> {
-        None
-    }
 
     /// Resolved demand + source text for the inspector knob.
     fn demand_reading(&self) -> Option<ScalarReading> {
@@ -786,6 +750,7 @@ mod tests {
         ("controllable", |c| c.controllable().is_some()),
         ("reactive_limits", |c| c.reactive_limits().is_some()),
         ("meter_drive", |c| c.meter_drive().is_some()),
+        ("sunlight_drive", |c| c.sunlight_drive().is_some()),
     ];
 
     /// The names of the groups `c` has, in `GROUPS` order.
@@ -826,7 +791,7 @@ mod tests {
             ),
             (
                 Box::new(SolarInverter::new(6, sec, Default::default())),
-                &["controllable", "reactive_limits"],
+                &["controllable", "reactive_limits", "sunlight_drive"],
             ),
             (
                 Box::new(EvCharger::new(7, sec, Default::default())),

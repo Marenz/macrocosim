@@ -206,7 +206,10 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
             format!("component {id} does not take power_w (not a meter)"),
         ));
     }
-    if req.sunlight_pct.is_some() && !component.takes_sunlight_pct() {
+    // The apply phase writes the sunlight fields through this same
+    // reference, so it changes nothing this check did not allow.
+    let sunlight = component.sunlight_drive();
+    if req.sunlight_pct.is_some() && sunlight.is_none() {
         return Err(reject(
             StatusCode::BAD_REQUEST,
             format!("component {id} does not take sunlight_pct (not a solar inverter)"),
@@ -286,7 +289,7 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
             format!("component {id} does not take clear_reactive (not a meter)"),
         ));
     }
-    if req.clear_sunlight && !component.takes_sunlight_pct() {
+    if req.clear_sunlight && sunlight.is_none() {
         return Err(reject(
             StatusCode::BAD_REQUEST,
             format!("component {id} does not take clear_sunlight (not a solar inverter)"),
@@ -383,22 +386,25 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
         site.note_knob_changed(id, "meter-reactive-power", None, None, None);
         site.note_knob_changed(id, "meter-power-factor", None, None, None);
     }
-    if req.clear_sunlight {
+    if req.clear_sunlight
+        && let Some(sun) = sunlight
+    {
         site.scenario_snapshot_knob(id, KnobKind::Sunlight);
-        if !component.clear_sunlight_source() {
-            return Err(reject(
-                StatusCode::BAD_REQUEST,
-                format!("component {id} does not take clear_sunlight (not a solar inverter)"),
-            ));
-        }
+        sun.clear_sunlight_source();
         // Unlike clear_power/clear_reactive, the cleared slot is not
         // "nothing" — a `Follow` source has a live percentage of its
         // own (the seeded full sun until the first tick resolves the
         // sky), so the inspector gets that value rather than a
         // blanked input. Mirrors `(clear-solar-sunlight)` in
         // load_drivers.rs.
-        let now_pct = component.sunlight_reading().map(|r| r.value);
-        site.note_knob_changed(id, "solar-sunlight", now_pct, Some("weather".into()), None);
+        let now_pct = sun.sunlight_reading().value;
+        site.note_knob_changed(
+            id,
+            "solar-sunlight",
+            Some(now_pct),
+            Some("weather".into()),
+            None,
+        );
     }
     // The debug_asserts catch a takes_* predicate drifting from its
     // setter: predicate true + setter false would be a 200 that did
@@ -414,13 +420,12 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
         m.set_active_power_override(watts as f32);
         site.note_knob_changed(id, "meter-power", Some(watts as f32), None, None);
     }
-    if let Some(pct) = req.sunlight_pct {
+    if let Some(pct) = req.sunlight_pct
+        && let Some(sun) = sunlight
+    {
         site.scenario_snapshot_knob(id, KnobKind::Sunlight);
-        let applied = component.set_sunlight_pct(pct as f32);
-        debug_assert!(applied, "takes_sunlight_pct disagrees with setter");
-        if applied {
-            site.note_knob_changed(id, "solar-sunlight", Some(pct as f32), None, None);
-        }
+        sun.set_sunlight_pct(pct as f32);
+        site.note_knob_changed(id, "solar-sunlight", Some(pct as f32), None, None);
     }
     if let Some(pct) = req.soc_pct {
         // On a charger this writes the CAR, so it takes the plug
@@ -754,7 +759,10 @@ mod tests {
         assert!(apply_drive(&site, 7, &req).is_err());
 
         let inv = site.get(7).unwrap();
-        let r = inv.sunlight_reading().expect("sunlight reading");
+        let r = inv
+            .sunlight_drive()
+            .expect("sunlight reading")
+            .sunlight_reading();
         assert!((r.value - 100.0).abs() < 1e-6, "{}", r.value);
     }
 

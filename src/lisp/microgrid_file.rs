@@ -847,12 +847,12 @@ mod tests {
         // while it holds one — there is no constructed kwarg to write
         // it into), cleared back to Follow, and renderable again.
         let pv = site.get(12).expect("the weather-following inverter");
-        assert!(pv.set_sunlight_pct(30.0));
+        pv.sunlight_drive().unwrap().set_sunlight_pct(30.0);
         assert!(
             pv.has_unrenderable_source(),
             "a constant poked over an inverter built with no :sunlight% has nowhere to render"
         );
-        assert!(pv.clear_sunlight_source());
+        pv.sunlight_drive().unwrap().clear_sunlight_source();
         assert!(
             !pv.has_unrenderable_source(),
             "cleared back to Follow, the omitted kwarg IS the rendering"
@@ -920,7 +920,10 @@ mod tests {
         // absent; this proves what the absence reconstructs to.
         let pv2 = e2.site.get(12).expect("the inverter survives the reload");
         assert_eq!(
-            pv2.sunlight_reading().expect("PV has a sunlight knob").expr,
+            pv2.sunlight_drive()
+                .expect("PV has a sunlight knob")
+                .sunlight_reading()
+                .expr,
             Some("weather".to_string()),
             "no :sunlight% must reload as a weather-following slot"
         );
