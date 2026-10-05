@@ -14,19 +14,26 @@ use parking_lot::Mutex;
 
 use crate::sim::{bounds::VecBounds, ramp::is_due};
 
-/// Upper bound on queued commands; an absurd delay drops the oldest
-/// instead of growing without limit.
+/// How many slots one delay is cut into. A command stamped less than
+/// one slot (`delay / MAX_LINE`) after the newest queued one replaces
+/// that one's value and keeps its stamp, so the line holds at most
+/// `MAX_LINE + 1` entries whatever the tick, at the cost of a command
+/// coming out up to one slot early. Past that the oldest is dropped,
+/// a backstop the merging keeps out of reach.
 const MAX_LINE: usize = 4096;
 
 pub struct DeviceAxis {
     delay: chrono::Duration,
+    /// `delay / MAX_LINE`: the merge width of the delay line.
+    slot: chrono::Duration,
     state: Mutex<DeviceState>,
 }
 
 struct DeviceState {
     /// The newest command handed in since the last tick, unstamped.
     pending: Option<f32>,
-    /// Stamped commands, oldest first, at most one per tick.
+    /// Stamped commands, oldest first, at most one per tick and one
+    /// per slot.
     line: VecDeque<(DateTime<Utc>, f32)>,
     /// The newest command that has come out of the delay line.
     delayed: f32,
@@ -37,8 +44,10 @@ struct DeviceState {
 impl DeviceAxis {
     /// A device that answers after `delay`, starting at `initial`.
     pub fn new(delay: Duration, initial: f32) -> Self {
+        let delay = chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX);
         Self {
-            delay: chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX),
+            delay,
+            slot: delay / MAX_LINE as i32,
             state: Mutex::new(DeviceState {
                 pending: None,
                 line: VecDeque::new(),
@@ -64,8 +73,11 @@ impl DeviceAxis {
     pub fn tick(&self, now: DateTime<Utc>, band: Option<&VecBounds>) -> f32 {
         let mut s = self.state.lock();
         if let Some(v) = s.pending.take() {
-            s.line.push_back((now, v));
-            while s.line.len() > MAX_LINE {
+            match s.line.back_mut() {
+                Some(back) if back.0 <= now && now - back.0 < self.slot => back.1 = v,
+                Some(_) | None => s.line.push_back((now, v)),
+            }
+            while s.line.len() > MAX_LINE + 1 {
                 s.line.pop_front();
             }
         }
@@ -160,6 +172,33 @@ mod tests {
         ax.set_command(1000.0);
         assert_eq!(ax.tick(t0, None), 0.0, "held in the stamping tick");
         assert_eq!(ax.tick(ms(t0, 100), None), 1000.0);
+    }
+
+    /// A delay longer than `MAX_LINE` ticks still moves the output:
+    /// on 1 ms ticks with a 5 s delay and command `m` on tick `m`,
+    /// the output holds its initial value until the delay (less the
+    /// jitter allowance) has run, then trails the commands by that
+    /// much, within one merge slot and one tick.
+    #[test]
+    fn a_delay_longer_than_the_line_still_moves_the_output() {
+        let t0 = Utc::now();
+        let ax = DeviceAxis::new(Duration::from_millis(5_000), -1.0);
+        let lag = 5_000 - crate::sim::ramp::TICK_JITTER.num_milliseconds();
+        for m in 0..20_000 {
+            ax.set_command(m as f32);
+            let out = ax.tick(ms(t0, m), None);
+            if m == lag - 1 {
+                assert_eq!(out, -1.0, "holds before the delay");
+            }
+            if m == lag {
+                assert!(out >= 0.0, "moves once the delay has run, got {out}");
+            }
+            if m > lag {
+                let want = (m - lag) as f32;
+                assert!((out - want).abs() <= 2.0, "at {m}: {out} vs {want}");
+            }
+        }
+        assert!(ax.state.lock().line.len() <= MAX_LINE + 1);
     }
 
     #[test]
