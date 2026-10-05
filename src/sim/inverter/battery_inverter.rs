@@ -542,8 +542,9 @@ mod tests {
         assert!(inv.aggregate_reactive_var(&w).abs() < 1.0);
     }
 
-    /// A faulted inverter trips offline, loses its command and its
-    /// lifetime, and stays at 0 after recovery until re-dispatched.
+    /// A faulted inverter trips offline, publishes 0 on both axes,
+    /// loses its command and its lifetime, and stays at 0 after
+    /// recovery until re-dispatched.
     #[test]
     fn errored_inverter_trips_offline_and_awaits_redispatch() {
         let (w, _bat, id) = setup_inverter_with_battery();
@@ -551,11 +552,18 @@ mod tests {
         w.gateway()
             .command(id, SetpointAxis::Active, 3_000.0)
             .unwrap();
+        w.gateway()
+            .command(id, SetpointAxis::Reactive, 1_000.0)
+            .unwrap();
         w.tick_n(1, DT);
         assert!((inv.aggregate_power_w(&w) - 3_000.0).abs() < 1.0);
+        assert!((inv.aggregate_reactive_var(&w) - 1_000.0).abs() < 1.0);
         w.set_health(id, Health::Error).unwrap();
         w.tick_n(1, DT);
         assert!(inv.aggregate_power_w(&w).abs() < 1.0);
+        assert!(inv.aggregate_reactive_var(&w).abs() < 1.0, "Q tripped");
+        let q = inv.telemetry(&w).reactive_power_var.unwrap();
+        assert!(q.abs() < 1.0, "reported Q tripped, got {q}");
         assert_eq!(
             w.gateway().remaining_lifetime(id, SetpointAxis::Active),
             None
