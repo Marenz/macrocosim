@@ -560,10 +560,10 @@ async fn augment_on_a_component_without_storage_is_unimplemented() {
         assert_eq!(err.code(), tonic::Code::Unimplemented, "{what}: {err:?}");
         // The refusal names the component and the axis, so a client
         // driving several at once can tell which request bounced.
-        assert!(
-            err.message().contains(&id.to_string()) && err.message().contains("AC_POWER_ACTIVE"),
-            "{what}: expected the id and metric named, got {:?}",
+        assert_eq!(
             err.message(),
+            format!("component {id} stores no augmentation for METRIC_AC_POWER_ACTIVE"),
+            "{what}"
         );
     }
 }
@@ -595,6 +595,53 @@ async fn an_axis_less_component_refuses_every_augmentation_band() {
             .err()
             .unwrap_or_else(|| panic!("{what} was accepted"));
         assert_eq!(err.code(), tonic::Code::Unimplemented, "{what}: {err:?}");
+        assert_eq!(
+            err.message(),
+            "component 3 stores no augmentation for METRIC_AC_POWER_ACTIVE",
+            "{what}"
+        );
+    }
+}
+
+/// A setpoint on an axis the component has no command for is
+/// UNIMPLEMENTED with the gateway's message: active power to the
+/// grid, the meter and the battery, and reactive power to the boiler,
+/// which has only an active axis. 0 W passes the envelope gate on
+/// every component, so the axis check is what answers.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_setpoint_on_a_missing_axis_is_unimplemented() {
+    let topology = r#"
+(%make-grid-connection-point :id 1
+            :successors
+            (list (%make-meter :id 2
+                               :successors
+                               (list (%make-battery :id 3)
+                                     (%make-steam-boiler :id 5)))))
+"#;
+    let s = TestServer::start(topology).await;
+    let mut c = connect(&s).await;
+    for (id, power_type, what) in [
+        (1, PowerType::Active, "the grid"),
+        (2, PowerType::Active, "the meter"),
+        (3, PowerType::Active, "the battery"),
+        (5, PowerType::Reactive, "the boiler's reactive axis"),
+    ] {
+        let err = c
+            .set_electrical_component_power(SetElectricalComponentPowerRequest {
+                electrical_component_id: id,
+                power: 0.0,
+                power_type: power_type as i32,
+                request_lifetime: Some(30),
+            })
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("{what} accepted a setpoint"));
+        assert_eq!(err.code(), tonic::Code::Unimplemented, "{what}: {err:?}");
+        assert_eq!(
+            err.message(),
+            "operation not supported by this component type",
+            "{what}"
+        );
     }
 }
 
@@ -665,6 +712,10 @@ async fn a_component_with_only_an_active_axis_refuses_reactive_augmentation() {
         .await
         .expect_err("the boiler has no reactive axis to store an augmentation in");
     assert_eq!(err.code(), tonic::Code::Unimplemented, "{err:?}");
+    assert_eq!(
+        err.message(),
+        "component 5 stores no augmentation for METRIC_AC_POWER_REACTIVE"
+    );
 
     // The same component's active axis still takes one. `[0, 20 kW]`
     // overlaps the idle boiler's `[0, 0]` demand band.
@@ -1027,6 +1078,10 @@ async fn reactive_augmentation_on_a_q_less_component_is_unimplemented() {
         .await
         .expect_err("a Q augmentation on a Q-less component must be refused");
     assert_eq!(err.code(), tonic::Code::Unimplemented, "{err:?}");
+    assert_eq!(
+        err.message(),
+        "component 3 stores no augmentation for METRIC_AC_POWER_REACTIVE"
+    );
 }
 
 /// The reactive route feeds client input into
