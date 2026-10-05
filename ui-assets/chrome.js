@@ -1,7 +1,7 @@
 // Chrome around the SPA's main views: the configurable-zone clock
 // and the always-on pulse bar.
 
-import { mgPath, setupDensityToggle } from "./routing.js";
+import { mgFetch, setupDensityToggle } from "./routing.js";
 
 // ─── Clock + TZ toggle ─────────────────────────────────────────────────────
 //
@@ -199,7 +199,12 @@ export const pulseBar = (() => {
     const el = document.getElementById("pulse-loopback");
     if (!el) return;
     try {
-      const res = await fetch(mgPath("microgrid/status"));
+      const res = await mgFetch("microgrid/status");
+      if (res == null) {
+        el.textContent = "…";
+        el.className = "pulse-pill";
+        return;
+      }
       const j = await res.json();
       if (res.ok && j.connected) {
         el.textContent = `✓ ${j.component_count ?? "?"} nodes`;

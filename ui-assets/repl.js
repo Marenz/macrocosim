@@ -203,7 +203,7 @@ export function setupRepl() {
     output.appendChild(entry);
     output.scrollTop = output.scrollHeight;
     try {
-      const res = await fetch(mgPath("eval"), { method: "POST", body: src });
+      const res = await fetch(mgPath("eval") ?? "/api/eval", { method: "POST", body: src });
       const klass = res.ok ? "repl-value" : "repl-error";
       const text = res.ok ? (await res.json()).value : await errorText(res);
       const out = document.createElement("pre");
@@ -406,14 +406,18 @@ export function openWebSocket(onTopologyChanged) {
       }
       // Per-microgrid events carry mg_id (post-D3); we filter out
       // anything from a microgrid other than the currently-selected
-      // one so the metrics panel doesn't paint with samples from a
-      // neighbour. Enterprise-scoped events (log, lagged) ship
-      // mg_id = undefined and pass through regardless.
+      // one, and all of them with nothing selected, so the metrics
+      // panel doesn't paint with samples from a neighbour. The one
+      // exception is topology_changed with nothing selected: the list
+      // view refreshes its microgrid cards on it. Enterprise-scoped
+      // events (log, lagged) ship mg_id = undefined and pass through
+      // regardless.
       const selectedMg = readSelectedMg();
       const perMg = ev.kind === "sample" || ev.kind === "microgrid_sample"
                  || ev.kind === "topology_changed" || ev.kind === "setpoint"
                  || ev.kind === "dispatch_changed" || ev.kind === "knob_changed";
-      if (perMg && selectedMg != null && ev.mg_id != null && ev.mg_id !== selectedMg) {
+      const forList = ev.kind === "topology_changed" && selectedMg == null;
+      if (perMg && !forList && ev.mg_id != null && ev.mg_id !== selectedMg) {
         return;
       }
       if (ev.kind === "sample") {

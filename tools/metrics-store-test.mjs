@@ -2,7 +2,7 @@
 // windowing, PF derivation, and display formatting. DOM/fetch shims
 // are inert — the tested paths never call them.
 //
-// metrics-store.js imports routing.js for mgPath, and routing.js
+// metrics-store.js imports routing.js for mgFetch, and routing.js
 // imports app.js — so this pulls in the same whole-graph-plus-init()
 // load as tools/boot-smoke.mjs, not just metrics-store.js's own
 // surface. Same Proxy-stub shim as boot-smoke, for the same reason:

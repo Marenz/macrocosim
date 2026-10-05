@@ -18,7 +18,7 @@
 // when the config does.
 
 import { requireUplot } from "./chart-lib.js";
-import { mgPath } from "./routing.js";
+import { mgFetch } from "./routing.js";
 import { isPanelOpen, makeSidePanelToggle } from "./side-panel.js";
 
 const PANEL = "weather-btn";
@@ -301,11 +301,10 @@ function buildChart(slot, data) {
 // as ok:false with a message rather than an unhandled rejection.
 async function call(init) {
   try {
-    // Weather is site data, so it routes through `mgPath` like every
-    // sibling data panel: a hardcoded `/api/weather` would read and
-    // write the FIRST registered microgrid's sky no matter which one
-    // the user has selected.
-    const r = await fetch(mgPath("weather"), init);
+    // Weather is site data: it reads and writes the selected
+    // microgrid's sky, like every sibling data panel.
+    const r = await mgFetch("weather", init);
+    if (r == null) return { ok: false, status: 0, body: { error: "no microgrid selected" } };
     const body = await r.json().catch(() => null);
     return { ok: r.ok, status: r.status, body };
   } catch (e) {

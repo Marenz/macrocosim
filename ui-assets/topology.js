@@ -23,7 +23,7 @@ import { createHoverCard, hoverCardModel } from "./hovercard.js";
 import { blankLiveEntry, DEAD_FLOW, deadBandW, edgeFlow } from "./live.js";
 import { COLORS, cssToken, invalidateMeasureCache, lodFor, measurePill, pillFontsReady, pillModel, pillRenderer } from "./pill.js";
 import {
-  mgPath,
+  mgFetch,
   READ_ONLY_TITLE,
   readSelectedMg,
   structureEditable,
@@ -324,7 +324,8 @@ export function createGraphCanvas(containerId, adapter = {}) {
     const hit = setpointCache.get(id);
     if (hit && Date.now() - hit.at < (hit.failed ? SETPOINT_FAIL_TTL_MS : SETPOINT_TTL_MS)) return hit.last;
     try {
-      const res = await fetch(`${mgPath("setpoints")}?id=${id}&window_s=600`, { signal });
+      const res = await mgFetch(`setpoints?id=${id}&window_s=600`, { signal });
+      if (res == null) return hit ? hit.last : null;
       if (!res.ok) throw new Error(`setpoints: HTTP ${res.status}`);
       const data = await res.json();
       const e = data.events?.[data.events.length - 1];
@@ -390,7 +391,8 @@ export function createGraphCanvas(containerId, adapter = {}) {
     seededHist.add(id);
     const metric = c.category === "battery" ? "dc_power_w" : "active_power_w";
     try {
-      const res = await fetch(`${mgPath("history")}?id=${id}&metric=${metric}&window_s=60`, { signal });
+      const res = await mgFetch(`history?id=${id}&metric=${metric}&window_s=60`, { signal });
+      if (res == null) return;
       const data = await res.json();
       const firstLive = entry.hist[0]?.[0] ?? Number.POSITIVE_INFINITY;
       const seeded = (data.samples || []).filter((s) => Number.isFinite(s[1]) && s[0] < firstLive);

@@ -17,7 +17,7 @@
 // the x-axis years off.
 
 import { formatScaled } from "./live.js";
-import { mgPath } from "./routing.js";
+import { mgFetch } from "./routing.js";
 
 const SPARK_LEN = 900;
 
@@ -156,8 +156,8 @@ export const metricsStore = (() => {
       // empty. Best-effort: a 503 mid-rebuild leaves the old rings;
       // WS frames fill forward from here.
       try {
-        const hres = await fetch(mgPath("microgrid/history"));
-        if (hres.ok) {
+        const hres = await mgFetch("microgrid/history");
+        if (hres?.ok) {
           const hmap = await hres.json();
           for (const [stream, samples] of Object.entries(hmap)) {
             const b = buf(stream);
@@ -184,8 +184,8 @@ export const metricsStore = (() => {
     // WS/backfill sample flow.
     async reseedLatest() {
       try {
-        const res = await fetch(mgPath("microgrid/latest"));
-        if (!res.ok) return;
+        const res = await mgFetch("microgrid/latest");
+        if (!res?.ok) return;
         const map = await res.json();
         for (const [stream, snap] of Object.entries(map)) {
           latestMap.set(stream, {

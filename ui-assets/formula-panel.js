@@ -7,10 +7,10 @@
 // topology WS events while the panel is open, and the "limit to the
 // selected components" toggle re-fetches on selection changes.
 
-import { jumpToTopology, mgPath, notify } from "./app.js";
+import { jumpToTopology, notify } from "./app.js";
 import { formulaToHtml, formulaToText, parseFormula } from "./formula-ast.js";
 import { errorText } from "./http.js";
-import { readSelectedMg } from "./routing.js";
+import { mgFetch, readSelectedMg } from "./routing.js";
 import { isPanelOpen, makeSidePanelToggle } from "./side-panel.js";
 import { topology } from "./topology.js";
 
@@ -315,7 +315,8 @@ export async function refreshFormula() {
   const seq = ++requestSeq;
   let data;
   try {
-    const res = await fetch(`${mgPath("formula")}?${params}`);
+    const res = await mgFetch(`formula?${params}`);
+    if (res == null) return;
     // A failure carries the shared `error` body: a 400 is the
     // formula's own error, other statuses are the server refusing
     // the request.

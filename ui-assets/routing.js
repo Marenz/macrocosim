@@ -1,25 +1,44 @@
 // SPA routing + persistence: which mode / microgrid / subview is
 // active, how state round-trips through localStorage + the URL
 // hash, and the keyboard / button hooks that drive transitions.
-// Owns mgPath (URL helper), the density toggle, and the
-// refreshTopology fetch that ferries /api/topology data into the
-// canvas + chrome pulse bar.
+// Owns mgPath / mgFetch (per-microgrid URL helpers), the density
+// toggle, and the refreshTopology fetch that ferries the selected
+// microgrid's topology into the canvas + chrome pulse bar.
 
 import { dispatchesPanel, notify, setStatus } from "./app.js";
 import { pulseBar } from "./chrome.js";
+import { errorText } from "./http.js";
 import { refitCharts, showComponent } from "./inspect.js";
 import { microgridsPanel, scenariosPanel } from "./panels.js";
 import { closeAllPanels } from "./side-panel.js";
 import { topology } from "./topology.js";
 
 // ─── Per-mg URL helper ─────────────────────────────────────────────────────
-// Prefixes /api/mg/{selected_id}/ when a microgrid is selected,
-// falls back to /api/{suffix} otherwise (used by the loopback HTTP
-// backfill on legacy endpoints that haven't been migrated yet,
-// e.g. /api/format).
+// `/api/mg/{selected}/{suffix}`, or null with no microgrid selected:
+// callers skip the request then.
 export function mgPath(suffix) {
   const id = readSelectedMg();
-  return id == null ? `/api/${suffix}` : `/api/mg/${id}/${suffix}`;
+  return id == null ? null : `/api/mg/${id}/${suffix}`;
+}
+
+// fetch() of `mgPath(suffix)`: null, with no request made, when no
+// microgrid is selected. A 404 saying the selected microgrid is not
+// registered drops the selection for the list view, as a vanished
+// microgrid in a fresh listing does; the response is still returned
+// for the caller's own error path.
+export async function mgFetch(suffix, opts) {
+  const id = readSelectedMg();
+  const path = mgPath(suffix);
+  if (path == null) return null;
+  const res = await fetch(path, opts);
+  if (res.status === 404 && readSelectedMg() === id) {
+    const text = await errorText(res.clone());
+    if (text === `microgrid ${id} not registered` && readSelectedMg() === id) {
+      dropSelection(id);
+      if (document.body.dataset.mode === "microgrids") microgridsPanel.refresh();
+    }
+  }
+  return res;
 }
 
 // ─── Per-microgrid file flags ──────────────────────────────────────────────
@@ -315,6 +334,13 @@ export function jumpToTopology(id) {
 export function reconcileSelection(rows) {
   const id = readSelectedMg();
   if (id == null || rows.some((m) => m.id === id)) return;
+  dropSelection(id);
+}
+
+// Drops the selected microgrid `id`, which the server no longer
+// has, for the list view: replaces the route, says why, and applies
+// the route only.
+function dropSelection(id) {
   const next = { ...currentRoute(), selectedMg: null };
   writeRouteToStorage(next);
   history.replaceState(next, "", routeToHash(next));
@@ -338,10 +364,9 @@ export function selectMicrogrid(id) {
 }
 
 // REPL chip — surfaces which microgrid the REPL form's POSTs
-// route to. Mirrors mgPath()'s logic: shows "→ {name}" when a
-// microgrid is selected, "→ enterprise" otherwise. Clicking
-// jumps to the Microgrids list so the operator can pick a
-// different one.
+// route to: "→ {name}" when a microgrid is selected, "→ enterprise"
+// (the whole-site /api/eval) otherwise. Clicking jumps to the
+// Microgrids list so the operator can pick a different one.
 export function renderReplMgChip() {
   const chip = document.getElementById("repl-mg-chip");
   if (!chip) return;
@@ -418,7 +443,8 @@ export async function refreshTopology() {
   // must not repaint this one's panels.
   const mg = readSelectedMg();
   try {
-    const res = await fetch(mgPath("topology"));
+    const res = await mgFetch("topology");
+    if (res == null) return;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     // The user can switch microgrid while the fetch is in flight
@@ -428,7 +454,7 @@ export async function refreshTopology() {
     if (readSelectedMg() !== mg) return;
     topology.apply(data);
     // Pulse bar's health counters + graph pill read from the
-    // same /api/topology fetch — one round-trip carries both
+    // same topology fetch — one round-trip carries both
     // signals + a hot-reload's WS topology_changed nudge
     // already drives a refresh.
     pulseBar.applyTopology(data.components || [], data.graph_status);

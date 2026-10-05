@@ -35,7 +35,6 @@ import { microgridsPanel, scenariosPanel } from "./panels.js";
 import { backfillLogs, openWebSocket, setupLogsPanel, setupRepl } from "./repl.js";
 import {
   jumpToTopology,
-  mgPath,
   navigateTo,
   refreshTopology,
   selectMicrogrid,
@@ -53,7 +52,6 @@ import { setupWeatherPanel } from "./weather-panel.js";
 // formula panels) keep working without rewiring every import site.
 export {
   jumpToTopology,
-  mgPath,
   navigateTo,
   refreshTopology,
   selectMicrogrid,
@@ -557,7 +555,7 @@ async function init() {
       formulaRefreshTimer = setTimeout(refreshFormula, 300);
     }
     // On a structural change the loopback supervisor debounces ~300ms
-    // and rebuilds the Microgrid handle; /api/microgrid/latest +
+    // and rebuilds the Microgrid handle; microgrid/latest +
     // /formulas return 503 mid-rebuild. (A runtime poke such as
     // set-meter-power fires this event too but triggers no rebuild;
     // the backfill below then just refetches an unchanged history.)

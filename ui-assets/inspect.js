@@ -12,7 +12,7 @@ import { errorText } from "./http.js";
 import { deadBandW, formatScaled } from "./live.js";
 import { metricsStore } from "./metrics-store.js";
 import { powerColor, reactiveColor } from "./pill.js";
-import { mgPath, READ_ONLY_TITLE, structureEditable } from "./routing.js";
+import { mgFetch, READ_ONLY_TITLE, structureEditable } from "./routing.js";
 import { openPanel } from "./side-panel.js";
 import { topology } from "./topology.js";
 
@@ -438,7 +438,8 @@ async function refreshEvCard(id) {
   const token = beginEvFetch();
   let info;
   try {
-    const res = await fetch(`${mgPath("ev")}/${id}`);
+    const res = await mgFetch(`ev/${id}`);
+    if (res == null) throw new Error("no microgrid selected");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     info = await res.json();
   } catch (err) {
@@ -1108,7 +1109,8 @@ function applySnapshot(id, snap) {
 // twice would double the GETs every time a boiler is selected with
 // the Charts card pinned open.
 function fetchComponentSnapshot(id) {
-  return fetch(`${mgPath("component")}?id=${id}`).then(async (res) => {
+  return mgFetch(`component?id=${id}`).then(async (res) => {
+    if (res == null) throw new Error("no microgrid selected");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   });
@@ -1244,8 +1246,9 @@ export const inspectorLive = {
     // whose tenant has since been torn down, so an older response
     // can never paint over a newer one.
     const token = beginSnapshotFetch();
-    fetch(`${mgPath("component")}?id=${id}`)
+    mgFetch(`component?id=${id}`)
       .then((res) => {
+        if (res == null) throw new Error("no microgrid selected");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
@@ -1498,8 +1501,9 @@ async function buildCharts(d, container, snapshotJsonP) {
   });
   const results = await Promise.all(
     slots.map(({ metric }) =>
-      fetch(`${mgPath("history")}?id=${d.id}&metric=${metric}&window_s=300`)
+      mgFetch(`history?id=${d.id}&metric=${metric}&window_s=300`)
         .then(async (res) => {
+          if (res == null) throw new Error("no microgrid selected");
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           return res.json();
         })
@@ -1564,7 +1568,8 @@ async function renderSetpoints(id, container) {
   wrap.innerHTML = "<h3>Recent setpoints</h3>";
   container.appendChild(wrap);
   try {
-    const res = await fetch(`${mgPath("setpoints")}?id=${id}&window_s=600`);
+    const res = await mgFetch(`setpoints?id=${id}&window_s=600`);
+    if (res == null) throw new Error("no microgrid selected");
     if (!res.ok) throw new Error(await errorText(res));
     const data = await res.json();
     // Always create the list element, even when empty —

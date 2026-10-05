@@ -24,7 +24,7 @@ if (removed !== 3) {
   process.exit(1);
 }
 const shimmed = [
-  'const mgPath = () => "";',
+  "const mgFetch = async () => null;",
   "const requireUplot = () => null;",
   "const isPanelOpen = () => false;",
   "const makeSidePanelToggle = () => {};",
