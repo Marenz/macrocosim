@@ -1,6 +1,12 @@
 //! Convenience CLI for poking at a running macrocosim server.
 //!
-//! gRPC commands (default --addr http://[::1]:8800):
+//! Every subcommand acts on one microgrid: --microgrid-id, else the
+//! lowest id `GET /api/microgrids` reports. gRPC commands connect to
+//! that microgrid's server as the UI server lists it; --addr names a
+//! server directly (it must be the selected microgrid's when
+//! --microgrid-id is also given).
+//!
+//! gRPC commands (the microgrid's own server, or --addr):
 //!   macroctl info
 //!   macroctl list
 //!   macroctl list --category battery
@@ -53,13 +59,14 @@ use macrocosim::sim::dispatch::{json_to_struct, parse_target, struct_to_json, ta
     propagate_version = true
 )]
 struct Cli {
-    /// gRPC endpoint of the simulator.
-    #[arg(long, default_value = "http://[::1]:8800", global = true)]
-    addr: String,
+    /// gRPC endpoint of the microgrid's server. Overrides the lookup
+    /// through the UI server; with `--microgrid-id` it must be that
+    /// microgrid's own address.
+    #[arg(long, global = true)]
+    addr: Option<String>,
 
-    /// HTTP endpoint of the simulator's UI server. Used by the
-    /// `scenario` subcommand — the scenario lifecycle isn't on
-    /// gRPC.
+    /// HTTP endpoint of the simulator's UI server. Used by the HTTP
+    /// subcommands and to look up a microgrid's gRPC server.
     #[arg(long, default_value = "http://127.0.0.1:8801", global = true)]
     ui_addr: String,
 
@@ -73,12 +80,8 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// Target microgrid id for per-microgrid HTTP-routed subcommands
-    /// (`pool`, `dashboard --tail`, `snapshot`). When set, macroctl
-    /// reads from `/api/mg/{id}/...` instead of the legacy
-    /// single-microgrid `/api/...` paths. Default = the lowest id
-    /// reported by `GET /api/microgrids`, which matches the
-    /// behaviour of the legacy paths in a single-microgrid binary.
+    /// Microgrid every subcommand acts on. Default: the lowest id
+    /// `GET /api/microgrids` reports.
     #[arg(long, global = true)]
     microgrid_id: Option<u64>,
 
@@ -440,7 +443,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         // Everything else talks the Microgrid gRPC API: connect
         // once, then dispatch.
         cmd => {
-            let mut client = MicrogridClient::connect(cli.addr.clone()).await?;
+            let http = reqwest::Client::new();
+            let endpoint =
+                grpc_endpoint(&http, &cli.ui_addr, cli.addr.as_deref(), cli.microgrid_id).await?;
+            let mut client = MicrogridClient::connect(endpoint).await?;
             match cmd {
                 Cmd::Info => cmd_info(&mut client, cli.json).await,
                 Cmd::List { category, ids } => cmd_list(&mut client, category, ids, cli.json).await,
@@ -748,11 +754,90 @@ async fn run_pool(
     }
 }
 
+/// `host:port` of an endpoint, with any scheme stripped.
+fn endpoint_authority(s: &str) -> &str {
+    let s = s.trim();
+    s.split_once("://")
+        .map_or(s, |(_, rest)| rest)
+        .trim_end_matches('/')
+}
+
+/// Whether two endpoints name the same `host:port`, whatever their
+/// schemes. Compares the text; no name lookup.
+fn same_endpoint(a: &str, b: &str) -> bool {
+    endpoint_authority(a) == endpoint_authority(b)
+}
+
+/// The microgrid `mg` (else the lowest id) in an `/api/microgrids`
+/// reply, with its running gRPC server's address. The error names the
+/// microgrid when it is not registered, has no runtime, is not
+/// running, or has no address, and carries the runtime's `error`
+/// text when it reports one.
+fn pick_grpc_addr(list: &serde_json::Value, mg: Option<u64>) -> Result<(u64, String), String> {
+    let entries = list.as_array().ok_or("unexpected /api/microgrids reply")?;
+    let id = match mg {
+        Some(id) => id,
+        None => entries
+            .iter()
+            .filter_map(|m| m.get("id")?.as_u64())
+            .min()
+            .ok_or("no microgrids registered")?,
+    };
+    let entry = entries
+        .iter()
+        .find(|m| m.get("id").and_then(|v| v.as_u64()) == Some(id))
+        .ok_or_else(|| format!("microgrid {id} not registered"))?;
+    let runtime = entry.get("runtime").filter(|r| !r.is_null());
+    let running = runtime
+        .and_then(|r| r.get("status")?.as_str())
+        .is_some_and(|s| s == "running");
+    let addr = runtime.and_then(|r| r.get("grpc_addr")?.as_str());
+    if running && let Some(addr) = addr {
+        return Ok((id, addr.to_string()));
+    }
+    let msg = format!("microgrid {id} has no running gRPC server");
+    match runtime.and_then(|r| r.get("error")?.as_str()) {
+        Some(err) => Err(format!("{msg}: {err}")),
+        None => Err(msg),
+    }
+}
+
+/// The gRPC URL to connect to: `--addr` as given when it is the only
+/// choice made; otherwise the selected microgrid's server from
+/// `/api/microgrids`, checked against `--addr` when both are given.
+async fn grpc_endpoint(
+    http: &reqwest::Client,
+    ui_addr: &str,
+    addr: Option<&str>,
+    mg: Option<u64>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let (Some(addr), None) = (addr, mg) {
+        return Ok(addr.to_string());
+    }
+    let resp = http
+        .get(format!("{ui_addr}/api/microgrids"))
+        .send()
+        .await
+        .map_err(|e| {
+            format!(
+                "cannot reach the UI server at {ui_addr} to find a microgrid ({e}); \
+                 pass --addr to connect directly"
+            )
+        })?;
+    let list: serde_json::Value = checked(resp).await?.json().await?;
+    let (id, found) = pick_grpc_addr(&list, mg)?;
+    if let Some(addr) = addr
+        && !same_endpoint(addr, &found)
+    {
+        return Err(format!("--addr {addr} is not microgrid {id}'s server ({found})").into());
+    }
+    Ok(format!("http://{}", endpoint_authority(&found)))
+}
+
 /// Resolve the microgrid id macroctl should hit for per-mg HTTP
 /// endpoints. Honours an explicit `--microgrid-id N` if supplied,
 /// otherwise queries `/api/microgrids` and returns the lowest
-/// registered id — matches the legacy "first registry entry"
-/// fallback the server-side router uses.
+/// registered id.
 async fn resolve_microgrid_id(
     http: &reqwest::Client,
     ui_addr: &str,
@@ -1870,5 +1955,125 @@ mod tests {
             error_line(StatusCode::BAD_GATEWAY, "oops\n"),
             "502 Bad Gateway: oops"
         );
+    }
+
+    #[test]
+    fn same_endpoint_ignores_the_scheme() {
+        assert!(same_endpoint("http://[::1]:8800", "[::1]:8800"));
+        assert!(same_endpoint(
+            "grpc://127.0.0.1:8800",
+            "http://127.0.0.1:8800"
+        ));
+        assert!(!same_endpoint("http://[::1]:8800", "[::1]:8802"));
+    }
+
+    #[test]
+    fn pick_grpc_addr_defaults_to_the_lowest_running_microgrid() {
+        let list = serde_json::json!([
+            {"id": 7, "runtime": {"status": "running", "grpc_addr": "[::1]:8807", "error": null}},
+            {"id": 3, "runtime": {"status": "running", "grpc_addr": "[::1]:8803", "error": null}},
+        ]);
+        assert_eq!(
+            pick_grpc_addr(&list, None).unwrap(),
+            (3, "[::1]:8803".to_string())
+        );
+        assert_eq!(
+            pick_grpc_addr(&list, Some(7)).unwrap(),
+            (7, "[::1]:8807".to_string())
+        );
+    }
+
+    #[test]
+    fn pick_grpc_addr_refuses_a_microgrid_without_a_running_server() {
+        let list = serde_json::json!([
+            {"id": 3, "runtime": null},
+            {"id": 4, "runtime": {"status": "failed", "grpc_addr": null, "error": "port taken"}},
+        ]);
+        assert!(
+            pick_grpc_addr(&list, Some(3))
+                .unwrap_err()
+                .contains("microgrid 3")
+        );
+        assert_eq!(
+            pick_grpc_addr(&list, Some(3)).unwrap_err(),
+            "microgrid 3 has no running gRPC server"
+        );
+        assert_eq!(
+            pick_grpc_addr(&list, Some(4)).unwrap_err(),
+            "microgrid 4 has no running gRPC server: port taken"
+        );
+        assert!(
+            pick_grpc_addr(&list, Some(9))
+                .unwrap_err()
+                .contains("microgrid 9")
+        );
+    }
+
+    /// A UI server stand-in on 127.0.0.1 that answers each of `n`
+    /// connections with `body` as a JSON 200, then stops. Returns its
+    /// base URL.
+    fn canned_ui_server(body: &'static str, n: usize) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(n) {
+                let mut stream = stream.unwrap();
+                let mut req = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let got = stream.read(&mut buf).unwrap();
+                    if got == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&buf[..got]);
+                }
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        url
+    }
+
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder().no_proxy().build().unwrap()
+    }
+
+    #[tokio::test]
+    async fn grpc_endpoint_takes_a_lone_addr_without_asking_the_ui() {
+        // Nothing listens on port 1: any request would fail.
+        let got = grpc_endpoint(
+            &test_client(),
+            "http://127.0.0.1:1",
+            Some("http://[::1]:8800"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(got, "http://[::1]:8800");
+    }
+
+    #[tokio::test]
+    async fn grpc_endpoint_checks_addr_against_the_microgrid() {
+        let ui = canned_ui_server(
+            r#"[{"id": 3, "runtime": {"status": "running", "grpc_addr": "[::1]:8803", "error": null}}]"#,
+            2,
+        );
+        let http = test_client();
+        let err = grpc_endpoint(&http, &ui, Some("http://[::1]:9999"), Some(3))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "--addr http://[::1]:9999 is not microgrid 3's server ([::1]:8803)"
+        );
+        let got = grpc_endpoint(&http, &ui, Some("grpc://[::1]:8803"), Some(3))
+            .await
+            .unwrap();
+        assert_eq!(got, "http://[::1]:8803");
     }
 }
