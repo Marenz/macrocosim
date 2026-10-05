@@ -1724,20 +1724,7 @@ mod tests {
     fn headless_sites_read_the_sim_clock() {
         use std::time::Duration;
         let body = "(make-microgrid :id 9 :grpc-port 18911 :topology (lambda () nil))";
-        let mut dir = std::env::temp_dir();
-        dir.push(format!(
-            "macrocosim-headless-clock-{}-{}",
-            std::process::id(),
-            next_unique(),
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.lisp");
-        std::fs::write(&path, body).unwrap();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let (cfg, _clock) = rt
-            .block_on(async { Config::new_headless(path.to_str().unwrap()) })
-            .expect("headless config builds");
-        std::mem::forget(rt);
+        let cfg = stepped_config("headless-clock", body);
         let base = crate::sim::sim_clock::headless_base();
         assert_eq!(cfg.site().now(), base);
         cfg.sim_run(Duration::from_secs(5), Duration::from_secs(1));
