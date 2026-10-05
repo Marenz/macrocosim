@@ -195,7 +195,7 @@ pub struct SolarInverter {
     /// power, so a fresh inverter is already generating.
     active: DeviceAxis,
     /// Reactive output, clamped to the capability at the last active
-    /// output; `published` is what telemetry reads.
+    /// output; telemetry reads its output.
     reactive: DeviceAxis,
     /// The live PF / kVA capability, changed at runtime.
     caps: Mutex<ReactiveCapability>,
@@ -407,7 +407,7 @@ impl SimulatedComponent for SolarInverter {
 
     fn telemetry(&self, site: &MicrogridSite) -> Telemetry {
         let p = self.active.output();
-        super::inverter_telemetry(self.id, site, p, self.reactive.published())
+        super::inverter_telemetry(self.id, site, p, self.reactive.output())
     }
 
     fn active_power_w(&self, _site: &MicrogridSite) -> Option<f32> {
@@ -419,7 +419,7 @@ impl SimulatedComponent for SolarInverter {
     }
 
     fn aggregate_reactive_var(&self, _world: &MicrogridSite) -> f32 {
-        self.reactive.published()
+        self.reactive.output()
     }
 
     fn has_axis(&self, _axis: SetpointAxis) -> bool {

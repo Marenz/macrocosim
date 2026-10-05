@@ -30,9 +30,6 @@ struct DeviceState {
     delayed: f32,
     /// The clamped output of the last tick.
     output: f32,
-    /// What reactive telemetry reads: the output, unless a component
-    /// overrides it until the next tick.
-    published: f32,
 }
 
 impl DeviceAxis {
@@ -45,7 +42,6 @@ impl DeviceAxis {
                 line: VecDeque::new(),
                 delayed: initial,
                 output: initial,
-                published: initial,
             }),
         }
     }
@@ -88,7 +84,6 @@ impl DeviceAxis {
             None => s.delayed,
         };
         s.output = out;
-        s.published = out;
         out
     }
 
@@ -100,22 +95,11 @@ impl DeviceAxis {
         s.line.clear();
         s.delayed = 0.0;
         s.output = 0.0;
-        s.published = 0.0;
     }
 
     /// The output of the last tick.
     pub fn output(&self) -> f32 {
         self.state.lock().output
-    }
-
-    /// The value reactive telemetry reads.
-    pub fn published(&self) -> f32 {
-        self.state.lock().published
-    }
-
-    /// Overwrite the published value until the next tick.
-    pub fn override_published(&self, v: f32) {
-        self.state.lock().published = v;
     }
 }
 
@@ -201,7 +185,6 @@ mod tests {
         ax.tick(t0, None);
         ax.trip();
         assert_eq!(ax.output(), 0.0);
-        assert_eq!(ax.published(), 0.0);
         assert_eq!(ax.tick(ms(t0, 150), None), 0.0, "no replay");
         assert_eq!(ax.tick(ms(t0, 300), None), 0.0, "no replay later either");
     }
@@ -211,21 +194,7 @@ mod tests {
     fn seeded_with_the_initial_value() {
         let ax = DeviceAxis::new(Duration::from_millis(100), -6000.0);
         assert_eq!(ax.output(), -6000.0);
-        assert_eq!(ax.published(), -6000.0);
         assert_eq!(ax.tick(Utc::now(), None), -6000.0);
-    }
-
-    /// `published` follows each tick and can be overwritten until the
-    /// next one.
-    #[test]
-    fn published_follows_ticks_and_overrides() {
-        let ax = DeviceAxis::new(Duration::ZERO, 0.0);
-        ax.set_command(900.0);
-        ax.tick(Utc::now(), None);
-        assert_eq!(ax.published(), 900.0);
-        ax.override_published(0.0);
-        assert_eq!(ax.published(), 0.0);
-        assert_eq!(ax.output(), 900.0, "the override leaves the output alone");
     }
 
     /// A wall clock that steps back (an NTP step) leaves older

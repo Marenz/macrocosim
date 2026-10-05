@@ -59,8 +59,7 @@ pub struct BatteryInverter {
     /// delayed and clamped to the rated band. It is what the inverter
     /// pushes onto the DC bus.
     active: DeviceAxis,
-    /// Reactive output, clamped to the capability at the live P. Its
-    /// `published` slot is what telemetry and parent meters read.
+    /// Reactive output, clamped to the capability at the live P.
     reactive: DeviceAxis,
     /// The live PF / kVA capability; `set-reactive-pf-limit` and
     /// `set-reactive-apparent-va` change it at runtime.
@@ -69,6 +68,10 @@ pub struct BatteryInverter {
     /// child accepted, by its accept ratio; 0 when the inverter is
     /// tripped or no healthy child took the push.
     measured_w: Mutex<f32>,
+    /// The reactive value telemetry and parent meters read: the
+    /// reactive output; 0 when the inverter is tripped or no healthy
+    /// child took the push.
+    measured_var: Mutex<f32>,
 }
 
 impl BatteryInverter {
@@ -82,6 +85,7 @@ impl BatteryInverter {
             caps: Mutex::new(cfg.reactive),
             cfg,
             measured_w: Mutex::new(0.0),
+            measured_var: Mutex::new(0.0),
         }
     }
 
@@ -125,6 +129,7 @@ impl SimulatedComponent for BatteryInverter {
             self.active.trip();
             self.reactive.trip();
             *self.measured_w.lock() = 0.0;
+            *self.measured_var.lock() = 0.0;
             return;
         }
 
@@ -148,7 +153,7 @@ impl SimulatedComponent for BatteryInverter {
             // output stays at its command, so delivery resumes the
             // moment a child comes back.
             *self.measured_w.lock() = 0.0;
-            self.reactive.override_published(0.0);
+            *self.measured_var.lock() = 0.0;
         } else {
             let p_share = commanded_p / healthy.len() as f32;
             // Publish what the children accepted of our push, by each
@@ -161,7 +166,7 @@ impl SimulatedComponent for BatteryInverter {
                 accepted_p += p_share * child.dc_accept_ratio();
             }
             *self.measured_w.lock() = accepted_p;
-            self.reactive.override_published(commanded_q);
+            *self.measured_var.lock() = commanded_q;
         }
     }
 
@@ -172,7 +177,7 @@ impl SimulatedComponent for BatteryInverter {
             self.id,
             site,
             *self.measured_w.lock(),
-            self.reactive.published(),
+            *self.measured_var.lock(),
         )
     }
 
@@ -215,7 +220,7 @@ impl SimulatedComponent for BatteryInverter {
     }
 
     fn aggregate_reactive_var(&self, _world: &MicrogridSite) -> f32 {
-        self.reactive.published()
+        *self.measured_var.lock()
     }
 
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
