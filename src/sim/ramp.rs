@@ -65,9 +65,12 @@ impl State {
         // one at a time, so a burst never collapses into "only the
         // newest value was ever visible".
         if let Some((Some(set_at), v)) = self.executing
-            // checked add: a saturated "forever" delay must mean
-            // the command never arms, not a panic on overflow.
-            && set_at.checked_add_signed(delay).is_some_and(|due| now >= due)
+            // checked add: a saturated "forever" delay must mean the
+            // command never arms, not a panic on overflow. A stamp
+            // after `now` means the wall clock stepped back; it counts
+            // as due, so the command doesn't wait for the clock to
+            // catch up.
+            && (set_at > now || set_at.checked_add_signed(delay).is_some_and(|due| now >= due))
         {
             self.armed = Some(v);
             self.executing = self.waiting.take();
@@ -272,6 +275,32 @@ mod tests {
         cd.poll(t0 + chrono::Duration::seconds(60));
         let settled = cd.poll(t0 + chrono::Duration::seconds(61));
         assert_eq!(settled, Some(10_000.0));
+    }
+
+    /// A wall clock that steps back (an NTP step) leaves the
+    /// executing command stamped after `now`. It counts as due, so
+    /// the device keeps arming commands instead of stalling until the
+    /// clock catches up.
+    #[test]
+    fn command_delay_survives_a_backward_clock_step() {
+        let t0 = Utc::now();
+        let cd = CommandDelay::new(Duration::from_secs(1));
+        cd.set_target(1000.0);
+        assert_eq!(cd.poll(t0), None);
+        cd.set_target(2000.0);
+        assert_eq!(cd.poll(t0 + chrono::Duration::milliseconds(500)), None);
+
+        let back = t0 - chrono::Duration::seconds(10);
+        let at = |m| back + chrono::Duration::milliseconds(m);
+        assert_eq!(cd.poll(back), Some(1000.0), "the stranded command is due");
+        cd.set_target(3000.0);
+        assert_eq!(
+            cd.poll(at(100)),
+            Some(2000.0),
+            "so is the next stranded one"
+        );
+        assert_eq!(cd.poll(at(500)), Some(2000.0), "3000 waits its delay");
+        assert_eq!(cd.poll(at(1100)), Some(3000.0));
     }
 
     /// While one command executes, only the newest waiting command
