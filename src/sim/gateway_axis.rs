@@ -218,12 +218,6 @@ mod tests {
         })
     }
 
-    /// The caps band a reactive axis is validated against at `p`.
-    fn caps_at(cap: ReactiveCapability, p: f32) -> VecBounds {
-        let (lo, hi) = cap.q_bounds_at(p);
-        VecBounds::single(lo, hi)
-    }
-
     fn kva(va: f32) -> ReactiveCapability {
         ReactiveCapability {
             pf_limit: None,
@@ -259,7 +253,7 @@ mod tests {
         let mut ax = axis();
         let t0 = Utc::now();
         // At P=3000, the 5 kVA circle allows |Q| ≤ 4000.
-        let base = caps_at(kva(5_000.0), 3_000.0);
+        let base = kva(5_000.0).q_band_at(3_000.0);
         assert!(ax.check(4_500.0, &base, t0).is_err());
         assert!(ax.check(3_500.0, &base, t0).is_ok());
         ax.try_augment(
@@ -279,13 +273,11 @@ mod tests {
     #[test]
     fn out_of_bounds_error_carries_the_envelope() {
         let ax = axis();
-        let base = caps_at(
-            ReactiveCapability {
-                pf_limit: Some(0.5),
-                apparent_va: None,
-            },
-            10_000.0,
-        );
+        let base = ReactiveCapability {
+            pf_limit: Some(0.5),
+            apparent_va: None,
+        }
+        .q_band_at(10_000.0);
         match ax.check(6_000.0, &base, Utc::now()) {
             Err(envelope) => {
                 let b = envelope.0.first().expect("single band");
@@ -301,7 +293,7 @@ mod tests {
     fn stacked_unbounded_augmentations_narrow_nothing() {
         let mut ax = axis();
         let t0 = Utc::now();
-        let base = caps_at(kva(5_000.0), 3_000.0);
+        let base = kva(5_000.0).q_band_at(3_000.0);
         let open = VecBounds::new(vec![Bounds {
             lower: None,
             upper: None,
@@ -336,7 +328,7 @@ mod tests {
         assert!(ax.check(0.0, &narrowed, t0).is_ok());
 
         let mut q = axis();
-        let at_idle = caps_at(kva(5_000.0), 0.0);
+        let at_idle = kva(5_000.0).q_band_at(0.0);
         q.try_augment(
             &at_idle,
             None,
@@ -345,7 +337,7 @@ mod tests {
             Duration::from_secs(60),
         )
         .unwrap();
-        let at_rim = caps_at(kva(5_000.0), 5_000.0);
+        let at_rim = kva(5_000.0).q_band_at(5_000.0);
         assert!(q.validation_envelope(&at_rim, t0).0.is_empty());
         assert!(q.check(400.0, &at_rim, t0).is_err());
     }
@@ -724,7 +716,7 @@ mod tests {
             ramp_rate_per_s: 1_000.0,
             initial: 0.0,
         });
-        let base = caps_at(kva(10_000.0), 0.0);
+        let base = kva(10_000.0).q_band_at(0.0);
         let now = Utc::now();
         ax.accept(5_000.0);
         let q = step(&mut ax, now, Duration::from_millis(50), None, &plain(&base));
@@ -755,7 +747,7 @@ mod tests {
         let dt = Duration::from_millis(100);
         ax.accept(8_000.0);
         let mut at = |p: f32| {
-            let base = caps_at(kva(10_000.0), p);
+            let base = kva(10_000.0).q_band_at(p);
             step(&mut ax, now, dt, None, &plain(&base))
         };
         assert!((at(0.0) - 8_000.0).abs() < 1.0);
