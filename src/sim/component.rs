@@ -433,7 +433,7 @@ pub enum KnobSnapshot {
 ///   - **Identity**: id, category, name, subtype, is_hidden.
 ///   - **Lifecycle**: stream_interval, stream_jitter_pct, tick, telemetry.
 ///   - **Hardware facts the gateway reads**: has_axis, set_command,
-///     physical_band, idle_value, park_value, initial_value,
+///     physical_band, idle_value, initial_value,
 ///     keeps_command_through_fault, advertises_physical_band,
 ///     augment_checks_physical_band, gateway_settings, soc_window,
 ///     soc_pct. The Microgrid API rules themselves live in
@@ -550,14 +550,10 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     }
 
     /// What `axis` aims at with no command standing; `None` holds the
-    /// last target.
+    /// last target. An expired or reset command ramps to it, or to 0
+    /// when `None`.
     fn idle_value(&self, _axis: SetpointAxis) -> Option<f32> {
         None
-    }
-
-    /// Where `axis` ramps to when its command expires or is reset.
-    fn park_value(&self, _axis: SetpointAxis) -> f32 {
-        0.0
     }
 
     /// Where `axis` starts on registration.

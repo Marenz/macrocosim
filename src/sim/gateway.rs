@@ -278,9 +278,7 @@ impl<'a> Gateway<'a> {
     pub fn reset(&self, id: u64, axis: SetpointAxis) {
         let mut st = self.gw.state.lock();
         st.lifetimes.remove(id, axis);
-        if let (Some(ax), Some(c)) = (st.axes.get_mut(&(id, axis)), self.site.get(id)) {
-            ax.reset(c.park_value(axis));
-        }
+        self.park_locked(&mut st, id, axis);
     }
 
     /// Time left on the site clock before `id`'s `axis` command
@@ -291,16 +289,22 @@ impl<'a> Gateway<'a> {
     }
 
     /// Expire every lifetime at or before `now`: its axis ramps to
-    /// the component's park value. Returns what expired, for logging
+    /// the component's idle value. Returns what expired, for logging
     /// once the lock is released.
     fn expire_locked(&self, st: &mut GatewayState, now: DateTime<Utc>) -> Vec<(u64, SetpointAxis)> {
         let expired = st.lifetimes.drain_expired(now);
         for &(id, axis) in &expired {
-            if let (Some(ax), Some(c)) = (st.axes.get_mut(&(id, axis)), self.site.get(id)) {
-                ax.reset(c.park_value(axis));
-            }
+            self.park_locked(st, id, axis);
         }
         expired
+    }
+
+    /// Clear `id`'s `axis` command and ramp the axis toward the
+    /// component's idle value, or 0 when it has none.
+    fn park_locked(&self, st: &mut GatewayState, id: u64, axis: SetpointAxis) {
+        if let (Some(ax), Some(c)) = (st.axes.get_mut(&(id, axis)), self.site.get(id)) {
+            ax.reset(c.idle_value(axis).unwrap_or(0.0));
+        }
     }
 
     /// What every consumer reports as `id`'s bounds on `axis`; `None`
@@ -907,14 +911,14 @@ mod tests {
     }
 
     /// A reset on an owned axis clears the lifetime and ramps the
-    /// axis toward the component's park value.
+    /// axis toward the component's idle value.
     #[test]
     fn reset_on_an_owned_axis_clears_the_lifetime() {
         let site = MicrogridSite::new();
         let hw = put(
             &site,
             Arc::new(Hw {
-                park: -100.0,
+                idle: Some(-100.0),
                 settings: GatewaySettings {
                     ramp_rate_w_per_s: 1_000.0,
                     ..GatewaySettings::default()
@@ -936,7 +940,7 @@ mod tests {
         site.tick_n(1, dt);
         assert_eq!(hw.last(), Some(400.0), "heads down at 1 kW/s");
         site.tick_n(10, dt);
-        assert_eq!(hw.last(), Some(-100.0), "settles on the park value");
+        assert_eq!(hw.last(), Some(-100.0), "settles on the idle value");
     }
 
     /// The augmentation emptiness check includes the physical band

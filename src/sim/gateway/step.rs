@@ -181,14 +181,14 @@ mod tests {
         assert_eq!(hw.last(), Some(600.0));
     }
 
-    /// An expired lifetime ramps the axis to its park value.
+    /// An expired lifetime ramps the axis to its idle value.
     #[test]
-    fn expiry_ramps_to_the_park_value() {
+    fn expiry_ramps_to_the_idle_value() {
         let (site, clock) = sim_site();
         let hw = put(
             &site,
             Arc::new(Hw {
-                park: -50.0,
+                idle: Some(-50.0),
                 ..Hw::new(1)
             }),
         );

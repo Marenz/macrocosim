@@ -443,18 +443,10 @@ impl SimulatedComponent for SolarInverter {
         })
     }
 
-    /// Free-running PV tracks the sun; Q holds.
+    /// Free-running PV tracks the sun, and an expired or reset
+    /// curtailment releases to the sunlight floor; Q holds.
     fn idle_value(&self, axis: SetpointAxis) -> Option<f32> {
         (axis == SetpointAxis::Active).then(|| self.min_avail_w())
-    }
-
-    /// An expired or reset curtailment releases to the sunlight
-    /// floor.
-    fn park_value(&self, axis: SetpointAxis) -> f32 {
-        match axis {
-            SetpointAxis::Active => self.min_avail_w(),
-            SetpointAxis::Reactive => 0.0,
-        }
     }
 
     fn initial_value(&self, axis: SetpointAxis) -> f32 {

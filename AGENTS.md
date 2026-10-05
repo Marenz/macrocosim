@@ -384,7 +384,7 @@ so construction + validation stay identical.
 1. New file under `src/sim/` implementing `SimulatedComponent`. A
    controllable component answers the hardware facts the gateway reads
    (`has_axis`, `set_command`, `physical_band`, `idle_value`,
-   `park_value`, `initial_value`, `keeps_command_through_fault`,
+   `initial_value`, `keeps_command_through_fault`,
    `advertises_physical_band`, `augment_checks_physical_band`,
    `gateway_settings`) and keeps one `DeviceAxis` per axis; the
    gateway supplies validation, lifetimes, augmentations and the ramp.

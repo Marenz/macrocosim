@@ -35,7 +35,6 @@ pub(crate) struct Hw {
     pub commands: Mutex<Vec<f32>>,
     pub physical: Mutex<Option<VecBounds>>,
     pub idle: Option<f32>,
-    pub park: f32,
     pub initial: f32,
     pub keeps: bool,
     pub checks_physical: bool,
@@ -50,7 +49,6 @@ impl Hw {
             commands: Mutex::new(Vec::new()),
             physical: Mutex::new(None),
             idle: None,
-            park: 0.0,
             initial: 0.0,
             keeps: false,
             checks_physical: false,
@@ -113,9 +111,6 @@ impl SimulatedComponent for Hw {
     }
     fn idle_value(&self, _: SetpointAxis) -> Option<f32> {
         self.idle
-    }
-    fn park_value(&self, _: SetpointAxis) -> f32 {
-        self.park
     }
     fn initial_value(&self, _: SetpointAxis) -> f32 {
         self.initial

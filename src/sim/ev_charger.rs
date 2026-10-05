@@ -334,10 +334,6 @@ impl SimulatedComponent for EvCharger {
         Some(self.cfg.idle_w())
     }
 
-    fn park_value(&self, _axis: SetpointAxis) -> f32 {
-        self.cfg.idle_w()
-    }
-
     fn keeps_command_through_fault(&self, _axis: SetpointAxis) -> bool {
         self.cfg.resume_on_recovery
     }
