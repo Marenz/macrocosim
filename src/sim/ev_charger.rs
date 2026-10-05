@@ -93,7 +93,7 @@ impl Default for EvChargerConfig {
             ramp_rate_w_per_s: f32::INFINITY,
             stream_jitter_pct: 0.0,
             resume_on_recovery: false,
-            device_delay: Duration::from_millis(100),
+            device_delay: crate::sim::inverter::DEFAULT_DEVICE_DELAY,
         }
     }
 }
@@ -372,6 +372,12 @@ impl SimulatedComponent for EvCharger {
         }
         if self.cfg.ramp_rate_w_per_s.is_finite() {
             kw.push((":ramp-rate", lf(self.cfg.ramp_rate_w_per_s)));
+        }
+        if self.cfg.device_delay != crate::sim::inverter::DEFAULT_DEVICE_DELAY {
+            kw.push((
+                ":device-delay-ms",
+                self.cfg.device_delay.as_millis().to_string(),
+            ));
         }
         if self.interval != Duration::from_millis(1000) {
             kw.push((":interval", self.interval.as_millis().to_string()));

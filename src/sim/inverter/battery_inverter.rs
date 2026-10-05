@@ -45,7 +45,7 @@ impl Default for BatteryInverterConfig {
             reactive: ReactiveCapability::microsim_default(),
             reactive_command_delay: Duration::from_millis(100),
             reactive_ramp_rate_var_per_s: 2000.0,
-            device_delay: Duration::from_millis(100),
+            device_delay: super::DEFAULT_DEVICE_DELAY,
         }
     }
 }
@@ -263,6 +263,7 @@ impl SimulatedComponent for BatteryInverter {
             reactive: self.cfg.reactive,
             reactive_command_delay: self.cfg.reactive_command_delay,
             reactive_ramp_rate_var_per_s: self.cfg.reactive_ramp_rate_var_per_s,
+            device_delay: self.cfg.device_delay,
         })
     }
 }

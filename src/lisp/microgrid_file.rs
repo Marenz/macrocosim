@@ -989,4 +989,39 @@ mod tests {
             "the rendered block re-registers the microgrid"
         );
     }
+
+    /// `:device-delay-ms` survives a render and reload when it is
+    /// set, and a file written without it renders without it.
+    #[test]
+    fn device_delay_ms_round_trips_through_a_managed_file() {
+        use super::super::test_support::config_with;
+        let body = r#"
+(make-microgrid :id 2207 :name "dd" :grpc-port 8817
+  :topology
+  (lambda ()
+    (%make-meter :id 1)
+    (%make-battery-inverter :id 2 :device-delay-ms 250)
+    (%make-steam-boiler :id 3)
+    (connect 1 2) (connect 1 3)))
+"#;
+        let (cfg, _dir) = config_with(body);
+        let (def, site) = {
+            let reg = cfg.microgrids();
+            let r = reg.lock();
+            let e = r.get(&2207).unwrap();
+            (e.def.clone(), e.site.clone())
+        };
+        let block = render_block(&def, &site);
+        assert_eq!(block.matches(":device-delay-ms").count(), 1, "{block}");
+        assert!(block.contains(":device-delay-ms 250"), "{block}");
+        let (cfg2, _dir2) = config_with(&block);
+        let reg2 = cfg2.microgrids();
+        let r2 = reg2.lock();
+        let site2 = r2.get(&2207).unwrap().site.clone();
+        let kw = site2.get(2).unwrap().constructor_kwargs();
+        assert!(
+            kw.contains(&(":device-delay-ms", "250".to_string())),
+            "{kw:?}"
+        );
+    }
 }

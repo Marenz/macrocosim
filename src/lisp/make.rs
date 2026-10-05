@@ -120,6 +120,9 @@ AsPlist! {
         rated_upper<":rated-upper">: Option<f64> {= None},
         command_delay_ms<":command-delay-ms">: Option<i64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
+        /// Time a command takes to reach the output once the
+        /// component has it, in ms, on both axes. 100 unless set.
+        device_delay_ms<":device-delay-ms">: Option<i64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
         operational_mode<":operational-mode">: Option<OperationalMode> {= None},
         health<":health">: Option<Health> {= None},
@@ -172,6 +175,9 @@ AsPlist! {
         weather_jitter_pct<":weather-jitter-pct">: Option<f64> {= None},
         command_delay_ms<":command-delay-ms">: Option<i64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
+        /// Time a command takes to reach the output once the
+        /// component has it, in ms, on both axes. 100 unless set.
+        device_delay_ms<":device-delay-ms">: Option<i64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
         operational_mode<":operational-mode">: Option<OperationalMode> {= None},
         health<":health">: Option<Health> {= None},
@@ -202,6 +208,9 @@ AsPlist! {
         rated_upper<":rated-upper">: Option<f64> {= None},
         command_delay_ms<":command-delay-ms">: Option<i64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
+        /// Time a command takes to reach the output once the
+        /// component has it, in ms, on both axes. 100 unless set.
+        device_delay_ms<":device-delay-ms">: Option<i64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
         // The pack kwargs a charger used to own. The pack is the car's
         // now, so these are taken and ignored (with a warning) rather
@@ -255,6 +264,9 @@ AsPlist! {
         wh_per_kg<":wh-per-kg">: Option<f64> {= None},
         command_delay_ms<":command-delay-ms">: Option<i64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
+        /// Time a command takes to reach the output once the
+        /// component has it, in ms, on both axes. 100 unless set.
+        device_delay_ms<":device-delay-ms">: Option<i64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
         operational_mode<":operational-mode">: Option<OperationalMode> {= None},
         health<":health">: Option<Health> {= None},
@@ -451,6 +463,9 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             if let Some(v) = a.ramp_rate {
                 cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate", v)?;
             }
+            if let Some(v) = a.device_delay_ms {
+                cfg.device_delay = Duration::from_millis(v.max(0) as u64);
+            }
             if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
             }
@@ -571,6 +586,9 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             if let Some(v) = a.ramp_rate {
                 cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate", v)?;
             }
+            if let Some(v) = a.device_delay_ms {
+                cfg.device_delay = Duration::from_millis(v.max(0) as u64);
+            }
             if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
             }
@@ -622,6 +640,9 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             }
             if let Some(v) = a.ramp_rate {
                 cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate", v)?;
+            }
+            if let Some(v) = a.device_delay_ms {
+                cfg.device_delay = Duration::from_millis(v.max(0) as u64);
             }
             if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
@@ -714,6 +735,9 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             }
             if let Some(v) = a.ramp_rate {
                 cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate", v)?;
+            }
+            if let Some(v) = a.device_delay_ms {
+                cfg.device_delay = Duration::from_millis(v.max(0) as u64);
             }
             if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
@@ -1657,5 +1681,35 @@ mod tests {
             cfg.eval("(%make-ev-charger :id 12 :ev 'sedan)").is_err(),
             "the plugged car is not a constructor kwarg"
         );
+    }
+
+    /// `:device-delay-ms` reaches each controllable component and is
+    /// written back only when it is not the 100 ms default, so
+    /// existing managed files are not rewritten.
+    #[test]
+    fn device_delay_ms_round_trips_and_the_default_renders_nothing() {
+        let (site, _ctx) = run_with_ctx(
+            r#"(%make-battery-inverter :id 21 :device-delay-ms 250)
+               (%make-solar-inverter :id 22 :device-delay-ms 0)
+               (%make-ev-charger :id 23 :device-delay-ms 40)
+               (%make-steam-boiler :id 24 :device-delay-ms 300)
+               (%make-battery-inverter :id 25)
+               (%make-ev-charger :id 26 :device-delay-ms 100)"#,
+        );
+        let kw = |id: u64| {
+            site.get(id)
+                .unwrap()
+                .constructor_kwargs()
+                .iter()
+                .map(|(k, v)| format!("{k} {v}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert!(kw(21).contains(":device-delay-ms 250"), "{}", kw(21));
+        assert!(kw(22).contains(":device-delay-ms 0"), "{}", kw(22));
+        assert!(kw(23).contains(":device-delay-ms 40"), "{}", kw(23));
+        assert!(kw(24).contains(":device-delay-ms 300"), "{}", kw(24));
+        assert!(!kw(25).contains(":device-delay-ms"), "{}", kw(25));
+        assert!(!kw(26).contains(":device-delay-ms"), "{}", kw(26));
     }
 }

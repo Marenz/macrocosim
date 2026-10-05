@@ -158,7 +158,7 @@ impl Default for SolarInverterConfig {
             weather_lag: None,
             weather_jitter_pct: 0.0,
             array_peak_w: 30_000.0,
-            device_delay: Duration::from_millis(100),
+            device_delay: super::DEFAULT_DEVICE_DELAY,
         }
     }
 }
@@ -603,6 +603,7 @@ impl SimulatedComponent for SolarInverter {
             reactive: self.cfg.reactive,
             reactive_command_delay: self.cfg.reactive_command_delay,
             reactive_ramp_rate_var_per_s: self.cfg.reactive_ramp_rate_var_per_s,
+            device_delay: self.cfg.device_delay,
         });
         // A dynamic sunlight source can't round-trip as a static
         // number — the renderer omits :sunlight% entirely rather

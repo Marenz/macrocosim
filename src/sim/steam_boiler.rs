@@ -58,7 +58,7 @@ impl Default for SteamBoilerConfig {
             command_delay: Duration::from_millis(500),
             ramp_rate_w_per_s: f32::INFINITY,
             stream_jitter_pct: 0.0,
-            device_delay: Duration::from_millis(100),
+            device_delay: crate::sim::inverter::DEFAULT_DEVICE_DELAY,
         }
     }
 }
@@ -188,7 +188,8 @@ impl SteamBoiler {
     fn heat_band(&self, dt: Duration) -> VecBounds {
         let dt_s = dt.as_secs_f32();
         let need = if dt_s > 0.0 {
-            self.need_w(self.state.lock().pressure_bar, self.demand_w(), dt_s)
+            let pressure = self.state.lock().pressure_bar;
+            self.need_w(pressure, self.demand_w(), dt_s)
         } else {
             0.0
         };
@@ -426,6 +427,12 @@ impl SimulatedComponent for SteamBoiler {
         ));
         if self.cfg.ramp_rate_w_per_s.is_finite() {
             kw.push((":ramp-rate", lf(self.cfg.ramp_rate_w_per_s)));
+        }
+        if self.cfg.device_delay != crate::sim::inverter::DEFAULT_DEVICE_DELAY {
+            kw.push((
+                ":device-delay-ms",
+                self.cfg.device_delay.as_millis().to_string(),
+            ));
         }
         if self.interval != Duration::from_millis(1000) {
             kw.push((":interval", self.interval.as_millis().to_string()));
