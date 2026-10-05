@@ -778,13 +778,11 @@ async fn resolve_microgrid_id(
     if let Some(id) = explicit {
         return Ok(id);
     }
-    let list: serde_json::Value = http
-        .get(format!("{ui_addr}/api/microgrids"))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let list: serde_json::Value =
+        checked(http.get(format!("{ui_addr}/api/microgrids")).send().await?)
+            .await?
+            .json()
+            .await?;
     list.as_array()
         .and_then(|a| a.iter().filter_map(|m| m.get("id")?.as_u64()).min())
         .ok_or_else(|| "no microgrids registered".into())
@@ -797,13 +795,14 @@ async fn build_pool_line(
     kind: &str,
     json: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let latest: serde_json::Value = http
-        .get(format!("{ui_addr}/api/mg/{mg_id}/microgrid/latest"))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let latest: serde_json::Value = checked(
+        http.get(format!("{ui_addr}/api/mg/{mg_id}/microgrid/latest"))
+            .send()
+            .await?,
+    )
+    .await?
+    .json()
+    .await?;
     let stream_for = |s: &str| latest.get(s).cloned();
     if json {
         let mut out = serde_json::Map::new();
@@ -882,20 +881,22 @@ async fn build_dashboard_line(
     ui_addr: &str,
     mg_id: u64,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let topo: serde_json::Value = http
-        .get(format!("{ui_addr}/api/mg/{mg_id}/topology"))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    let latest: serde_json::Value = http
-        .get(format!("{ui_addr}/api/mg/{mg_id}/microgrid/latest"))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let topo: serde_json::Value = checked(
+        http.get(format!("{ui_addr}/api/mg/{mg_id}/topology"))
+            .send()
+            .await?,
+    )
+    .await?
+    .json()
+    .await?;
+    let latest: serde_json::Value = checked(
+        http.get(format!("{ui_addr}/api/mg/{mg_id}/microgrid/latest"))
+            .send()
+            .await?,
+    )
+    .await?
+    .json()
+    .await?;
     let now = chrono::Local::now().format("%H:%M:%S");
     let components = topo
         .get("components")
@@ -957,13 +958,14 @@ async fn fetch_print_assert_report(
     json: bool,
     assert: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let r: serde_json::Value = http
-        .get(format!("{ui_addr}/api/scenario/report"))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let r: serde_json::Value = checked(
+        http.get(format!("{ui_addr}/api/scenario/report"))
+            .send()
+            .await?,
+    )
+    .await?
+    .json()
+    .await?;
     print_report(&r, json);
     if assert {
         let failed = r["checks_failed"].as_u64().unwrap_or(0);
@@ -982,13 +984,11 @@ async fn run_scenario(
     let http = reqwest::Client::new();
     match cmd {
         ScenarioCmd::List => {
-            let resp: serde_json::Value = http
-                .get(format!("{ui_addr}/api/scenarios"))
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
+            let resp: serde_json::Value =
+                checked(http.get(format!("{ui_addr}/api/scenarios")).send().await?)
+                    .await?
+                    .json()
+                    .await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
@@ -1046,13 +1046,11 @@ async fn run_scenario(
                         Some(s) => s,
                         None => {
                             // Default to the scenario's declared :length.
-                            let list: serde_json::Value = http
-                                .get(format!("{ui_addr}/api/scenarios"))
-                                .send()
-                                .await?
-                                .error_for_status()?
-                                .json()
-                                .await?;
+                            let list: serde_json::Value =
+                                checked(http.get(format!("{ui_addr}/api/scenarios")).send().await?)
+                                    .await?
+                                    .json()
+                                    .await?;
                             let len = list
                                 .as_array()
                                 .and_then(|a| a.iter().find(|s| s["name"] == name.as_str()))
@@ -1071,15 +1069,12 @@ async fn run_scenario(
                 } else {
                     None
                 };
-                let resp = http
-                    .post(format!("{ui_addr}/api/scenarios/{name}/start"))
-                    .send()
-                    .await?;
-                if !resp.status().is_success() {
-                    let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
-                    return Err(format!("{status}: {body}").into());
-                }
+                checked(
+                    http.post(format!("{ui_addr}/api/scenarios/{name}/start"))
+                        .send()
+                        .await?,
+                )
+                .await?;
                 if !wait {
                     // Fire-and-forget; the run continues server-side.
                     println!("scenario run {name} (live)");
@@ -1122,15 +1117,13 @@ async fn run_scenario(
                 // Freeze the report + flush any CSV sinks. A failed stop
                 // means the report may still be mutating, so surface it
                 // rather than asserting on a half-frozen run.
-                let stop = http
-                    .post(format!("{ui_addr}/api/scenarios/stop"))
-                    .send()
-                    .await?;
-                if !stop.status().is_success() {
-                    let status = stop.status();
-                    let body = stop.text().await.unwrap_or_default();
-                    return Err(format!("failed to stop scenario: {status}: {body}").into());
-                }
+                checked(
+                    http.post(format!("{ui_addr}/api/scenarios/stop"))
+                        .send()
+                        .await?,
+                )
+                .await
+                .map_err(|e| format!("failed to stop scenario: {e}"))?;
                 fetch_print_assert_report(&http, ui_addr, json, assert).await?;
             }
         }
@@ -1182,27 +1175,26 @@ async fn run_scenario(
             println!("loaded {path}");
         }
         ScenarioCmd::Summary => {
-            let s: serde_json::Value = http
-                .get(format!("{ui_addr}/api/scenario"))
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
+            let s: serde_json::Value =
+                checked(http.get(format!("{ui_addr}/api/scenario")).send().await?)
+                    .await?
+                    .json()
+                    .await?;
             print_summary(&s, json);
         }
         ScenarioCmd::Report { assert } => {
             fetch_print_assert_report(&http, ui_addr, json, assert).await?;
         }
         ScenarioCmd::Events { since, limit } => {
-            let e: serde_json::Value = http
-                .get(format!("{ui_addr}/api/scenario/events"))
-                .query(&[("since", since.to_string()), ("limit", limit.to_string())])
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
+            let e: serde_json::Value = checked(
+                http.get(format!("{ui_addr}/api/scenario/events"))
+                    .query(&[("since", since.to_string()), ("limit", limit.to_string())])
+                    .send()
+                    .await?,
+            )
+            .await?
+            .json()
+            .await?;
             print_events(&e, json);
         }
     }
@@ -1222,14 +1214,15 @@ async fn run_snapshot(
     let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
     match cmd {
         SnapshotCmd::Save { name } => {
-            let resp: serde_json::Value = http
-                .post(format!("{ui_addr}/api/mg/{mg}/snapshots/save"))
-                .json(&serde_json::json!({ "name": name }))
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
+            let resp: serde_json::Value = checked(
+                http.post(format!("{ui_addr}/api/mg/{mg}/snapshots/save"))
+                    .json(&serde_json::json!({ "name": name }))
+                    .send()
+                    .await?,
+            )
+            .await?
+            .json()
+            .await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
@@ -1245,14 +1238,15 @@ async fn run_snapshot(
             if let Some(id) = as_id {
                 body["as_id"] = serde_json::json!(id);
             }
-            let resp: serde_json::Value = http
-                .post(format!("{ui_addr}/api/mg/{mg}/snapshots/load"))
-                .json(&body)
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
+            let resp: serde_json::Value = checked(
+                http.post(format!("{ui_addr}/api/mg/{mg}/snapshots/load"))
+                    .json(&body)
+                    .send()
+                    .await?,
+            )
+            .await?
+            .json()
+            .await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
@@ -1261,13 +1255,14 @@ async fn run_snapshot(
             }
         }
         SnapshotCmd::List => {
-            let resp: serde_json::Value = http
-                .get(format!("{ui_addr}/api/mg/{mg}/snapshots"))
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
+            let resp: serde_json::Value = checked(
+                http.get(format!("{ui_addr}/api/mg/{mg}/snapshots"))
+                    .send()
+                    .await?,
+            )
+            .await?
+            .json()
+            .await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
@@ -1310,6 +1305,32 @@ async fn eval(
     } else {
         let msg = body["error"].as_str().unwrap_or("(unknown)");
         Err(format!("eval failed: {msg}").into())
+    }
+}
+
+/// `resp` when it succeeded; otherwise an error carrying the
+/// server's `error` text, or the body or status when there is none.
+async fn checked(resp: reqwest::Response) -> Result<reqwest::Response, Box<dyn std::error::Error>> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let text = resp.text().await.unwrap_or_default();
+    Err(error_line(status, &text).into())
+}
+
+/// The report for a failed response: the status, then its JSON
+/// `error` field or else its trimmed body; the status alone when the
+/// body is empty.
+fn error_line(status: reqwest::StatusCode, text: &str) -> String {
+    let msg = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("error")?.as_str().map(str::to_owned))
+        .unwrap_or_else(|| text.trim().to_owned());
+    if msg.is_empty() {
+        status.to_string()
+    } else {
+        format!("{status}: {msg}")
     }
 }
 
@@ -1826,4 +1847,30 @@ fn parse_metric_name(s: &str) -> Result<Metric, Box<dyn std::error::Error>> {
         format!("METRIC_{normalized}")
     };
     Metric::from_str_name(&with_prefix).ok_or_else(|| format!("unknown metric '{s}'").into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_line_prefers_the_error_field() {
+        use reqwest::StatusCode;
+        assert_eq!(
+            error_line(
+                StatusCode::NOT_FOUND,
+                r#"{"error":"microgrid 9 not registered"}"#
+            ),
+            "404 Not Found: microgrid 9 not registered"
+        );
+        assert_eq!(error_line(StatusCode::BAD_GATEWAY, ""), "502 Bad Gateway");
+        assert_eq!(
+            error_line(StatusCode::BAD_GATEWAY, "  \n"),
+            "502 Bad Gateway"
+        );
+        assert_eq!(
+            error_line(StatusCode::BAD_GATEWAY, "oops\n"),
+            "502 Bad Gateway: oops"
+        );
+    }
 }
