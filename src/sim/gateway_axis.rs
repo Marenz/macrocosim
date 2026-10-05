@@ -52,7 +52,7 @@ pub struct GatewayAxis {
 impl GatewayAxis {
     pub fn new(cfg: GatewayAxisConfig) -> Self {
         Self {
-            augs: ComponentBounds::augmentations_only(),
+            augs: ComponentBounds::default(),
             delay: CommandDelay::new(cfg.command_delay),
             ramp: Ramp::new(cfg.ramp_rate_per_s, cfg.initial),
             unit: cfg.unit,

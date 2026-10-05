@@ -4,9 +4,9 @@
 //! - [`VecBounds`] is a sorted, normalized list of disjoint
 //!   [`Bounds`] (proto type, reused so the values flow straight into a
 //!   `MetricSample` without a copy).
-//! - [`ComponentBounds`] holds the rated bounds plus a queue of
-//!   time-limited augmentations submitted via the gRPC AugmentBounds
-//!   RPC. `squash()` intersects them down to the effective bounds.
+//! - [`ComponentBounds`] holds a queue of time-limited augmentations
+//!   submitted via the gRPC AugmentBounds RPC. `effective_at()`
+//!   intersects the live ones.
 
 use std::{collections::VecDeque, fmt, time::Duration};
 
@@ -304,10 +304,11 @@ fn squash(mut input: Vec<Bounds>) -> VecBounds {
     VecBounds(squashed)
 }
 
-/// Rated bounds with a queue of time-limited augmentations.
-#[derive(Debug, Clone)]
+/// A queue of time-limited augmentations. It holds no static band:
+/// the caller intersects [`ComponentBounds::effective_at`] into its
+/// own.
+#[derive(Debug, Clone, Default)]
 pub struct ComponentBounds {
-    rated: VecBounds,
     augmented: VecDeque<Aug>,
 }
 
@@ -336,28 +337,6 @@ impl Aug {
 }
 
 impl ComponentBounds {
-    pub fn rated(lower: f32, upper: f32) -> Self {
-        Self {
-            rated: VecBounds::single(lower, upper),
-            augmented: VecDeque::new(),
-        }
-    }
-
-    /// A `ComponentBounds` with no static rated band — used by a Q
-    /// axis, whose static shape comes from the reactive caps instead
-    /// of a rated pair. `effective_at` for this constructor means
-    /// "intersection of the live augmentations alone": empty (no
-    /// constraint) when none are live, unlike `rated()` where an
-    /// empty `rated` band never occurs (`VecBounds::single` always
-    /// produces one bucket) — that emptiness is what marks an
-    /// instance as augmentations-only.
-    pub fn augmentations_only() -> Self {
-        Self {
-            rated: VecBounds::default(),
-            augmented: VecDeque::new(),
-        }
-    }
-
     pub fn add_augmentation(
         &mut self,
         create_ts: DateTime<Utc>,
@@ -379,61 +358,32 @@ impl ComponentBounds {
         self.augmented.retain(|a| a.live_at(now));
     }
 
-    /// Effective bounds at `now`: rated ∩ augmentations still live at
-    /// `now`. Expired augmentations are skipped even if `drop_expired`
-    /// has not reaped them yet, so a gate that runs between ticks sees
-    /// the same envelope the client does — not a stale one lingering up
-    /// to a tick past its `valid_until`.
+    /// The live augmentations at `now`, intersected with each other;
+    /// empty when none are live. Expired augmentations are skipped
+    /// even if `drop_expired` has not reaped them yet, so a gate that
+    /// runs between ticks sees the same envelope the client does —
+    /// not a stale one lingering up to a tick past its `valid_until`.
     pub fn effective_at(&self, now: DateTime<Utc>) -> VecBounds {
-        // An empty `rated` band only happens via `augmentations_only()`
-        // — a real `rated()` band is never empty (`VecBounds::single`
-        // always yields one bucket). In that mode there is no static
-        // constraint to intersect INTO; the effective bounds are just
-        // the live augmentations intersected with each other, or
-        // empty (unconstrained) when none are live.
-        if self.rated.0.is_empty() {
-            let mut out: Option<VecBounds> = None;
-            for a in &self.augmented {
-                if a.live_at(now) {
-                    out = Some(match out {
-                        None => a.bounds.clone(),
-                        Some(acc) => acc.intersect(&a.bounds),
-                    });
-                }
-            }
-            return out.unwrap_or_default();
-        }
-        let mut out = self.rated.clone();
+        let mut out: Option<VecBounds> = None;
         for a in &self.augmented {
             if a.live_at(now) {
-                out = out.intersect(&a.bounds);
+                out = Some(match out {
+                    None => a.bounds.clone(),
+                    Some(acc) => acc.intersect(&a.bounds),
+                });
             }
         }
-        out
+        out.unwrap_or_default()
     }
 
     /// Whether any augmentation is still live at `now`. The companion
-    /// [`Self::effective_at`] needs for the `augmentations_only()`
-    /// mode: an empty result there means "no constraint" only when
-    /// nothing is live — with live augmentations that exclude each
-    /// other it means the opposite, "nothing is legal". Nobody can
-    /// tell those apart from the returned bands alone.
+    /// [`Self::effective_at`] needs: an empty result there means "no
+    /// constraint" only when nothing is live — with live
+    /// augmentations that exclude each other it means the opposite,
+    /// "nothing is legal". Nobody can tell those apart from the
+    /// returned bands alone.
     pub fn has_live_augmentations(&self, now: DateTime<Utc>) -> bool {
         self.augmented.iter().any(|a| a.live_at(now))
-    }
-
-    /// Effective bounds now: rated ∩ all augmentations live at the
-    /// current instant. See [`Self::effective_at`].
-    pub fn effective(&self) -> VecBounds {
-        self.effective_at(Utc::now())
-    }
-
-    pub fn contains(&self, value: f32) -> bool {
-        self.effective().contains(value)
-    }
-
-    pub fn clamp(&self, value: f32) -> f32 {
-        self.effective().clamp(value)
     }
 }
 
@@ -586,60 +536,35 @@ mod tests {
     }
 
     #[test]
-    fn rated_intersected_with_augmentations() {
-        let mut cb = ComponentBounds::rated(-100.0, 100.0);
-        cb.add_augmentation(
-            Utc::now(),
-            VecBounds::single(-50.0, 50.0),
-            Duration::from_secs(60),
-        );
-        let eff = cb.effective();
-        assert_eq!(eff.0.len(), 1);
-        assert_eq!(eff.0[0].lower, Some(-50.0));
-        assert_eq!(eff.0[0].upper, Some(50.0));
-    }
-
-    #[test]
     fn effective_at_skips_expired_augmentation_before_reaping() {
         // A tight augment loop (e.g. a GCP limiter) can push a fresh
         // augmentation in the sub-tick window after an old one's TTL
         // lapses but before `drop_expired` reaps it. `effective_at` must
         // already ignore the lapsed entry so the validation gate sees the
         // real envelope, not a stale one lingering up to a tick.
-        let mut cb = ComponentBounds::rated(-100.0, 100.0);
+        let mut cb = ComponentBounds::default();
         let t0 = Utc::now();
         cb.add_augmentation(t0, VecBounds::single(-30.0, 0.0), Duration::from_secs(5));
 
-        // Still live a second in: rated ∩ augmentation.
+        // Still live a second in.
         let live = cb.effective_at(t0 + chrono::Duration::seconds(1));
         assert_eq!((live.0[0].lower, live.0[0].upper), (Some(-30.0), Some(0.0)));
 
         // A second past its valid_until, with drop_expired NOT called
-        // (the deque still holds it): the augmentation is ignored, back
-        // to rated — so a fresh augmentation disjoint from the lapsed one
-        // (e.g. [50, 100]) is no longer spuriously rejected as disjoint.
-        let after = cb.effective_at(t0 + chrono::Duration::seconds(6));
-        assert_eq!(
-            (after.0[0].lower, after.0[0].upper),
-            (Some(-100.0), Some(100.0))
-        );
-        assert!(
-            !after
-                .intersect(&VecBounds::single(50.0, 100.0))
-                .0
-                .is_empty()
-        );
+        // (the deque still holds it): the augmentation is ignored, so
+        // a fresh augmentation disjoint from the lapsed one (e.g.
+        // [50, 100]) is not rejected as disjoint.
+        let after = t0 + chrono::Duration::seconds(6);
+        assert!(cb.effective_at(after).0.is_empty());
+        assert!(!cb.has_live_augmentations(after));
     }
 
-    /// `augmentations_only()` has no static band: with no live
-    /// augmentations the effective bounds are empty (unconstrained),
-    /// with one live augmentation they equal it, and with two they
-    /// intersect — the static-rated `rated()` path instead starts
-    /// from its own band and would report the rated band, not empty,
-    /// when nothing is augmented.
+    /// With no live augmentations the effective bounds are empty
+    /// (unconstrained), with one live augmentation they equal it, and
+    /// with two they intersect.
     #[test]
-    fn augmentations_only_intersects_live_augmentations_alone() {
-        let mut cb = ComponentBounds::augmentations_only();
+    fn effective_at_intersects_live_augmentations_alone() {
+        let mut cb = ComponentBounds::default();
         let t0 = Utc::now();
         assert!(cb.effective_at(t0).0.is_empty());
 
@@ -671,15 +596,16 @@ mod tests {
         assert!(eff.0.is_empty());
     }
 
-    /// An empty `effective_at` in augmentations-only mode is ambiguous
-    /// on its own: it means "nothing live, so no constraint" OR "live
-    /// augmentations that exclude each other, so nothing is legal".
+    /// An empty `effective_at` is ambiguous on its own: it means
+    /// "nothing live, so no constraint" OR "live augmentations that
+    /// exclude each other, so nothing is legal".
     /// `has_live_augmentations` is what tells the two apart — callers
-    /// (`GatewayAxis::validation_envelope`) must fold the second case in as a real,
-    /// if degenerate, constraint instead of skipping it.
+    /// (`GatewayAxis::validation_envelope`) must fold the second case
+    /// in as a real, if degenerate, constraint instead of skipping
+    /// it.
     #[test]
     fn has_live_augmentations_separates_unconstrained_from_mutually_disjoint() {
-        let mut cb = ComponentBounds::augmentations_only();
+        let mut cb = ComponentBounds::default();
         let t0 = Utc::now();
         assert!(!cb.has_live_augmentations(t0), "nothing armed yet");
 
