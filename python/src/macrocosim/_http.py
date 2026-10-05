@@ -14,12 +14,21 @@ from .errors import ControlRejected
 
 
 class EvalResult(TypedDict, total=False):
-    """Parsed ``/api/eval`` response. ``ok`` is False (with ``error`` set) when
-    the interpreter rejected the form; ``value`` is the evaluated Lisp value."""
+    """An eval's outcome. ``ok`` is False (with ``error`` set) when
+    the interpreter rejected the form; ``value`` is the printed
+    result."""
 
     ok: bool
     value: Any
     error: str
+
+
+def _error_text(resp: httpx.Response) -> str:
+    """The ``error`` field of a failed response, or its text."""
+    try:
+        return str(resp.json().get("error", resp.text))
+    except ValueError:
+        return resp.text
 
 
 def control_path(component_id: int, action: str, mg_id: int | None) -> str:
@@ -59,21 +68,19 @@ class HttpClient:
         """
         resp = self._client.post(path, json=payload)
         if 400 <= resp.status_code < 500:
-            try:
-                error = resp.json().get("error", resp.text)
-            except ValueError:
-                error = resp.text
-            raise ControlRejected(error)
+            raise ControlRejected(_error_text(resp))
         resp.raise_for_status()
         return resp.json() if resp.content else {}
 
     def eval(self, expr: str, mg_id: int | None = None) -> EvalResult:
-        """POST a Lisp form to ``/api/eval`` (or the per-microgrid variant)."""
+        """POST a Lisp form: the whole-site ``/api/eval`` without an
+        ``mg_id``, the microgrid's eval with one."""
         path = "/api/eval" if mg_id is None else f"/api/mg/{mg_id}/eval"
         resp = self._client.post(path, content=expr)
+        if resp.status_code == 400:
+            return {"ok": False, "error": _error_text(resp)}
         resp.raise_for_status()
-        result: EvalResult = resp.json()
-        return result
+        return {"ok": True, "value": resp.json()["value"]}
 
     def close(self) -> None:
         self._client.close()

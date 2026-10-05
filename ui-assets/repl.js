@@ -204,9 +204,8 @@ export function setupRepl() {
     output.scrollTop = output.scrollHeight;
     try {
       const res = await fetch(mgPath("eval"), { method: "POST", body: src });
-      const data = await res.json();
-      const klass = data.ok ? "repl-value" : "repl-error";
-      const text = data.ok ? data.value : data.error;
+      const klass = res.ok ? "repl-value" : "repl-error";
+      const text = res.ok ? (await res.json()).value : await errorText(res);
       const out = document.createElement("pre");
       out.className = klass;
       out.textContent = text;

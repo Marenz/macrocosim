@@ -68,7 +68,7 @@ async fn eval_endpoint_round_trips_world_state() {
         .unwrap();
     assert!(resp.status().is_success());
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["ok"], true);
+    assert!(body["value"].is_string(), "{body}");
 
     // Read back via /api/topology to confirm the world updated.
     let topo = json(&client, format!("{}/api/topology", s.ui_url)).await;
@@ -257,7 +257,7 @@ async fn site_import_creates_microgrid_with_working_formulas() {
         format!("{}/api/mg/{id}/formula?metric=battery", s.ui_url),
     )
     .await;
-    assert_eq!(formula["ok"], true, "body: {formula}");
+    assert!(formula["formula"].is_string(), "body: {formula}");
     assert!(formula["formula"].as_str().unwrap().contains("#9103"));
     assert!(formula.get("explanation").is_none());
 
@@ -972,8 +972,9 @@ async fn a_meter_power_override_keeps_the_aggregate_history() {
         .send()
         .await
         .unwrap();
+    assert!(resp.status().is_success());
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["ok"], true, "{body}");
+    assert!(body["value"].is_string(), "{body}");
 
     // Past the supervisor's 300 ms debounce and long enough for a
     // rebuild to have wiped the ring and refilled only a sample or two.

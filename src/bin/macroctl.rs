@@ -1286,26 +1286,24 @@ async fn run_snapshot(
     Ok(())
 }
 
-/// POST a Lisp expression to /api/eval. Returns the rendered
-/// result string on success, or surfaces the error message.
+/// POST a Lisp expression to the whole-site `/api/eval`. Returns
+/// the printed value, or the evaluation error.
 async fn eval(
     http: &reqwest::Client,
     ui_addr: &str,
     expr: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let body: serde_json::Value = http
+    let resp = http
         .post(format!("{ui_addr}/api/eval"))
         .body(expr.to_string())
         .send()
-        .await?
+        .await?;
+    let body: serde_json::Value = checked(resp)
+        .await
+        .map_err(|e| format!("eval failed: {e}"))?
         .json()
         .await?;
-    if body["ok"] == true {
-        Ok(body["value"].as_str().unwrap_or("").to_string())
-    } else {
-        let msg = body["error"].as_str().unwrap_or("(unknown)");
-        Err(format!("eval failed: {msg}").into())
-    }
+    Ok(body["value"].as_str().unwrap_or("").to_string())
 }
 
 /// `resp` when it succeeded; otherwise an error carrying the

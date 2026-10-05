@@ -182,9 +182,9 @@ impl Drop for TestServer {
 }
 
 /// POST a Lisp body to `/api/eval` and fail the test unless the
-/// server answers `{"ok": true}`. The shared spelling of "drive the
-/// sim the way the dashboard's REPL does" every integration test that
-/// needs a live eval uses.
+/// server answers 200 with a `value`. The shared spelling of "drive
+/// the sim the way the dashboard's REPL does" every integration test
+/// that needs a live eval uses.
 #[allow(dead_code)]
 pub async fn eval_or_panic(client: &reqwest::Client, s: &TestServer, body: &str) {
     let r = client
@@ -196,7 +196,7 @@ pub async fn eval_or_panic(client: &reqwest::Client, s: &TestServer, body: &str)
     let status = r.status();
     let json: serde_json::Value = r.json().await.unwrap();
     assert!(
-        status.is_success() && json["ok"] == true,
+        status.is_success() && json["value"].is_string(),
         "eval {body} failed: {status} {json}",
     );
 }

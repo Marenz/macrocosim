@@ -1,6 +1,6 @@
 //! `/api/eval` + per-mg variant + `/api/format` (tulisp-fmt).
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse};
+use axum::extract::State;
 use serde::{Deserialize, Serialize};
 
 use crate::lisp::Config;
@@ -8,80 +8,41 @@ use crate::ui::api::{ApiError, Json, Path, Query, Text};
 
 #[derive(Serialize)]
 pub(in crate::ui) struct EvalResponse {
-    /// Whether the expression evaluated without an error. False ==
-    /// `error` populated, `value` null. True == `value` holds the
-    /// Display formatted result.
-    ok: bool,
-    value: Option<String>,
-    error: Option<String>,
+    /// The evaluated form, printed.
+    value: String,
 }
 
-/// Evaluate a Lisp expression on the running interpreter. Wrapped in
+/// Evaluate a Lisp expression with no microgrid in scope. Runs in
 /// `spawn_blocking` because tulisp's `SharedMut` is std-sync-RwLock-
 /// backed and grabbing the write lock from the executor thread would
-/// stall every other tokio task waiting on that worker.
-///
-/// Always returns 200 — application-layer success/failure rides in
-/// the JSON body. Reserves HTTP 4xx/5xx for transport-level problems
-/// (bad UTF-8, the spawn_blocking task panicking, etc.).
+/// stall every other tokio task waiting on that worker. 400 on an
+/// evaluation error.
 pub(in crate::ui) async fn eval(
     State(config): State<Config>,
     Text(body): Text,
-) -> impl IntoResponse {
-    eval_response(tokio::task::spawn_blocking(move || config.eval(&body)).await)
+) -> Result<Json<EvalResponse>, ApiError> {
+    let value = super::blocking(move || config.eval(&body))
+        .await?
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(EvalResponse { value }))
 }
 
+/// Evaluate with microgrid `mg_id` in scope. 404 when it is not
+/// registered, including when a reload removes it while the eval
+/// waits for the interpreter. The scope-set, eval, overrides append
+/// and version bump share one interpreter-lock acquisition, so two
+/// concurrent scoped evals can't cross microgrids.
 pub(in crate::ui) async fn eval_for_mg(
     State(config): State<Config>,
     Path(mg_id): Path<u64>,
     Text(body): Text,
-) -> impl IntoResponse {
-    if !config.microgrids().lock().contains_key(&mg_id) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(EvalResponse {
-                ok: false,
-                value: None,
-                error: Some(format!("microgrid {mg_id} not registered")),
-            }),
-        );
-    }
-    // eval_in_mg holds the interpreter lock across scope-set + eval +
-    // overrides append + version bump, so two concurrent per-mg evals
-    // can't cross microgrids.
-    let result = tokio::task::spawn_blocking(move || config.eval_in_mg(mg_id, &body)).await;
-    eval_response(result)
-}
-
-fn eval_response(
-    result: Result<Result<String, String>, tokio::task::JoinError>,
-) -> (StatusCode, Json<EvalResponse>) {
-    match result {
-        Ok(Ok(value)) => (
-            StatusCode::OK,
-            Json(EvalResponse {
-                ok: true,
-                value: Some(value),
-                error: None,
-            }),
-        ),
-        Ok(Err(error)) => (
-            StatusCode::OK,
-            Json(EvalResponse {
-                ok: false,
-                value: None,
-                error: Some(error),
-            }),
-        ),
-        Err(join_err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(EvalResponse {
-                ok: false,
-                value: None,
-                error: Some(format!("eval task panicked: {join_err}")),
-            }),
-        ),
-    }
+) -> Result<Json<EvalResponse>, ApiError> {
+    super::require_mg(&config, mg_id)?;
+    let value = super::blocking(move || config.eval_in_registered_mg(mg_id, &body))
+        .await?
+        .ok_or_else(|| ApiError::not_registered(mg_id))?
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(EvalResponse { value }))
 }
 
 #[derive(Deserialize)]

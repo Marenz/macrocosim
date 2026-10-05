@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
+import httpx
 import pytest
 from frequenz.quantities import Percentage, Power
 
+from macrocosim._http import HttpClient
 from macrocosim.build import raw
 from macrocosim.enums import CommandMode, Health, TelemetryMode
 from macrocosim.errors import ControlRejected
@@ -106,3 +108,19 @@ def test_handle_methods_chain() -> None:
     w = FakeSite()
     h = ComponentHandle(w, 3)
     assert h.status(health=Health.OK).command(active_power=Power.from_watts(0)) is h
+
+
+def _client_answering(status: int, body: dict) -> HttpClient:
+    client = HttpClient("http://macrocosim.test")
+    client._client = httpx.Client(
+        base_url="http://macrocosim.test",
+        transport=httpx.MockTransport(lambda _req: httpx.Response(status, json=body)),
+    )
+    return client
+
+
+def test_eval_maps_400_to_ok_false() -> None:
+    bad = _client_answering(400, {"error": "boom"})
+    assert bad.eval("(x)") == {"ok": False, "error": "boom"}
+    good = _client_answering(200, {"value": "3"})
+    assert good.eval("(+ 1 2)") == {"ok": True, "value": "3"}

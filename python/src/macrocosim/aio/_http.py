@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 
-from .._http import EvalResult
+from .._http import EvalResult, _error_text
 from ..errors import ControlRejected
 
 
@@ -41,21 +41,19 @@ class AsyncHttpClient:
         """
         resp = await self._client.post(path, json=payload)
         if 400 <= resp.status_code < 500:
-            try:
-                error = resp.json().get("error", resp.text)
-            except ValueError:
-                error = resp.text
-            raise ControlRejected(error)
+            raise ControlRejected(_error_text(resp))
         resp.raise_for_status()
         return resp.json() if resp.content else {}
 
     async def eval(self, expr: str, mg_id: int | None = None) -> EvalResult:
-        """POST a Lisp form to ``/api/eval`` (or the per-microgrid variant)."""
+        """POST a Lisp form: the whole-site ``/api/eval`` without an
+        ``mg_id``, the microgrid's eval with one."""
         path = "/api/eval" if mg_id is None else f"/api/mg/{mg_id}/eval"
         resp = await self._client.post(path, content=expr)
+        if resp.status_code == 400:
+            return {"ok": False, "error": _error_text(resp)}
         resp.raise_for_status()
-        result: EvalResult = resp.json()
-        return result
+        return {"ok": True, "value": resp.json()["value"]}
 
     async def aclose(self) -> None:
         """Close the underlying connection pool."""

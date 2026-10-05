@@ -316,12 +316,13 @@ export async function refreshFormula() {
   let data;
   try {
     const res = await fetch(`${mgPath("formula")}?${params}`);
-    // The server's rejections (unknown microgrid, unknown metric)
-    // carry no `ok` envelope, only the shared `error` body.
+    // A failure carries the shared `error` body: a 400 is the
+    // formula's own error, other statuses are the server refusing
+    // the request.
     if (!res.ok) {
       const text = await errorText(res);
       if (stale(seq)) return;
-      showFormulaError(`${res.status}: ${text}`);
+      showFormulaError(res.status === 400 ? text : `${res.status}: ${text}`);
       return;
     }
     data = await res.json();
@@ -331,10 +332,6 @@ export async function refreshFormula() {
     return;
   }
   if (stale(seq)) return;
-  if (!data.ok) {
-    showFormulaError(data.error);
-    return;
-  }
   document.getElementById("formula-error").hidden = true;
   formulaText = data.formula;
   const ast = parseFormula(data.formula);

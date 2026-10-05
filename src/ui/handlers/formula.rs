@@ -72,26 +72,23 @@ fn formula_body(
         .build();
     let (nodes, edges) = graph_adapter::snapshot(&site);
     if nodes.is_empty() {
-        return Ok(Json(json!({
-            "ok": false,
-            "error": "The microgrid has no components yet.",
-        })));
+        return Err(ApiError::bad_request(
+            "The microgrid has no components yet.",
+        ));
     }
     let graph = match graph_adapter::build_from_with_config(nodes, edges, graph_config) {
         Ok(graph) => graph,
         Err(e) => {
-            return Ok(Json(json!({
-                "ok": false,
-                "error": format!("Invalid graph: {e}"),
-                "kind": kind_of(&e),
-            })));
+            return Err(
+                ApiError::bad_request(format!("Invalid graph: {e}")).with("kind", kind_of(&e))
+            );
         }
     };
     let ids: Option<BTreeSet<u64>> = match query.ids.as_deref() {
         None | Some("") => None,
         Some(text) => match parse_ids(text) {
             Ok(set) => Some(set),
-            Err(e) => return Ok(Json(json!({ "ok": false, "error": e }))),
+            Err(e) => return Err(ApiError::bad_request(e)),
         },
     };
     // The single-component metrics need exactly one id; anything else
@@ -117,26 +114,22 @@ fn formula_body(
             Some(id) if metric == "component" => graph.component_formula(id),
             Some(id) => graph.component_ac_coalesce_formula(id),
             None => {
-                return Ok(Json(json!({
-                    "ok": false,
-                    "error": "Select exactly one component for this metric.",
-                })));
+                return Err(ApiError::bad_request(
+                    "Select exactly one component for this metric.",
+                ));
             }
         },
         other => {
-            return Ok(Json(
-                json!({ "ok": false, "error": format!("Unknown metric: {other}") }),
-            ));
+            return Err(ApiError::bad_request(format!("Unknown metric: {other}")));
         }
     };
-    Ok(match formula {
-        Ok(formula) => Json(json!({
-            "ok": true,
+    match formula {
+        Ok(formula) => Ok(Json(json!({
             "metric": query.metric,
             "formula": formula.to_string(),
-        })),
-        Err(e) => Json(json!({ "ok": false, "error": e.to_string(), "kind": kind_of(&e) })),
-    })
+        }))),
+        Err(e) => Err(ApiError::bad_request(e.to_string()).with("kind", kind_of(&e))),
+    }
 }
 
 /// Parses a comma-separated id list. A token that is not a number is

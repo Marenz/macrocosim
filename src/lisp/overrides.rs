@@ -43,6 +43,16 @@ impl Config {
         self.scoped(mg_id, |cfg, ctx| cfg.eval_locked(ctx, src))
     }
 
+    /// [`Config::eval_in_mg`] that refuses a microgrid the registry
+    /// no longer holds once the interpreter lock is taken: `None`
+    /// then, and nothing is evaluated.
+    pub fn eval_in_registered_mg(&self, mg_id: u64, src: &str) -> Option<Result<String, String>> {
+        self.scoped(mg_id, |cfg, ctx| {
+            let registered = cfg.microgrids().lock().contains_key(&mg_id);
+            registered.then(|| cfg.eval_locked(ctx, src))
+        })
+    }
+
     /// Run `f` with the interpreter locked and `current_microgrid`
     /// flipped to `mg_id` (restored on exit, panic included). The
     /// one sanctioned way to do a scoped operation from Rust: the
@@ -455,6 +465,18 @@ fn contains_defaults_setq(src: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::super::test_support::config_with;
+
+    /// A scoped eval in a microgrid the registry no longer holds does
+    /// not run.
+    #[test]
+    fn eval_in_registered_mg_refuses_an_unregistered_id() {
+        let (cfg, _dir) = config_with("");
+        assert!(
+            cfg.eval_in_registered_mg(9999, "(setq http-race-probe 1)")
+                .is_none()
+        );
+        assert_eq!(cfg.eval("(boundp 'http-race-probe)").unwrap(), "nil");
+    }
 
     /// A `(load "file")` eval records the file for reload replay
     /// instead of journaling the form: the file itself is the

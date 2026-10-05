@@ -204,26 +204,65 @@ async fn topology_endpoint_emits_components_and_connections() {
     assert_eq!(parsed["connections"].as_array().unwrap().len(), 2);
 }
 
+/// Both evals answer 200 {"value"} on success and 400 {"error"} on
+/// an evaluation error; neither body carries `ok`.
 #[tokio::test]
-async fn eval_endpoint_runs_lisp_and_returns_value() {
+async fn eval_answers_with_status_codes() {
     let cfg = config_with("").await;
-    let (status, body) = call(cfg, post("/api/eval", "(+ 2 3)")).await;
-    assert_eq!(status, StatusCode::OK);
-    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["ok"], true);
-    assert_eq!(parsed["value"], "5");
-    assert!(parsed["error"].is_null());
+    for path in ["/api/eval", "/api/mg/2200/eval"] {
+        let (status, body) = call(cfg.clone(), post(path, "(+ 1 2)")).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v, serde_json::json!({"value": "3"}), "{path}");
+
+        let (status, body) = call(cfg.clone(), post(path, "(no-such-fn)")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}");
+        assert!(error_of(&body).contains("no-such-fn"), "{path}");
+    }
 }
 
+/// A scoped eval for an unregistered microgrid is the shared 404.
 #[tokio::test]
-async fn eval_endpoint_reports_lisp_errors() {
+async fn scoped_eval_for_an_unregistered_microgrid_is_404() {
     let cfg = config_with("").await;
-    let (status, body) = call(cfg, post("/api/eval", "(undefined-fn 1)")).await;
+    let (status, body) = call(cfg, post("/api/mg/9999/eval", "(+ 1 2)")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(error_of(&body), "microgrid 9999 not registered");
+}
+
+/// The whole-site eval can create a microgrid: site-level Lisp still
+/// has a door once the unscoped routes are gone.
+#[tokio::test]
+async fn site_eval_creates_a_microgrid() {
+    let cfg = config_with("").await;
+    let (status, _) = call(
+        cfg.clone(),
+        post(
+            "/api/eval",
+            "(make-microgrid :id 2300 :grpc-port 8820 :topology (lambda () nil))",
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["ok"], false);
-    assert!(parsed["value"].is_null());
-    assert!(!parsed["error"].as_str().unwrap().is_empty());
+    assert!(cfg.microgrids().lock().contains_key(&2300));
+}
+
+/// A formula error is a 400; one with a kind keeps it beside
+/// `error`.
+#[tokio::test]
+async fn a_formula_error_is_400_with_its_kind() {
+    let cfg = config_with("").await;
+    let (status, body) = call(cfg, get("/api/mg/2200/formula?metric=grid")).await;
+    // The default test microgrid has no components.
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error_of(&body), "The microgrid has no components yet.");
+
+    let cfg = config_with(FORMULA_TOPOLOGY).await;
+    let (status, body) = call(cfg, get("/api/mg/2200/formula?metric=battery&ids=99")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["kind"], "component_not_found");
+    assert!(v.get("ok").is_none(), "{v}");
 }
 
 #[tokio::test]
@@ -932,8 +971,8 @@ async fn formula_endpoint_returns_formula() {
     let (status, body) = call(cfg, get("/api/mg/2200/formula?metric=battery")).await;
     assert_eq!(status, StatusCode::OK);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["ok"], true, "body: {parsed}");
     assert_eq!(parsed["metric"], "battery");
+    assert!(parsed.get("ok").is_none(), "body: {parsed}");
     // Just the rendered string now — parsing/highlighting live
     // client-side in formula-ast.js, so ast/explanation/commented no
     // longer ride along.
@@ -947,14 +986,12 @@ async fn formula_endpoint_returns_formula() {
 async fn formula_endpoint_rejects_unknown_metric_and_bad_ids() {
     let cfg = config_with(FORMULA_TOPOLOGY).await;
     let (status, body) = call(cfg.clone(), get("/api/mg/2200/formula?metric=bogus")).await;
-    assert_eq!(status, StatusCode::OK);
-    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["ok"], false);
-    assert!(parsed["error"].as_str().unwrap().contains("bogus"));
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(error_of(&body).contains("bogus"));
 
-    let (_, body) = call(cfg, get("/api/mg/2200/formula?metric=battery&ids=1,x")).await;
+    let (status, body) = call(cfg, get("/api/mg/2200/formula?metric=battery&ids=1,x")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["ok"], false);
     assert!(
         parsed["error"]
             .as_str()
@@ -966,9 +1003,9 @@ async fn formula_endpoint_rejects_unknown_metric_and_bad_ids() {
 #[tokio::test]
 async fn formula_endpoint_reports_error_kind_for_missing_component() {
     let cfg = config_with(FORMULA_TOPOLOGY).await;
-    let (_, body) = call(cfg, get("/api/mg/2200/formula?metric=battery&ids=99")).await;
+    let (status, body) = call(cfg, get("/api/mg/2200/formula?metric=battery&ids=99")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["ok"], false);
     assert_eq!(parsed["kind"], "component_not_found");
 }
 
@@ -989,9 +1026,7 @@ async fn formula_endpoint_honors_allow_unconnected() {
     .await;
     // Default config: the unconnected meter makes the graph invalid.
     let (status, body) = call(cfg.clone(), get("/api/mg/2200/formula?metric=battery")).await;
-    assert_eq!(status, StatusCode::OK);
-    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["ok"], false, "body: {parsed}");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:?}");
     // With the flag the graph builds and the formula comes back.
     let (status, body) = call(
         cfg,
@@ -1000,7 +1035,6 @@ async fn formula_endpoint_honors_allow_unconnected() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["ok"], true, "body: {parsed}");
     assert!(parsed["formula"].as_str().unwrap().contains('#'));
 }
 
@@ -1214,9 +1248,7 @@ async fn operational_mode_eval_derives_and_is_enforced() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
-    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["ok"], true, "body: {parsed}");
+    assert_eq!(status, StatusCode::OK, "body: {body:?}");
 
     // Derived: the topology snapshot shows the mode and the silenced
     // stream.
@@ -1232,19 +1264,13 @@ async fn operational_mode_eval_derives_and_is_enforced() {
 
     // Enforced: poking the stream back to normal is rejected while
     // the mode forbids telemetry.
-    let (_, body) = call(
+    let (status, body) = call(
         cfg,
         post("/api/eval", "(set-component-telemetry-mode 1 'normal)"),
     )
     .await;
-    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["ok"], false);
-    assert!(
-        parsed["error"]
-            .as_str()
-            .unwrap()
-            .contains("streams no telemetry")
-    );
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(error_of(&body).contains("streams no telemetry"));
 }
 
 /// The create lock is held until a create's load ends, not until its

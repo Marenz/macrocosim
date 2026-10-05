@@ -603,12 +603,12 @@ check("e2e: the values pill's tooltip describes the flow colours", await page.ev
 // would only return the childless meter to measuring 0 W), so the
 // block leaves the meter at the curve's 17.5 kW mean: live, and
 // steadier for the blocks below that read it.
-// The eval endpoint answers 200 to a failed Lisp eval too (ok:false),
-// so the body is what says the expression took.
+// The eval endpoint answers 400 to a failed Lisp eval, so the
+// response status is what says the expression took.
 const evalMg = (expr) =>
   page.evaluate(async (e) => {
     const r = await fetch("/api/mg/2200/eval", { method: "POST", body: e });
-    return { status: r.status, ...(await r.json()) };
+    return { status: r.status, ok: r.ok, ...(await r.json()) };
   }, expr);
 const zeroed = await evalMg("(set-meter-power 100 0)");
 check("e2e: consumer meter set to 0 W", zeroed.status === 200 && zeroed.ok === true, JSON.stringify(zeroed));
@@ -715,7 +715,7 @@ await page.evaluate(async () => { const { topology } = await import("/assets/top
 // state) and wait for the ramp to reach the live overlay.
 const setpointOk = await page.evaluate(async () => {
   const r = await fetch("/api/mg/2200/eval", { method: "POST", body: "(set-active-power 1001 -8000 60000)" });
-  return (await r.json()).ok;
+  return r.ok;
 });
 check("e2e: hover setup — inverter setpoint accepted", setpointOk === true, String(setpointOk));
 await waitFor(async () => {
@@ -1118,8 +1118,7 @@ check(
 // to be holding.
 const evalNumber = async (expr) => {
   const r = await fetch(`${BASE}/api/mg/2200/eval`, { method: "POST", body: expr, signal: AbortSignal.timeout(5000) });
-  const j = await r.json();
-  return j.ok ? Number(j.value) : Number.NaN;
+  return r.ok ? Number((await r.json()).value) : Number.NaN;
 };
 // The Component card that holds the knobs is folded by default
 // (CARD_DEFAULT_OPEN in inspect.js) — open it, or Playwright's
@@ -1193,7 +1192,7 @@ const reactiveCleared = await (async () => {
     body: `(clear-meter-reactive ${meterId})`,
     signal: AbortSignal.timeout(5000),
   });
-  return (await r.json()).ok;
+  return r.ok;
 })();
 check("e2e: the reactive override is cleared at the end of the section", reactiveCleared === true, String(reactiveCleared));
 
@@ -1340,7 +1339,7 @@ const evOk = await (async () => {
     body: `(set-active-power ${chargerId} 22000 60000)`,
     signal: AbortSignal.timeout(5000),
   });
-  return (await r.json()).ok;
+  return r.ok;
 })();
 check("e2e: a 22 kW command is accepted on the charger", evOk === true, String(evOk));
 // A city car is 1-phase/32 A — 230 V × 32 A ≈ 7.36 kW — so the draw
@@ -1413,7 +1412,7 @@ const boilerSetupOk = await page.evaluate(
       method: "POST",
       body: `(make-meter :id ${meterId}) (make-steam-boiler :id ${boilerId} :demand 100.0) (connect 2 ${meterId}) (connect ${meterId} ${boilerId})`,
     });
-    return (await r.json()).ok;
+    return r.ok;
   },
   { meterId: BOILER_METER_ID, boilerId: BOILER_ID },
 );
@@ -1473,7 +1472,7 @@ check(
 // flows no matter what set-active-power asks for.
 const boilerPowerOk = await page.evaluate(async (id) => {
   const r = await fetch("/api/mg/2200/eval", { method: "POST", body: `(set-active-power ${id} 50000.0)` });
-  return (await r.json()).ok;
+  return r.ok;
 }, BOILER_ID);
 check("e2e: the boiler's active-power setpoint is accepted", boilerPowerOk === true, String(boilerPowerOk));
 const boilerDrawing = await waitFor(async () => {
@@ -1495,7 +1494,7 @@ check(
 // timescale, so "declined" is stable for this assertion.
 const boilerPressureOk = await page.evaluate(async (id) => {
   const r = await fetch("/api/mg/2200/eval", { method: "POST", body: `(set-boiler-pressure ${id} 9.5)` });
-  return (await r.json()).ok;
+  return r.ok;
 }, BOILER_ID);
 check("e2e: the pressure poke is accepted", boilerPressureOk === true, String(boilerPressureOk));
 const boilerDeclined = await waitFor(async () => {
