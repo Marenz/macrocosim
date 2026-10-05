@@ -167,37 +167,6 @@ impl<'a> Gateway<'a> {
         Self { site, gw }
     }
 
-    /// An active-power setpoint; see [`Self::set_power`].
-    pub fn set_active_power(
-        &self,
-        id: u64,
-        generation: u64,
-        value: f32,
-        lifetime: Duration,
-        mode: Mode,
-    ) -> Result<Applied, GatewayError> {
-        self.set_power(SetpointAxis::Active, id, generation, value, lifetime, mode)
-    }
-
-    /// A reactive-power setpoint; see [`Self::set_power`].
-    pub fn set_reactive_power(
-        &self,
-        id: u64,
-        generation: u64,
-        value: f32,
-        lifetime: Duration,
-        mode: Mode,
-    ) -> Result<Applied, GatewayError> {
-        self.set_power(
-            SetpointAxis::Reactive,
-            id,
-            generation,
-            value,
-            lifetime,
-            mode,
-        )
-    }
-
     /// Validate (or clamp) `value` for `id`'s `axis`, apply it and
     /// arm its lifetime, all under the gateway lock. `generation` is
     /// the site's `run_generation` the caller observed when it looked
@@ -328,6 +297,7 @@ impl<'a> Gateway<'a> {
 
     /// The summed bounds of `id`'s children on `axis`, each divided
     /// by its parent count; `None` when no child reports any.
+    #[cfg(test)]
     pub fn child_envelope(&self, id: u64, axis: SetpointAxis) -> Option<VecBounds> {
         let st = self.gw.state.lock();
         self.child_envelope_locked(&st, id, axis)
@@ -502,7 +472,8 @@ mod tests {
         put(&site, Arc::new(Hw::new(1)));
         let applied = site
             .gateway()
-            .set_active_power(
+            .set_power(
+                SetpointAxis::Active,
                 1,
                 site.run_generation(),
                 500.0,
@@ -533,7 +504,14 @@ mod tests {
         let fresh = put(&site, Arc::new(Hw::new(1)));
         let err = site
             .gateway()
-            .set_active_power(1, generation, 500.0, HOUR, Mode::Reject)
+            .set_power(
+                SetpointAxis::Active,
+                1,
+                generation,
+                500.0,
+                HOUR,
+                Mode::Reject,
+            )
             .unwrap_err();
         assert_eq!(err, GatewayError::SiteReset);
         assert!(err.to_string().contains("site was reset"));
@@ -572,12 +550,19 @@ mod tests {
         let gw = site.gateway();
 
         let e = gw
-            .set_active_power(99, generation, 1.0, HOUR, Mode::Reject)
+            .set_power(
+                SetpointAxis::Active,
+                99,
+                generation,
+                1.0,
+                HOUR,
+                Mode::Reject,
+            )
             .unwrap_err();
         assert_eq!(e.to_string(), "component 99 not found");
 
         let e = gw
-            .set_active_power(5, generation, 1.0, HOUR, Mode::Reject)
+            .set_power(SetpointAxis::Active, 5, generation, 1.0, HOUR, Mode::Reject)
             .unwrap_err();
         assert!(matches!(
             e,
@@ -588,12 +573,26 @@ mod tests {
         ));
 
         let e = gw
-            .set_active_power(1, generation, f32::NAN, HOUR, Mode::Reject)
+            .set_power(
+                SetpointAxis::Active,
+                1,
+                generation,
+                f32::NAN,
+                HOUR,
+                Mode::Reject,
+            )
             .unwrap_err();
         assert!(e.to_string().contains("non-finite"), "{e}");
 
         let e = gw
-            .set_active_power(1, generation, 5_000.0, HOUR, Mode::Reject)
+            .set_power(
+                SetpointAxis::Active,
+                1,
+                generation,
+                5_000.0,
+                HOUR,
+                Mode::Reject,
+            )
             .unwrap_err();
         assert!(matches!(e, GatewayError::OutOfEnvelope(_)));
         assert!(e.to_string().contains("out of bounds [-1000, 1000]"), "{e}");
@@ -612,11 +611,25 @@ mod tests {
         put(&site, Arc::new(Hw::new(1)));
         let gw = site.gateway();
         let applied = gw
-            .set_active_power(1, site.run_generation(), 5_000.0, HOUR, Mode::Clamp)
+            .set_power(
+                SetpointAxis::Active,
+                1,
+                site.run_generation(),
+                5_000.0,
+                HOUR,
+                Mode::Clamp,
+            )
             .unwrap();
         assert_eq!(applied.value, 1_000.0);
         let applied = gw
-            .set_active_power(1, site.run_generation(), 0.0, HOUR, Mode::Clamp)
+            .set_power(
+                SetpointAxis::Active,
+                1,
+                site.run_generation(),
+                0.0,
+                HOUR,
+                Mode::Clamp,
+            )
             .unwrap();
         assert_eq!(applied.value, 0.0);
     }
@@ -815,7 +828,14 @@ mod tests {
             "{e}"
         );
         let applied = gw
-            .set_active_power(2, site.run_generation(), 3_000.0, HOUR, Mode::Clamp)
+            .set_power(
+                SetpointAxis::Active,
+                2,
+                site.run_generation(),
+                3_000.0,
+                HOUR,
+                Mode::Clamp,
+            )
             .unwrap();
         assert_eq!(applied.value, 1_000.0);
         assert!(
@@ -907,7 +927,14 @@ mod tests {
         put(&site, Arc::new(Hw::new(1)));
         let applied = site
             .gateway()
-            .set_active_power(1, site.run_generation(), 5_000.0, HOUR, Mode::Clamp)
+            .set_power(
+                SetpointAxis::Active,
+                1,
+                site.run_generation(),
+                5_000.0,
+                HOUR,
+                Mode::Clamp,
+            )
             .unwrap();
         assert_eq!(applied.value, 1_000.0);
     }

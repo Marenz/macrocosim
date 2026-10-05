@@ -193,7 +193,8 @@ mod tests {
             }),
         );
         site.gateway()
-            .set_active_power(
+            .set_power(
+                Active,
                 1,
                 site.run_generation(),
                 600.0,
@@ -583,8 +584,15 @@ mod tests {
         let gw = site.gateway();
         let run = site.run_generation();
         let set = |w: f32, lifetime_s: u64| {
-            gw.set_active_power(2, run, w, Duration::from_secs(lifetime_s), Mode::Reject)
-                .unwrap();
+            gw.set_power(
+                Active,
+                2,
+                run,
+                w,
+                Duration::from_secs(lifetime_s),
+                Mode::Reject,
+            )
+            .unwrap();
         };
         set(3_000.0, 60);
         site.tick_n(40, DT);
