@@ -1,4 +1,4 @@
-//! Per-microgrid undo / redo endpoints under `/api/mg/{mg_id}/`.
+//! Per-microgrid undo / redo endpoints under `/api/mg/{mg}/`.
 //!
 //! The history lives on the server (see [`crate::lisp::undo`]): each
 //! structural edit stacks the generated block the microgrid's file
@@ -9,32 +9,31 @@
 use axum::extract::State;
 
 use crate::lisp::{Config, UndoDepths};
-use crate::ui::api::{ApiError, Json, Path};
+use crate::ui::api::{ApiError, Json, Mg};
 
-/// GET /api/mg/{mg_id}/undo — how deep each stack is, so the UI can
+/// GET /api/mg/{mg}/undo — how deep each stack is, so the UI can
 /// enable or grey out its buttons without trying a step first.
-pub(in crate::ui) async fn undo_depths_for_mg(
+pub(in crate::ui) async fn undo_depths(
     State(config): State<Config>,
-    Path(mg_id): Path<u64>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    super::require_mg(&config, mg_id)?;
-    Ok(Json(depths_json(config.undo_depths(mg_id))))
+    mg: Mg,
+) -> Json<serde_json::Value> {
+    Json(depths_json(config.undo_depths(mg.id)))
 }
 
-/// POST /api/mg/{mg_id}/undo — step one structural edit back.
-pub(in crate::ui) async fn undo_for_mg(
+/// POST /api/mg/{mg}/undo — step one structural edit back.
+pub(in crate::ui) async fn undo(
     State(config): State<Config>,
-    Path(mg_id): Path<u64>,
+    mg: Mg,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    step(config, mg_id, true).await
+    step(config, mg.id, true).await
 }
 
-/// POST /api/mg/{mg_id}/redo — step one structural edit forward.
-pub(in crate::ui) async fn redo_for_mg(
+/// POST /api/mg/{mg}/redo — step one structural edit forward.
+pub(in crate::ui) async fn redo(
     State(config): State<Config>,
-    Path(mg_id): Path<u64>,
+    mg: Mg,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    step(config, mg_id, false).await
+    step(config, mg.id, false).await
 }
 
 /// Shared body: both directions rewrite a file and reload it, which
@@ -44,7 +43,6 @@ async fn step(
     mg_id: u64,
     backwards: bool,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    super::require_mg(&config, mg_id)?;
     let depths = super::blocking(move || {
         if backwards {
             config.undo(mg_id)

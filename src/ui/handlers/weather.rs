@@ -1,8 +1,7 @@
-//! Site weather over HTTP: `GET`/`POST /api/weather` (plus the
-//! `/api/mg/{mg_id}/…` variants) mirror the Lisp
-//! `(make-weather)`/`(set-weather)`/`(pass-cloud)`/`(weather-status)`
-//! doors (`src/lisp/defuns/weather.rs`) for the weather panel, which
-//! has no Lisp console of its own.
+//! Site weather over HTTP: `GET`/`POST /api/mg/{mg}/weather` mirror
+//! the Lisp `(make-weather)`, `(set-weather)`, `(pass-cloud)` and
+//! `(weather-status)` doors (`src/lisp/defuns/weather.rs`) for the
+//! weather panel, which has no Lisp console of its own.
 //!
 //! Unlike the typed drive door in `control.rs`, weather isn't
 //! component-addressed — it's a property of the site — so it gets
@@ -11,21 +10,17 @@
 //! doors enforce, so a request that would be rejected in the console
 //! is rejected here too, and vice versa.
 
-use axum::extract::State;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::lisp::Config;
 use crate::sim::microgrid_site::MicrogridSite;
 use crate::sim::sim_clock::parse_time_of_day;
 use crate::sim::weather::{self as weather, WeatherPatch};
-use crate::ui::api::{ApiError, Json, Path};
-
-use super::control::site_for;
+use crate::ui::api::{ApiError, Json, Mg};
 
 type WeatherResult = Result<Json<WeatherResponse>, ApiError>;
 
-/// `GET`/`POST /api/weather` response — the config the panel can
+/// `GET`/`POST weather` response — the config the panel can
 /// edit, plus the live readout it repaints from. Times print back as
 /// `"HH:MM"`, the same spelling the POST body accepts.
 #[derive(Serialize)]
@@ -94,22 +89,10 @@ fn snapshot(site: &crate::sim::MicrogridSite) -> Option<WeatherResponse> {
     })
 }
 
-fn read_weather(config: &Config, mg_id: Option<u64>) -> WeatherResult {
-    let site = site_for(config, mg_id)?;
-    snapshot(&site)
+pub(in crate::ui) async fn weather_get(mg: Mg) -> WeatherResult {
+    snapshot(&mg.site)
         .map(Json)
         .ok_or_else(|| ApiError::not_found("no weather configured".to_string()))
-}
-
-pub(in crate::ui) async fn weather_get(State(config): State<Config>) -> WeatherResult {
-    read_weather(&config, None)
-}
-
-pub(in crate::ui) async fn weather_get_for_mg(
-    State(config): State<Config>,
-    Path(mg_id): Path<u64>,
-) -> WeatherResult {
-    read_weather(&config, Some(mg_id))
 }
 
 /// One scripted cloud, fired after any config change in the same
@@ -124,7 +107,7 @@ pub(in crate::ui) struct PassCloudRequest {
     ramp_s: Option<f64>,
 }
 
-/// `POST /api/weather` body. Every field optional — a partial update
+/// `POST weather` body. Every field optional — a partial update
 /// over whatever the site already has, same contract as
 /// `(set-weather)`. Times are `"HH:MM"` strings; the ranges are
 /// plain `[lo, hi]` pairs (the HTTP door has no need for Lisp's
@@ -194,9 +177,7 @@ fn patch_of(req: &WeatherPostRequest) -> Result<WeatherPatch, String> {
     })
 }
 
-fn apply_weather(config: &Config, mg_id: Option<u64>, req: &WeatherPostRequest) -> WeatherResult {
-    let site = site_for(config, mg_id)?;
-
+fn apply_weather(site: &MicrogridSite, req: &WeatherPostRequest) -> WeatherResult {
     // The site's weather config, read ONCE. It answers both questions
     // this handler has — whether the site models weather at all (a
     // cloud-only body has to be turned away rather than creating one
@@ -206,7 +187,7 @@ fn apply_weather(config: &Config, mg_id: Option<u64>, req: &WeatherPostRequest) 
     // Taking it here and passing it down is what makes the decision
     // testable against a reading that no longer matches the site.
     let existing = site.with_weather(|w| w.config().clone());
-    apply_weather_over(&site, req, existing)
+    apply_weather_over(site, req, existing)
 }
 
 /// The half of [`apply_weather`] that runs against the caller's own
@@ -275,18 +256,10 @@ fn apply_weather_over(
 }
 
 pub(in crate::ui) async fn weather_post(
-    State(config): State<Config>,
+    mg: Mg,
     Json(req): Json<WeatherPostRequest>,
 ) -> WeatherResult {
-    apply_weather(&config, None, &req)
-}
-
-pub(in crate::ui) async fn weather_post_for_mg(
-    State(config): State<Config>,
-    Path(mg_id): Path<u64>,
-    Json(req): Json<WeatherPostRequest>,
-) -> WeatherResult {
-    apply_weather(&config, Some(mg_id), &req)
+    apply_weather(&mg.site, &req)
 }
 
 #[cfg(test)]

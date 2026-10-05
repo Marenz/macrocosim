@@ -196,14 +196,6 @@ async fn main() {
     }
     let (dispatch_listener, dispatch_addr) = bind_or_exit(dispatch_addr, "MicrogridDispatch").await;
 
-    // The legacy /api/microgrid/* endpoints read the first boot
-    // microgrid's slot; on a bare boot it is an empty,
-    // never-connected slot (the per-mg routes serve runtime loads).
-    let microgrid = boot_ids
-        .first()
-        .and_then(|id| runtimes.loopbacks().read().get(id).cloned())
-        .unwrap_or_else(ui::new_microgrid_slot);
-
     // Emit the resolved endpoints once everything is bound — the
     // machine-readable readiness signal. Boot-time microgrids only;
     // runtime-created ones (POST /api/microgrids/create) aren't listed.
@@ -250,9 +242,7 @@ async fn main() {
     let mut tasks: tokio::task::JoinSet<&'static str> = tokio::task::JoinSet::new();
     log::info!("Macrocosim UI listening on http://{ui_addr}");
     tasks.spawn(async move {
-        if let Err(e) =
-            ui::serve_with_listener(ui_listener, ui_config, microgrid, runtimes.clone()).await
-        {
+        if let Err(e) = ui::serve_with_listener(ui_listener, ui_config, runtimes.clone()).await {
             log::error!("UI server exited: {e}");
         }
         "UI server"

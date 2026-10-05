@@ -7,7 +7,7 @@ use axum::{extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::lisp::Config;
-use crate::ui::api::{ApiError, Json, Path};
+use crate::ui::api::{ApiError, Json, Mg, Path};
 
 /// JSON shape for one dispatch in the per-microgrid Dispatches view.
 /// Timestamps are epoch-millis so the SPA formats them client-side via
@@ -33,15 +33,14 @@ pub(in crate::ui) struct DispatchView {
 /// Per-microgrid dispatch list, read straight from the shared
 /// `DispatchStore` (no gRPC round-trip). Newest-created first — ids
 /// are monotonic, so descending id order matches. Returns `[]` for a
-/// microgrid with no dispatches; the store, not the registry, is the
-/// authority here, so an unknown `mg_id` simply yields an empty list.
-pub(in crate::ui) async fn dispatches_for_mg(
+/// registered microgrid with no dispatches.
+pub(in crate::ui) async fn dispatches(
     State(config): State<Config>,
-    Path(mg_id): Path<u64>,
+    mg: Mg,
 ) -> Json<Vec<DispatchView>> {
     let views = config
         .dispatches()
-        .list_mg(mg_id)
+        .list_mg(mg.id)
         .iter()
         .rev()
         .map(dispatch_to_view)
@@ -49,7 +48,7 @@ pub(in crate::ui) async fn dispatches_for_mg(
     Json(views)
 }
 
-/// Body for `POST /api/mg/{id}/dispatches`. `target` is the same
+/// Body for `POST /api/mg/{mg}/dispatches`. `target` is the same
 /// human syntax the dispatch CLI takes (category names or numeric
 /// ids); `payload` is free JSON (must be an object). With no
 /// `start_ms` the dispatch starts immediately. `recurrence` is
@@ -119,15 +118,11 @@ fn recurrence_from_req(
 /// Create a dispatch from the UI. Parses the human target / payload,
 /// then goes through the same `DispatchStore::create` the gRPC server
 /// uses, so the construction rules are identical.
-pub(in crate::ui) async fn dispatch_create_for_mg(
+pub(in crate::ui) async fn dispatch_create(
     State(config): State<Config>,
-    Path(mg_id): Path<u64>,
+    mg: Mg,
     Json(req): Json<DispatchCreateReq>,
 ) -> Result<(StatusCode, Json<DispatchView>), ApiError> {
-    // A typo'd mg id would otherwise create a phantom entry that
-    // accumulates forever (dispatches have no TTL) — guard with the
-    // registry like the sibling per-mg routes (eval, overrides).
-    super::require_mg(&config, mg_id)?;
     let target = crate::sim::dispatch::parse_target(&req.target).map_err(ApiError::bad_request)?;
     let payload = match req.payload {
         None | Some(serde_json::Value::Null) => None,
@@ -153,34 +148,37 @@ pub(in crate::ui) async fn dispatch_create_for_mg(
     };
     let dispatch = config
         .dispatches()
-        .create(mg_id, data, start_immediately)
+        .create(mg.id, data, start_immediately)
         .map_err(dispatch_err_to_http)?;
     Ok((StatusCode::CREATED, Json(dispatch_to_view(&dispatch))))
 }
 
-/// Body for `POST /api/mg/{id}/dispatches/{did}/active` — pause
+/// Body for `POST /api/mg/{mg}/dispatches/{did}/active` — pause
 /// (`false`) or resume (`true`).
 #[derive(Deserialize)]
 pub(in crate::ui) struct DispatchSetActiveReq {
     active: bool,
 }
 
-pub(in crate::ui) async fn dispatch_set_active_for_mg(
+pub(in crate::ui) async fn dispatch_set_active(
     State(config): State<Config>,
-    Path((mg_id, dispatch_id)): Path<(u64, u64)>,
+    mg: Mg,
+    Path((_, dispatch_id)): Path<(u64, u64)>,
     Json(req): Json<DispatchSetActiveReq>,
 ) -> Result<Json<DispatchView>, ApiError> {
     let dispatch = config
         .dispatches()
-        .set_active(mg_id, dispatch_id, req.active)
+        .set_active(mg.id, dispatch_id, req.active)
         .map_err(dispatch_err_to_http)?;
     Ok(Json(dispatch_to_view(&dispatch)))
 }
 
-pub(in crate::ui) async fn dispatch_delete_for_mg(
+pub(in crate::ui) async fn dispatch_delete(
     State(config): State<Config>,
-    Path((mg_id, dispatch_id)): Path<(u64, u64)>,
+    mg: Mg,
+    Path((_, dispatch_id)): Path<(u64, u64)>,
 ) -> Result<StatusCode, ApiError> {
+    let mg_id = mg.id;
     config
         .dispatches()
         .remove(mg_id, dispatch_id)

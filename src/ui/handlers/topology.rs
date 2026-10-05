@@ -1,15 +1,9 @@
-//! Topology snapshot endpoints. `/api/topology` (legacy) returns
-//! the first registered microgrid — the bootstrap site when none
-//! is registered — and `/api/mg/{id}/topology` the per-microgrid
-//! view.
+//! `GET /api/mg/{mg}/topology`: one microgrid's components and
+//! connections.
 
-use axum::extract::State;
 use serde::Serialize;
 
-use crate::lisp::Config;
-
-use super::resolve_site;
-use crate::ui::api::{ApiError, Json, Path};
+use crate::ui::api::{Json, Mg};
 
 #[derive(Serialize)]
 pub(in crate::ui) struct TopologySnapshot {
@@ -60,16 +54,8 @@ struct ComponentSummary {
     accepts_control: bool,
 }
 
-pub(in crate::ui) async fn topology(State(config): State<Config>) -> Json<TopologySnapshot> {
-    Json(topology_snapshot(&config.legacy_site()))
-}
-
-pub(in crate::ui) async fn topology_for_mg(
-    State(config): State<Config>,
-    Path(mg_id): Path<u64>,
-) -> Result<Json<TopologySnapshot>, ApiError> {
-    let site = resolve_site(&config, mg_id)?;
-    Ok(Json(topology_snapshot(&site)))
+pub(in crate::ui) async fn topology(mg: Mg) -> Json<TopologySnapshot> {
+    Json(topology_snapshot(&mg.site))
 }
 
 fn topology_snapshot(site: &crate::sim::MicrogridSite) -> TopologySnapshot {

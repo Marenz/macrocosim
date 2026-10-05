@@ -1,5 +1,5 @@
 //! Per-microgrid snapshot endpoints — list / save / load under
-//! `/api/mg/{mg_id}/snapshots`. Each one wraps a `Config` call that
+//! `/api/mg/{mg}/snapshots`. Each one wraps a `Config` call that
 //! does blocking file IO (and, for load, a reload) on the blocking
 //! pool.
 
@@ -7,21 +7,20 @@ use axum::{extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::lisp::{Config, SnapshotError};
-use crate::ui::api::{ApiError, Json, Path};
+use crate::ui::api::{ApiError, Json, Mg};
 
 #[derive(Serialize)]
 pub(in crate::ui) struct SnapshotsListResp {
     snapshots: Vec<String>,
 }
 
-pub(in crate::ui) async fn snapshots_list_for_mg(
+pub(in crate::ui) async fn snapshots_list(
     State(config): State<Config>,
-    Path(mg_id): Path<u64>,
-) -> Result<Json<SnapshotsListResp>, ApiError> {
-    super::require_mg(&config, mg_id)?;
-    Ok(Json(SnapshotsListResp {
-        snapshots: config.list_snapshots_for(mg_id),
-    }))
+    mg: Mg,
+) -> Json<SnapshotsListResp> {
+    Json(SnapshotsListResp {
+        snapshots: config.list_snapshots_for(mg.id),
+    })
 }
 
 #[derive(Deserialize)]
@@ -29,11 +28,12 @@ pub(in crate::ui) struct SnapshotsSaveBody {
     name: String,
 }
 
-pub(in crate::ui) async fn snapshots_save_for_mg(
+pub(in crate::ui) async fn snapshots_save(
     State(config): State<Config>,
-    Path(mg_id): Path<u64>,
+    mg: Mg,
     Json(body): Json<SnapshotsSaveBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let mg_id = mg.id;
     let path = super::blocking(move || config.save_snapshot_for(mg_id, &body.name))
         .await?
         .map_err(status_for)?;
@@ -52,12 +52,13 @@ pub(in crate::ui) struct SnapshotsLoadBody {
     as_id: Option<u64>,
 }
 
-pub(in crate::ui) async fn snapshots_load_for_mg(
+pub(in crate::ui) async fn snapshots_load(
     State(config): State<Config>,
     axum::Extension(runtimes): axum::Extension<crate::runtime::MicrogridRuntimes>,
-    Path(mg_id): Path<u64>,
+    mg: Mg,
     Json(body): Json<SnapshotsLoadBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let mg_id = mg.id;
     let as_id = body.as_id;
     let load = move |cfg: &Config| cfg.load_snapshot_for(mg_id, &body.name, body.as_id);
     // Loading `as_id` is a load-as: it claims an id and a port.

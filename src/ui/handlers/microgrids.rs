@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::lisp::Config;
 use crate::runtime::{MicrogridRuntimes, RuntimeView};
-use crate::ui::api::{ApiError, Json, Path};
+use crate::ui::api::{ApiError, Json, Mg};
 
 /// One `/api/microgrids` entry: the registry's view of the microgrid
 /// plus its runtime, `null` when none was started.
@@ -491,7 +491,7 @@ pub(in crate::ui) async fn load_file_as(
     }
 }
 
-/// POST /api/mg/{mg_id}/adopt — take a hand-written microgrid file
+/// POST /api/mg/{mg}/adopt — take a hand-written microgrid file
 /// over, so macrocosim may rewrite its structure from then on.
 ///
 /// The live structure is written as a generated block at the top of
@@ -502,19 +502,20 @@ pub(in crate::ui) async fn load_file_as(
 ///
 /// A microgrid with no file at all (declared from the REPL) gets a
 /// fresh `microgrids/{id}.lisp` instead.
-pub(in crate::ui) async fn adopt_for_mg(
+pub(in crate::ui) async fn adopt(
     State(config): State<Config>,
-    Path(mg_id): Path<u64>,
+    mg: Mg,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let warnings = super::blocking(move || adopt(&config, mg_id)).await??;
+    let mg_id = mg.id;
+    let warnings = super::blocking(move || adopt_body(&config, mg_id)).await??;
     Ok(Json(
         serde_json::json!({ "ok": true, "warnings": warnings }),
     ))
 }
 
-/// [`adopt_for_mg`]'s body: all blocking (file read + write) work.
+/// [`adopt`]'s body: all blocking (file read + write) work.
 /// Returns the warnings the caller should show.
-fn adopt(config: &Config, mg_id: u64) -> Result<Vec<String>, ApiError> {
+fn adopt_body(config: &Config, mg_id: u64) -> Result<Vec<String>, ApiError> {
     use crate::lisp::microgrid_file as file;
 
     let registry = config.microgrids();

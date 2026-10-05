@@ -50,6 +50,8 @@ pub struct TestServer {
     pub ui_url: String,
     pub assets_url: String,
     pub config: Config,
+    /// Id of the default microgrid, the one `grpc_url` serves.
+    pub mg_id: u64,
     handles: Vec<JoinHandle<()>>,
     _tempdir: TempDir,
 }
@@ -83,10 +85,10 @@ impl TestServer {
         let mut handles = Vec::new();
         handles.push(runtimes.spawn_registration_listener().await);
 
-        // Single-microgrid tests: the UI's primary slot and the gRPC
-        // address are those of the default registry entry (the one
-        // auto-seeded by Config::new, or the id an explicit form in
-        // `config_body` chose).
+        // Single-microgrid tests: `mg_id` and the gRPC address are
+        // those of the default registry entry (the one auto-seeded by
+        // Config::new, or the id an explicit form in `config_body`
+        // chose).
         let default_mg_id = {
             let reg = config.microgrids();
             let r = reg.lock();
@@ -96,12 +98,6 @@ impl TestServer {
             .status(default_mg_id)
             .and_then(|v| v.grpc_addr)
             .expect("the default microgrid started");
-        let microgrid = runtimes
-            .loopbacks()
-            .read()
-            .get(&default_mg_id)
-            .cloned()
-            .expect("loopback slot");
 
         // Bind the UI and assets servers to OS-assigned ports;
         // local_addr() reads back the chosen port before the listener
@@ -113,7 +109,7 @@ impl TestServer {
         let ui_config = config.clone();
         let ui_runtimes = runtimes.clone();
         handles.push(tokio::spawn(async move {
-            let _ = ui::serve_with_listener(ui_listener, ui_config, microgrid, ui_runtimes).await;
+            let _ = ui::serve_with_listener(ui_listener, ui_config, ui_runtimes).await;
         }));
 
         // PlatformAssets has its own port, as in the binary.
@@ -159,9 +155,16 @@ impl TestServer {
             ui_url: format!("http://{ui_addr}"),
             assets_url: format!("http://{assets_addr}"),
             config,
+            mg_id: default_mg_id,
             handles,
             _tempdir: tempdir,
         }
+    }
+
+    /// URL of a route under this server's microgrid.
+    #[allow(dead_code)]
+    pub fn mg_url(&self, suffix: &str) -> String {
+        format!("{}/api/mg/{}/{suffix}", self.ui_url, self.mg_id)
     }
 
     /// Path of the config.lisp file backing this server. Tests

@@ -1,15 +1,13 @@
-//! `/api/history` + setpoint event log readers.
+//! `/api/mg/{mg}/history` and `/api/mg/{mg}/setpoints`: one
+//! component's sample history and setpoint event log.
 
-use axum::extract::State;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::lisp::Config;
 use crate::sim::history::Metric;
 use crate::sim::setpoints::SetpointEvent;
 
-use super::resolve_site;
-use crate::ui::api::{ApiError, Json, Path, Query};
+use crate::ui::api::{ApiError, Json, Mg, Query};
 
 #[derive(Deserialize)]
 pub(in crate::ui) struct HistoryQuery {
@@ -41,19 +39,10 @@ pub(in crate::ui) struct HistoryResponse {
 }
 
 pub(in crate::ui) async fn history(
-    State(config): State<Config>,
+    mg: Mg,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<HistoryResponse>, ApiError> {
-    history_body(&config.legacy_site(), q)
-}
-
-pub(in crate::ui) async fn history_for_mg(
-    State(config): State<Config>,
-    Path(mg_id): Path<u64>,
-    Query(q): Query<HistoryQuery>,
-) -> Result<Json<HistoryResponse>, ApiError> {
-    let site = resolve_site(&config, mg_id)?;
-    history_body(&site, q)
+    history_body(&mg.site, q)
 }
 
 fn history_body(
@@ -100,19 +89,10 @@ pub(in crate::ui) struct SetpointsResponse {
 }
 
 pub(in crate::ui) async fn setpoints(
-    State(config): State<Config>,
+    mg: Mg,
     Query(q): Query<SetpointsQuery>,
 ) -> Json<SetpointsResponse> {
-    setpoints_body(&config.legacy_site(), q)
-}
-
-pub(in crate::ui) async fn setpoints_for_mg(
-    State(config): State<Config>,
-    Path(mg_id): Path<u64>,
-    Query(q): Query<SetpointsQuery>,
-) -> Result<Json<SetpointsResponse>, ApiError> {
-    let site = resolve_site(&config, mg_id)?;
-    Ok(setpoints_body(&site, q))
+    setpoints_body(&mg.site, q)
 }
 
 fn setpoints_body(site: &crate::sim::MicrogridSite, q: SetpointsQuery) -> Json<SetpointsResponse> {

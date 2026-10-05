@@ -1,10 +1,10 @@
-//! `/api/eval` + per-mg variant + `/api/format` (tulisp-fmt).
+//! `/api/eval`, `/api/mg/{mg}/eval` and `/api/format` (tulisp-fmt).
 
 use axum::extract::State;
 use serde::{Deserialize, Serialize};
 
 use crate::lisp::Config;
-use crate::ui::api::{ApiError, Json, Path, Query, Text};
+use crate::ui::api::{ApiError, Json, Mg, Query, Text};
 
 #[derive(Serialize)]
 pub(in crate::ui) struct EvalResponse {
@@ -27,17 +27,17 @@ pub(in crate::ui) async fn eval(
     Ok(Json(EvalResponse { value }))
 }
 
-/// Evaluate with microgrid `mg_id` in scope. 404 when it is not
+/// Evaluate with the route's microgrid in scope. 404 when it is not
 /// registered, including when a reload removes it while the eval
 /// waits for the interpreter. The scope-set, eval, overrides append
 /// and version bump share one interpreter-lock acquisition, so two
 /// concurrent scoped evals can't cross microgrids.
 pub(in crate::ui) async fn eval_for_mg(
     State(config): State<Config>,
-    Path(mg_id): Path<u64>,
+    mg: Mg,
     Text(body): Text,
 ) -> Result<Json<EvalResponse>, ApiError> {
-    super::require_mg(&config, mg_id)?;
+    let mg_id = mg.id;
     let value = super::blocking(move || config.eval_in_registered_mg(mg_id, &body))
         .await?
         .ok_or_else(|| ApiError::not_registered(mg_id))?

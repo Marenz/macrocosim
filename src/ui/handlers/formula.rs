@@ -11,15 +11,12 @@
 
 use std::collections::BTreeSet;
 
-use axum::extract::State;
 use frequenz_microgrid_component_graph::{ComponentGraphConfig, ErrorKind, Formula};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::resolve_site;
-use crate::lisp::Config;
 use crate::sim::graph_adapter;
-use crate::ui::api::{ApiError, Json, Path, Query};
+use crate::ui::api::{ApiError, Json, Mg, Query};
 
 #[derive(Deserialize)]
 pub(in crate::ui) struct FormulaQuery {
@@ -43,14 +40,13 @@ pub(in crate::ui) struct FormulaQuery {
     allow_unspecified_inverters: bool,
 }
 
-/// GET /api/mg/{mg_id}/formula?metric=grid[&ids=1,2][&prefer_meters=true…]
+/// GET /api/mg/{mg}/formula?metric=grid[&ids=1,2][&prefer_meters=true…]
 /// — the rendered formula string.
-pub(in crate::ui) async fn formula_for_mg(
-    State(config): State<Config>,
-    Path(mg_id): Path<u64>,
+pub(in crate::ui) async fn formula(
+    mg: Mg,
     Query(query): Query<FormulaQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let site = resolve_site(&config, mg_id)?;
+    let site = mg.site;
     // spawn_blocking like the other CPU-bound handlers: on a large
     // imported site the graph validation + formula generation is real
     // CPU work, and running it inline would stall a tokio worker

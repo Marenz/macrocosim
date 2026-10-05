@@ -157,3 +157,38 @@ pub(in crate::ui) async fn method_not_allowed(method: Method, uri: Uri) -> ApiEr
         format!("no route for {method} {}", uri.path()),
     )
 }
+
+/// The microgrid a `/api/mg/{mg}/...` route names, resolved from the
+/// registry. An unregistered id is the shared 404; a non-numeric one
+/// is a 400.
+pub(in crate::ui) struct Mg {
+    pub id: u64,
+    pub site: crate::sim::MicrogridSite,
+}
+
+impl FromRequestParts<crate::lisp::Config> for Mg {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        config: &crate::lisp::Config,
+    ) -> Result<Self, ApiError> {
+        let params = axum::extract::RawPathParams::from_request_parts(parts, config)
+            .await
+            .map_err(|e| ApiError::bad_request(e.body_text()))?;
+        let raw = params
+            .iter()
+            .find_map(|(k, v)| (k == "mg").then_some(v))
+            .ok_or_else(|| ApiError::internal("route has no {mg} segment"))?;
+        let id: u64 = raw
+            .parse()
+            .map_err(|_| ApiError::bad_request(format!("invalid microgrid id: {raw:?}")))?;
+        let site = config
+            .microgrids()
+            .lock()
+            .get(&id)
+            .map(|e| e.site.clone())
+            .ok_or_else(|| ApiError::not_registered(id))?;
+        Ok(Mg { id, site })
+    }
+}

@@ -59,8 +59,8 @@ async fn editing_config_lisp_rebuilds_the_world() {
     }
     assert!(versioned, "world version never bumped after rewrite");
 
-    // The new meter shows up via /api/topology.
-    let topo: Value = reqwest::get(format!("{}/api/topology", s.ui_url))
+    // The new meter shows up via the topology route.
+    let topo: Value = reqwest::get(s.mg_url("topology"))
         .await
         .unwrap()
         .json()

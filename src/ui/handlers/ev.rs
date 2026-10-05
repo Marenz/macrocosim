@@ -11,13 +11,10 @@
 //! plugged in, so the inspector builds its dropdown from the server's
 //! list instead of a copy of it.
 
-use axum::extract::State;
 use serde::Serialize;
 
-use super::resolve_site;
-use crate::lisp::Config;
 use crate::sim::ev_presets::PRESETS;
-use crate::ui::api::{ApiError, Json, Path};
+use crate::ui::api::{ApiError, Json, Mg, Path};
 
 #[derive(Serialize, Default)]
 pub(in crate::ui) struct EvResponse {
@@ -45,12 +42,12 @@ pub(in crate::ui) struct EvResponse {
     state: Option<&'static str>,
 }
 
-pub(in crate::ui) async fn ev_for_mg(
-    State(config): State<Config>,
-    Path((mg_id, id)): Path<(u64, u64)>,
+pub(in crate::ui) async fn ev(
+    mg: Mg,
+    Path((_, id)): Path<(u64, u64)>,
 ) -> Result<Json<EvResponse>, ApiError> {
-    let site = resolve_site(&config, mg_id)?;
-    let c = site
+    let c = mg
+        .site
         .get(id)
         .ok_or_else(|| ApiError::not_found(format!("component {id} not found")))?;
     let Some(port) = c.ev_port() else {

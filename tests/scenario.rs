@@ -42,7 +42,7 @@ async fn report(client: &reqwest::Client, s: &TestServer) -> Value {
 
 async fn topology(client: &reqwest::Client, s: &TestServer) -> Value {
     client
-        .get(format!("{}/api/topology", s.ui_url))
+        .get(s.mg_url("topology"))
         .send()
         .await
         .unwrap()
@@ -95,7 +95,7 @@ async fn lambda_meter_power_resolves_through_http_eval() {
     s.config.site().record_history_snapshot(now);
 
     let topo = topology(&client, &s).await;
-    // Telemetry isn't on /api/topology; assert via the report's
+    // Telemetry isn't on the topology route; assert via the report's
     // grid peak instead.
     let peak = wait_for_peak(&client, &s, 1234.5, 1.0).await;
     assert!(

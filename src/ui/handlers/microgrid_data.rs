@@ -11,8 +11,7 @@ use crate::lisp::Config;
 use super::super::state::{
     HistorySample, MicrogridLoopbacks, MicrogridSampleSnapshot, SharedMicrogrid,
 };
-use super::resolve_loopback;
-use crate::ui::api::{ApiError, Json, Path};
+use crate::ui::api::{Json, Mg};
 
 #[derive(Serialize)]
 pub(in crate::ui) struct MicrogridStatusResp {
@@ -26,55 +25,20 @@ pub(in crate::ui) struct MicrogridStatusResp {
     component_count: Option<usize>,
 }
 
-pub(in crate::ui) async fn microgrid_status_for_mg(
+/// The loopback slot for `mg`, present once its runtime has started.
+fn loopback_of(loopbacks: &MicrogridLoopbacks, mg: &Mg) -> Option<SharedMicrogrid> {
+    loopbacks.read().get(&mg.id).cloned()
+}
+
+/// Whether the loopback client is connected. 503 with
+/// `connected: false` when it is not, or when the microgrid's
+/// runtime has not started.
+pub(in crate::ui) async fn microgrid_status(
+    mg: Mg,
     Extension(loopbacks): Extension<MicrogridLoopbacks>,
-    Path(mg_id): Path<u64>,
-) -> Result<(StatusCode, Json<MicrogridStatusResp>), ApiError> {
-    let slot = resolve_loopback(&loopbacks, mg_id)?;
-    Ok(microgrid_status_body(&slot))
-}
-
-pub(in crate::ui) async fn microgrid_latest_for_mg(
-    Extension(loopbacks): Extension<MicrogridLoopbacks>,
-    Path(mg_id): Path<u64>,
-) -> Result<Json<HashMap<&'static str, MicrogridSampleSnapshot>>, ApiError> {
-    let slot = resolve_loopback(&loopbacks, mg_id)?;
-    Ok(Json(slot.latest.read().clone()))
-}
-
-pub(in crate::ui) async fn microgrid_history_for_mg(
-    Extension(loopbacks): Extension<MicrogridLoopbacks>,
-    Path(mg_id): Path<u64>,
-) -> Result<Json<HashMap<&'static str, Vec<HistorySample>>>, ApiError> {
-    let slot = resolve_loopback(&loopbacks, mg_id)?;
-    Ok(Json(microgrid_history_body(&slot)))
-}
-
-pub(in crate::ui) async fn microgrid_history(
-    Extension(state): Extension<SharedMicrogrid>,
-) -> Json<HashMap<&'static str, Vec<HistorySample>>> {
-    Json(microgrid_history_body(&state))
-}
-
-fn microgrid_history_body(state: &SharedMicrogrid) -> HashMap<&'static str, Vec<HistorySample>> {
-    state
-        .history
-        .read()
-        .iter()
-        .map(|(k, ring)| (*k, ring.iter().copied().collect()))
-        .collect()
-}
-
-pub(in crate::ui) async fn microgrid_formulas_for_mg(
-    Extension(loopbacks): Extension<MicrogridLoopbacks>,
-    Path(mg_id): Path<u64>,
-) -> Result<(StatusCode, Json<HashMap<&'static str, String>>), ApiError> {
-    let slot = resolve_loopback(&loopbacks, mg_id)?;
-    Ok(microgrid_formulas_body(&slot))
-}
-
-fn microgrid_status_body(state: &SharedMicrogrid) -> (StatusCode, Json<MicrogridStatusResp>) {
-    let lm = state.microgrid.read().as_ref().map(|mg| mg.logical_meter());
+) -> (StatusCode, Json<MicrogridStatusResp>) {
+    let lm = loopback_of(&loopbacks, &mg)
+        .and_then(|slot| slot.microgrid.read().as_ref().map(|m| m.logical_meter()));
     if let Some(lm) = lm {
         let count = lm.graph().components().count();
         (
@@ -95,36 +59,40 @@ fn microgrid_status_body(state: &SharedMicrogrid) -> (StatusCode, Json<Microgrid
     }
 }
 
-pub(in crate::ui) async fn microgrid_status(
-    Extension(state): Extension<SharedMicrogrid>,
-) -> (StatusCode, Json<MicrogridStatusResp>) {
-    microgrid_status_body(&state)
-}
-
-#[derive(Serialize)]
-pub(in crate::ui) struct ClockInfo {
-    /// IANA timezone name set via `(set-timezone …)`, default
-    /// Europe/Berlin. UI passes this to `Intl.DateTimeFormat` to
-    /// format the pulse-bar clock + (future) per-component
-    /// timestamps in the configured civil zone.
-    tz: &'static str,
-}
-
-pub(in crate::ui) async fn clock_info(State(config): State<Config>) -> Json<ClockInfo> {
-    Json(ClockInfo {
-        tz: config.tz_name(),
-    })
-}
-
 /// Latest cached sample for every active aggregated stream.
 /// Returns a `{ stream: snapshot }` map; absent streams (no PV in
 /// the topology, no batteries, etc.) simply don't appear in the
-/// map. Lets the SPA's Dashboard paint a populated tile on page
-/// load instead of holding "loading…" until the next WS tick.
+/// map, and a microgrid whose runtime has not started answers `{}`.
+/// Lets the SPA's Dashboard paint a populated tile on page load
+/// instead of holding "loading…" until the next WS tick.
 pub(in crate::ui) async fn microgrid_latest(
-    Extension(state): Extension<SharedMicrogrid>,
+    mg: Mg,
+    Extension(loopbacks): Extension<MicrogridLoopbacks>,
 ) -> Json<HashMap<&'static str, MicrogridSampleSnapshot>> {
-    Json(state.latest.read().clone())
+    Json(
+        loopback_of(&loopbacks, &mg)
+            .map(|slot| slot.latest.read().clone())
+            .unwrap_or_default(),
+    )
+}
+
+/// The history ring of every aggregated stream; `{}` for a
+/// microgrid whose runtime has not started.
+pub(in crate::ui) async fn microgrid_history(
+    mg: Mg,
+    Extension(loopbacks): Extension<MicrogridLoopbacks>,
+) -> Json<HashMap<&'static str, Vec<HistorySample>>> {
+    Json(
+        loopback_of(&loopbacks, &mg)
+            .map(|slot| {
+                slot.history
+                    .read()
+                    .iter()
+                    .map(|(k, ring)| (*k, ring.iter().copied().collect()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    )
 }
 
 /// Rendered formula strings (e.g. `"#1 + COALESCE(#2, #3, 0.0)"`)
@@ -134,20 +102,17 @@ pub(in crate::ui) async fn microgrid_latest(
 /// component ids participate and how. Absent categories don't
 /// appear in the response.
 ///
-/// 503 when the loopback Microgrid handle hasn't built its
-/// ComponentGraph yet — same lifecycle as `/api/microgrid/status`.
+/// 503 `{}` when the loopback Microgrid handle hasn't built its
+/// ComponentGraph yet, or the runtime has not started — same
+/// lifecycle as `microgrid/status`.
 pub(in crate::ui) async fn microgrid_formulas(
-    Extension(state): Extension<SharedMicrogrid>,
+    mg: Mg,
+    Extension(loopbacks): Extension<MicrogridLoopbacks>,
 ) -> (StatusCode, Json<HashMap<&'static str, String>>) {
-    microgrid_formulas_body(&state)
-}
-
-fn microgrid_formulas_body(
-    state: &SharedMicrogrid,
-) -> (StatusCode, Json<HashMap<&'static str, String>>) {
-    let lm = match state.microgrid.read().as_ref() {
-        Some(mg) => mg.logical_meter(),
-        None => return (StatusCode::SERVICE_UNAVAILABLE, Json(HashMap::new())),
+    let lm = loopback_of(&loopbacks, &mg)
+        .and_then(|slot| slot.microgrid.read().as_ref().map(|m| m.logical_meter()));
+    let Some(lm) = lm else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(HashMap::new()));
     };
     let graph = lm.graph();
     let mut out: HashMap<&'static str, String> = HashMap::new();
@@ -167,4 +132,19 @@ fn microgrid_formulas_body(
         out.insert("producer_power", format!("{f}"));
     }
     (StatusCode::OK, Json(out))
+}
+
+#[derive(Serialize)]
+pub(in crate::ui) struct ClockInfo {
+    /// IANA timezone name set via `(set-timezone …)`, default
+    /// Europe/Berlin. UI passes this to `Intl.DateTimeFormat` to
+    /// format the pulse-bar clock + (future) per-component
+    /// timestamps in the configured civil zone.
+    tz: &'static str,
+}
+
+pub(in crate::ui) async fn clock_info(State(config): State<Config>) -> Json<ClockInfo> {
+    Json(ClockInfo {
+        tz: config.tz_name(),
+    })
 }

@@ -38,75 +38,79 @@ use events_ws::events_ws;
 
 /// Run the UI HTTP server on an already-bound listener.
 ///
-/// `microgrid` is the loopback client slot — `MicrogridRuntimes`
-/// populates it via [`spawn_microgrid_loopback`] when the microgrid
-/// first starts. Pass an empty slot if the UI doesn't need aggregated
-/// Dashboard data (tests, etc.). `runtimes` starts and reports each
-/// microgrid's runtime, and holds the per-microgrid loopback slots
-/// the `/api/mg/{id}/microgrid/*` routes read.
+/// `runtimes` starts and reports each microgrid's runtime, and holds
+/// the per-microgrid loopback slots the `/api/mg/{mg}/microgrid/*`
+/// routes read.
 pub async fn serve_with_listener(
     listener: tokio::net::TcpListener,
     config: Config,
-    microgrid: SharedMicrogrid,
     runtimes: crate::runtime::MicrogridRuntimes,
 ) -> std::io::Result<()> {
-    axum::serve(listener, router(config, microgrid, runtimes))
+    axum::serve(listener, router(config, runtimes))
         .await
         .map_err(std::io::Error::other)
 }
 
-fn router(
-    config: Config,
-    microgrid: SharedMicrogrid,
-    runtimes: crate::runtime::MicrogridRuntimes,
-) -> Router {
+fn router(config: Config, runtimes: crate::runtime::MicrogridRuntimes) -> Router {
     use handlers::{
         assets::{asset, index, logs_backfill},
-        component::{component, component_for_mg},
-        control::{
-            component_drive, component_drive_for_mg, component_status, component_status_for_mg,
-        },
+        component::component,
+        control::{component_drive, component_status},
         defaults::defaults,
-        dispatches::{
-            dispatch_create_for_mg, dispatch_delete_for_mg, dispatch_set_active_for_mg,
-            dispatches_for_mg,
-        },
-        ev::ev_for_mg,
+        dispatches::{dispatch_create, dispatch_delete, dispatch_set_active, dispatches},
+        ev::ev,
         eval::{eval, eval_for_mg, format},
-        formula::formula_for_mg,
-        history::{history, history_for_mg, setpoints, setpoints_for_mg},
+        formula::formula,
+        history::{history, setpoints},
         microgrid_data::{
-            clock_info, microgrid_formulas, microgrid_formulas_for_mg, microgrid_history,
-            microgrid_history_for_mg, microgrid_latest, microgrid_latest_for_mg, microgrid_status,
-            microgrid_status_for_mg,
+            clock_info, microgrid_formulas, microgrid_history, microgrid_latest, microgrid_status,
         },
         microgrids::{
-            adopt_for_mg, load_file, load_file_as, microgrids_create, microgrids_import,
-            microgrids_list,
+            adopt, load_file, load_file_as, microgrids_create, microgrids_import, microgrids_list,
         },
         scenarios::{
             scenario_csv_file, scenario_csv_list, scenario_events, scenario_report,
             scenario_summary, scenarios_list, scenarios_start, scenarios_stop,
         },
         scripts::scripts_list,
-        snapshots::{snapshots_list_for_mg, snapshots_load_for_mg, snapshots_save_for_mg},
-        topology::{topology, topology_for_mg},
-        undo::{redo_for_mg, undo_depths_for_mg, undo_for_mg},
-        weather::{weather_get, weather_get_for_mg, weather_post, weather_post_for_mg},
+        snapshots::{snapshots_list, snapshots_load, snapshots_save},
+        topology::topology,
+        undo::{redo, undo, undo_depths},
+        weather::{weather_get, weather_post},
     };
+    let per_mg = Router::new()
+        .route("/topology", get(topology))
+        .route("/eval", post(eval_for_mg))
+        .route("/formula", get(formula))
+        .route("/component/{id}/status", post(component_status))
+        .route("/component/{id}/drive", post(component_drive))
+        .route("/weather", get(weather_get).post(weather_post))
+        .route("/history", get(history))
+        .route("/setpoints", get(setpoints))
+        .route("/component", get(component))
+        .route("/ev/{id}", get(ev))
+        .route("/microgrid/status", get(microgrid_status))
+        .route("/microgrid/latest", get(microgrid_latest))
+        .route("/microgrid/history", get(microgrid_history))
+        .route("/microgrid/formulas", get(microgrid_formulas))
+        .route("/adopt", post(adopt))
+        .route("/undo", get(undo_depths).post(undo))
+        .route("/redo", post(redo))
+        .route("/snapshots", get(snapshots_list))
+        .route("/snapshots/save", post(snapshots_save))
+        .route("/snapshots/load", post(snapshots_load))
+        .route("/dispatches", get(dispatches).post(dispatch_create))
+        .route("/dispatches/{dispatch_id}", delete(dispatch_delete))
+        .route(
+            "/dispatches/{dispatch_id}/active",
+            post(dispatch_set_active),
+        );
     Router::new()
         .route("/", get(index))
         .route("/assets/{*path}", get(asset))
-        .route("/api/topology", get(topology))
         .route("/api/eval", post(eval))
-        .route("/api/component/{id}/status", post(component_status))
-        .route("/api/component/{id}/drive", post(component_drive))
-        .route("/api/weather", get(weather_get).post(weather_post))
         .route("/api/format", post(format))
-        .route("/api/history", get(history))
         .route("/api/defaults", get(defaults))
-        .route("/api/setpoints", get(setpoints))
-        .route("/api/component", get(component))
         .route("/api/logs", get(logs_backfill))
         .route("/api/scenario", get(scenario_summary))
         .route("/api/scenario/events", get(scenario_events))
@@ -114,10 +118,6 @@ fn router(
         .route("/api/scenario/csv", get(scenario_csv_list))
         .route("/api/scenario/csv/{file}", get(scenario_csv_file))
         .route("/api/clock", get(clock_info))
-        .route("/api/microgrid/status", get(microgrid_status))
-        .route("/api/microgrid/latest", get(microgrid_latest))
-        .route("/api/microgrid/history", get(microgrid_history))
-        .route("/api/microgrid/formulas", get(microgrid_formulas))
         .route("/api/scenarios", get(scenarios_list))
         .route("/api/scenarios/stop", post(scenarios_stop))
         .route("/api/scenarios/{name}/start", post(scenarios_start))
@@ -132,72 +132,10 @@ fn router(
             // body limit would reject them.
             post(microgrids_import).layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
-        .route("/api/mg/{mg_id}/topology", get(topology_for_mg))
-        .route("/api/mg/{mg_id}/eval", post(eval_for_mg))
-        .route("/api/mg/{mg_id}/formula", get(formula_for_mg))
-        .route(
-            "/api/mg/{mg_id}/component/{id}/status",
-            post(component_status_for_mg),
-        )
-        .route(
-            "/api/mg/{mg_id}/component/{id}/drive",
-            post(component_drive_for_mg),
-        )
-        .route(
-            "/api/mg/{mg_id}/weather",
-            get(weather_get_for_mg).post(weather_post_for_mg),
-        )
-        .route("/api/mg/{mg_id}/history", get(history_for_mg))
-        .route("/api/mg/{mg_id}/setpoints", get(setpoints_for_mg))
-        .route("/api/mg/{mg_id}/component", get(component_for_mg))
-        .route("/api/mg/{mg_id}/ev/{id}", get(ev_for_mg))
-        .route(
-            "/api/mg/{mg_id}/microgrid/status",
-            get(microgrid_status_for_mg),
-        )
-        .route(
-            "/api/mg/{mg_id}/microgrid/latest",
-            get(microgrid_latest_for_mg),
-        )
-        .route(
-            "/api/mg/{mg_id}/microgrid/history",
-            get(microgrid_history_for_mg),
-        )
-        .route(
-            "/api/mg/{mg_id}/microgrid/formulas",
-            get(microgrid_formulas_for_mg),
-        )
-        .route("/api/mg/{mg_id}/adopt", post(adopt_for_mg))
-        .route(
-            "/api/mg/{mg_id}/undo",
-            get(undo_depths_for_mg).post(undo_for_mg),
-        )
-        .route("/api/mg/{mg_id}/redo", post(redo_for_mg))
-        .route("/api/mg/{mg_id}/snapshots", get(snapshots_list_for_mg))
-        .route(
-            "/api/mg/{mg_id}/snapshots/save",
-            post(snapshots_save_for_mg),
-        )
-        .route(
-            "/api/mg/{mg_id}/snapshots/load",
-            post(snapshots_load_for_mg),
-        )
-        .route(
-            "/api/mg/{mg_id}/dispatches",
-            get(dispatches_for_mg).post(dispatch_create_for_mg),
-        )
-        .route(
-            "/api/mg/{mg_id}/dispatches/{dispatch_id}",
-            delete(dispatch_delete_for_mg),
-        )
-        .route(
-            "/api/mg/{mg_id}/dispatches/{dispatch_id}/active",
-            post(dispatch_set_active_for_mg),
-        )
+        .nest("/api/mg/{mg}", per_mg)
         .route("/ws/events", get(events_ws))
         .fallback(api::no_route)
         .method_not_allowed_fallback(api::method_not_allowed)
-        .layer(Extension(microgrid))
         .layer(Extension(runtimes.loopbacks()))
         .layer(Extension(runtimes))
         .layer(axum::middleware::from_fn(origin_guard))

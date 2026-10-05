@@ -1,21 +1,21 @@
 //! Typed JSON control endpoints — component stimuli without Lisp.
 //!
-//! `POST /api/component/{id}/status` and `POST /api/component/{id}/drive`
-//! (plus the `/api/mg/{mg_id}/…` variants) give programmatic clients a
-//! structured way to inject faults and drive the environment. Validation
-//! errors come back as HTTP 400 with a JSON error body, and an unknown
-//! component or microgrid is 404 — no `ok: false` payload the caller
-//! must remember to check. `/api/eval` remains the escape hatch for
-//! dynamic (lambda / symbol) drive sources and everything else Lisp.
+//! `POST /api/mg/{mg}/component/{id}/status` and
+//! `POST /api/mg/{mg}/component/{id}/drive` give programmatic clients
+//! a structured way to inject faults and drive the environment.
+//! Validation errors come back as HTTP 400 with a JSON error body,
+//! and an unknown component or microgrid is 404 — no `ok: false`
+//! payload the caller must remember to check. Eval remains the
+//! escape hatch for dynamic (lambda / symbol) drive sources and
+//! everything else Lisp.
 
-use axum::{extract::State, http::StatusCode};
+use axum::http::StatusCode;
 use serde::Deserialize;
 
-use crate::lisp::Config;
 use crate::sim::component::KnobKind;
 use crate::sim::microgrid_site::{MicrogridSite, SocRefusal};
 use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
-use crate::ui::api::{ApiError, Json, Path};
+use crate::ui::api::{ApiError, Json, Mg, Path};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,23 +74,6 @@ pub(in crate::ui) struct DriveRequest {
 
 /// Empty JSON on success.
 type ControlResult = Result<Json<serde_json::Value>, ApiError>;
-
-pub(super) fn site_for(config: &Config, mg_id: Option<u64>) -> Result<MicrogridSite, ApiError> {
-    match mg_id {
-        // The default is the FIRST registered microgrid — deterministic,
-        // and the same default the Python client uses for gRPC reads.
-        // (`config.site()` would follow the ambient `current_microgrid`
-        // scope, whose contract needs the interpreter lock we don't
-        // hold.) Registry empty = single bootstrap site.
-        None => Ok(config.legacy_site()),
-        Some(id) => config
-            .microgrids()
-            .lock()
-            .get(&id)
-            .map(|entry| entry.site.clone())
-            .ok_or_else(|| ApiError::not_registered(id)),
-    }
-}
 
 fn apply_status(site: &MicrogridSite, id: u64, req: &StatusRequest) -> ControlResult {
     if site.get(id).is_none() {
@@ -425,35 +408,19 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
 }
 
 pub(in crate::ui) async fn component_status(
-    State(config): State<Config>,
-    Path(id): Path<u64>,
+    mg: Mg,
+    Path((_, id)): Path<(u64, u64)>,
     Json(req): Json<StatusRequest>,
 ) -> ControlResult {
-    apply_status(&site_for(&config, None)?, id, &req)
-}
-
-pub(in crate::ui) async fn component_status_for_mg(
-    State(config): State<Config>,
-    Path((mg_id, id)): Path<(u64, u64)>,
-    Json(req): Json<StatusRequest>,
-) -> ControlResult {
-    apply_status(&site_for(&config, Some(mg_id))?, id, &req)
+    apply_status(&mg.site, id, &req)
 }
 
 pub(in crate::ui) async fn component_drive(
-    State(config): State<Config>,
-    Path(id): Path<u64>,
+    mg: Mg,
+    Path((_, id)): Path<(u64, u64)>,
     Json(req): Json<DriveRequest>,
 ) -> ControlResult {
-    apply_drive(&site_for(&config, None)?, id, &req)
-}
-
-pub(in crate::ui) async fn component_drive_for_mg(
-    State(config): State<Config>,
-    Path((mg_id, id)): Path<(u64, u64)>,
-    Json(req): Json<DriveRequest>,
-) -> ControlResult {
-    apply_drive(&site_for(&config, Some(mg_id))?, id, &req)
+    apply_drive(&mg.site, id, &req)
 }
 
 #[cfg(test)]
@@ -896,7 +863,7 @@ mod tests {
 
     /// The typed drive route snapshots exactly like the Lisp
     /// setters do, so scenario teardown covers it too: a poke made
-    /// through `POST /api/component/:id/drive` while a scenario runs
+    /// through `POST component/{id}/drive` while a scenario runs
     /// is put back at `(scenario-stop)`. Without the snapshot, a poke
     /// on a knob the scenario never touched would survive teardown —
     /// and, worse, a FIRST touch through this door would go on to be

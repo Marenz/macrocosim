@@ -5,7 +5,6 @@
 use crate::lisp::Config;
 
 use super::api::ApiError;
-use super::state::{MicrogridLoopbacks, SharedMicrogrid};
 
 pub(in crate::ui) mod assets;
 pub(in crate::ui) mod component;
@@ -24,32 +23,6 @@ pub(in crate::ui) mod snapshots;
 pub(in crate::ui) mod topology;
 pub(in crate::ui) mod undo;
 pub(in crate::ui) mod weather;
-
-/// Look up the site for `mg_id` in the registry. Per-microgrid
-/// handlers call this at the start; a miss returns 404 verbatim
-/// so the SPA can highlight a stale microgrid card and reload
-/// without retrying every per-mg fetch on the page.
-pub(in crate::ui) fn resolve_site(
-    config: &Config,
-    mg_id: u64,
-) -> Result<crate::sim::MicrogridSite, ApiError> {
-    config
-        .microgrids()
-        .lock()
-        .get(&mg_id)
-        .map(|e| e.site.clone())
-        .ok_or_else(|| ApiError::not_registered(mg_id))
-}
-
-/// Guard for per-mg handlers that don't need the site itself: 404
-/// (same shape as [`resolve_site`]) when `mg_id` isn't registered.
-pub(in crate::ui) fn require_mg(config: &Config, mg_id: u64) -> Result<(), ApiError> {
-    if config.microgrids().lock().contains_key(&mg_id) {
-        Ok(())
-    } else {
-        Err(ApiError::not_registered(mg_id))
-    }
-}
 
 /// Run `f` on the blocking pool, mapping a task panic to a 500 —
 /// the spawn_blocking boilerplate every interpreter-touching
@@ -78,18 +51,4 @@ pub(in crate::ui) async fn blocking_under_create_lock<T: Send + 'static>(
         f(&config)
     })
     .await
-}
-
-/// Mirror of [`resolve_site`] for the loopback Microgrid client
-/// slot a microgrid owns. Used by the per-mg
-/// `/microgrid/{status,latest,formulas}` endpoints.
-pub(in crate::ui) fn resolve_loopback(
-    loopbacks: &MicrogridLoopbacks,
-    mg_id: u64,
-) -> Result<SharedMicrogrid, ApiError> {
-    loopbacks
-        .read()
-        .get(&mg_id)
-        .cloned()
-        .ok_or_else(|| ApiError::not_registered(mg_id))
 }

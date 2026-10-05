@@ -38,11 +38,7 @@ async fn json(client: &reqwest::Client, url: String) -> Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn topology_endpoint_serves_components_and_connections() {
     let s = TestServer::start(TINY_TOPOLOGY).await;
-    let topo = json(
-        &reqwest::Client::new(),
-        format!("{}/api/topology", s.ui_url),
-    )
-    .await;
+    let topo = json(&reqwest::Client::new(), s.mg_url("topology")).await;
     let components = topo["components"].as_array().expect("components array");
     let ids: Vec<i64> = components
         .iter()
@@ -70,8 +66,8 @@ async fn eval_endpoint_round_trips_world_state() {
     let body: Value = resp.json().await.unwrap();
     assert!(body["value"].is_string(), "{body}");
 
-    // Read back via /api/topology to confirm the world updated.
-    let topo = json(&client, format!("{}/api/topology", s.ui_url)).await;
+    // Read back via the topology route to confirm the world updated.
+    let topo = json(&client, s.mg_url("topology")).await;
     let renamed = topo["components"]
         .as_array()
         .unwrap()
@@ -616,21 +612,18 @@ async fn grid_frequency_streams_on_a_multi_feeder_site() {
     );
 }
 
-/// `GET`/`POST /api/weather`: 404 with no weather configured, a
-/// partial POST creates it (config fields apply like `(set-weather)`,
-/// same defaults as `WeatherConfig::default`), a follow-up `GET`
-/// sees it, `pass_cloud` arms an event on top of a config change, and
-/// a malformed field is a 400 that changes nothing.
+/// `GET`/`POST /api/mg/{mg}/weather`: 404 with no weather
+/// configured, a partial POST creates it (config fields apply like
+/// `(set-weather)`, same defaults as `WeatherConfig::default`), a
+/// follow-up `GET` sees it, `pass_cloud` arms an event on top of a
+/// config change, and a malformed field is a 400 that changes
+/// nothing.
 #[tokio::test(flavor = "multi_thread")]
 async fn weather_http_round_trip() {
     let s = TestServer::start(TINY_TOPOLOGY).await;
     let client = reqwest::Client::new();
 
-    let resp = client
-        .get(format!("{}/api/weather", s.ui_url))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(s.mg_url("weather")).send().await.unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
     let body: Value = resp.json().await.unwrap();
     let error = body["error"].as_str().unwrap();
@@ -640,7 +633,7 @@ async fn weather_http_round_trip() {
     // answer `(pass-cloud …)` gives — NOT a silent "install a whole
     // default sky so the one cloud has somewhere to land".
     let orphan = client
-        .post(format!("{}/api/weather", s.ui_url))
+        .post(s.mg_url("weather"))
         .json(&serde_json::json!({
             "pass_cloud": {"depth_pct": 50.0, "duration_s": 600.0}
         }))
@@ -653,17 +646,13 @@ async fn weather_http_round_trip() {
     assert!(error.contains("no weather on this site"), "{error}");
 
     // …and it really installed nothing: the site is still weatherless.
-    let resp = client
-        .get(format!("{}/api/weather", s.ui_url))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(s.mg_url("weather")).send().await.unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
 
     // The other path: a POST carrying a CONFIG field still creates
     // weather on a weatherless site, exactly as `(set-weather …)` does.
     let created: Value = client
-        .post(format!("{}/api/weather", s.ui_url))
+        .post(s.mg_url("weather"))
         .json(&serde_json::json!({"sunrise": "05:00"}))
         .send()
         .await
@@ -678,11 +667,11 @@ async fn weather_http_round_trip() {
     assert_eq!(created["sunset"], "20:00", "{created}");
     assert_eq!(created["peak_pct"], 100.0, "{created}");
 
-    let got = json(&client, format!("{}/api/weather", s.ui_url)).await;
+    let got = json(&client, s.mg_url("weather")).await;
     assert_eq!(got["sunrise"], "05:00", "{got}");
 
     let cloud: Value = client
-        .post(format!("{}/api/weather", s.ui_url))
+        .post(s.mg_url("weather"))
         .json(&serde_json::json!({
             "pass_cloud": {"depth_pct": 50.0, "duration_s": 600.0}
         }))
@@ -706,7 +695,7 @@ async fn weather_http_round_trip() {
     assert_eq!(cloud["sunrise"], "05:00", "{cloud}");
 
     let bad = client
-        .post(format!("{}/api/weather", s.ui_url))
+        .post(s.mg_url("weather"))
         .json(&serde_json::json!({"sunrise": "nope"}))
         .send()
         .await
@@ -715,7 +704,7 @@ async fn weather_http_round_trip() {
 
     // The rejected request changed nothing — still one armed event,
     // still the same sunrise.
-    let after = json(&client, format!("{}/api/weather", s.ui_url)).await;
+    let after = json(&client, s.mg_url("weather")).await;
     assert_eq!(after["events"].as_array().unwrap().len(), 1, "{after}");
     assert_eq!(after["sunrise"], "05:00", "{after}");
 }
@@ -727,18 +716,19 @@ const SOLAR_TOPOLOGY: &str = r#"
           (%make-meter :id 3)))
 "#;
 
-/// `POST /api/component/{id}/drive` with `clear_sunlight: true` drops
-/// a prior `sunlight_pct` poke and returns the inverter to following
-/// the site's weather — the read-back knob shows the "weather"
-/// marker `sunlight_reading` gives a `Follow` source. On a non-solar
-/// component (a meter) the same field is a 400, not a silent no-op.
+/// `POST /api/mg/{mg}/component/{id}/drive` with `clear_sunlight:
+/// true` drops a prior `sunlight_pct` poke and returns the inverter
+/// to following the site's weather — the read-back knob shows the
+/// "weather" marker `sunlight_reading` gives a `Follow` source. On a
+/// non-solar component (a meter) the same field is a 400, not a
+/// silent no-op.
 #[tokio::test(flavor = "multi_thread")]
 async fn drive_clear_sunlight_returns_to_weather_and_rejects_non_solar() {
     let s = TestServer::start(SOLAR_TOPOLOGY).await;
     let client = reqwest::Client::new();
 
     client
-        .post(format!("{}/api/component/2/drive", s.ui_url))
+        .post(s.mg_url("component/2/drive"))
         .json(&serde_json::json!({"sunlight_pct": 42.0}))
         .send()
         .await
@@ -746,7 +736,7 @@ async fn drive_clear_sunlight_returns_to_weather_and_rejects_non_solar() {
         .error_for_status()
         .unwrap();
 
-    let comp = json(&client, format!("{}/api/component?id=2", s.ui_url)).await;
+    let comp = json(&client, s.mg_url("component?id=2")).await;
     let knobs = comp["knobs"].as_array().unwrap();
     let poked = knobs
         .iter()
@@ -756,7 +746,7 @@ async fn drive_clear_sunlight_returns_to_weather_and_rejects_non_solar() {
     assert!(poked["expr"].is_null(), "a poke has no source text: {comp}");
 
     client
-        .post(format!("{}/api/component/2/drive", s.ui_url))
+        .post(s.mg_url("component/2/drive"))
         .json(&serde_json::json!({"clear_sunlight": true}))
         .send()
         .await
@@ -764,7 +754,7 @@ async fn drive_clear_sunlight_returns_to_weather_and_rejects_non_solar() {
         .error_for_status()
         .unwrap();
 
-    let comp = json(&client, format!("{}/api/component?id=2", s.ui_url)).await;
+    let comp = json(&client, s.mg_url("component?id=2")).await;
     let cleared = comp["knobs"]
         .as_array()
         .unwrap()
@@ -776,7 +766,7 @@ async fn drive_clear_sunlight_returns_to_weather_and_rejects_non_solar() {
     // clear_sunlight on a meter (not a solar inverter) is a 4xx
     // rejection, not a silent no-op.
     let resp = client
-        .post(format!("{}/api/component/3/drive", s.ui_url))
+        .post(s.mg_url("component/3/drive"))
         .json(&serde_json::json!({"clear_sunlight": true}))
         .send()
         .await
@@ -847,7 +837,7 @@ async fn drive_rejects_each_field_on_the_wrong_component_kind() {
     ];
     for (id, req, error) in cases {
         let resp = client
-            .post(format!("{}/api/component/{id}/drive", s.ui_url))
+            .post(s.mg_url(&format!("component/{id}/drive")))
             .json(&req)
             .send()
             .await
@@ -1034,7 +1024,7 @@ async fn drive_soc_on_an_empty_charger_names_the_missing_ev() {
     let base = format!("{}/api/mg/2200", s.ui_url);
 
     let resp = client
-        .post(format!("{}/api/component/6/drive", s.ui_url))
+        .post(s.mg_url("component/6/drive"))
         .json(&serde_json::json!({"soc_pct": 50.0}))
         .send()
         .await
@@ -1045,7 +1035,7 @@ async fn drive_soc_on_an_empty_charger_names_the_missing_ev() {
 
     // A component with no pack at all still gets the old message.
     let resp = client
-        .post(format!("{}/api/component/2/drive", s.ui_url))
+        .post(s.mg_url("component/2/drive"))
         .json(&serde_json::json!({"soc_pct": 50.0}))
         .send()
         .await
@@ -1060,7 +1050,7 @@ async fn drive_soc_on_an_empty_charger_names_the_missing_ev() {
     // With a car plugged in the same request lands on the car.
     eval_or_panic(&client, &s, "(plug-ev 6 'city :soc 25)").await;
     client
-        .post(format!("{}/api/component/6/drive", s.ui_url))
+        .post(s.mg_url("component/6/drive"))
         .json(&serde_json::json!({"soc_pct": 50.0}))
         .send()
         .await
@@ -1088,7 +1078,7 @@ async fn drive_soc_on_a_charger_is_undone_by_scenario_teardown() {
     eval_or_panic(&client, &s, "(plug-ev 6 'city :soc 25)").await;
     eval_or_panic(&client, &s, "(scenario-start \"ev\")").await;
     client
-        .post(format!("{}/api/component/6/drive", s.ui_url))
+        .post(s.mg_url("component/6/drive"))
         .json(&serde_json::json!({"soc_pct": 60.0}))
         .send()
         .await
