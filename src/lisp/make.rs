@@ -17,7 +17,8 @@ use tulisp::{AsPlist, Error, Plist, TulispContext};
 use crate::lisp::value::LispValue;
 use crate::sim::{
     Battery, BatteryInverter, Category, ComponentHandle, EvCharger, Grid, Marker, Meter,
-    MicrogridSite, OperationalMode, ReactiveSource, SolarInverter, SteamBoiler, SunlightDrive,
+    MicrogridSite, OperationalMode, ReactiveSource, SolarInverter, SteamBoiler, SteamDrive,
+    SunlightDrive,
     battery::BatteryConfig,
     dynamic_scalar::DynamicScalar,
     ev_charger::{EvChargerConfig, EvIdle},
@@ -1646,7 +1647,7 @@ mod tests {
         let b = site.get(41).unwrap();
         assert_eq!(b.category().as_str(), "steam-boiler");
         assert_eq!(b.rated_active_bounds(), Some((0.0, 100_000.0)));
-        assert_eq!(b.pressure_target_bar(), Some(6.0));
+        assert_eq!(b.steam_drive().unwrap().pressure_target_bar(), 6.0);
 
         // Bare marker-style form — existing worlds' `(%make-steam-boiler
         // :id 1642)` must keep loading now that SteamBoilerArgs is a

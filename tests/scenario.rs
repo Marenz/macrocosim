@@ -250,8 +250,9 @@ async fn drive_boiler_sets_demand_via_scenario_compile() {
         .site()
         .get(9)
         .expect("boiler component")
-        .demand_reading()
-        .expect("demand reading");
+        .steam_drive()
+        .expect("demand reading")
+        .demand_reading();
     assert_eq!(r.value, 40.0, "drive-boiler should set constant demand");
 }
 

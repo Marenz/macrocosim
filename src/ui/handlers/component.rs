@@ -152,11 +152,9 @@ fn knobs_for(c: &dyn crate::sim::SimulatedComponent) -> Vec<KnobState> {
             }
         }
         Category::SteamBoiler => {
-            if let Some(r) = c.demand_reading() {
-                knobs.push(scalar_knob("boiler-demand", r));
-            }
-            if let Some(r) = c.pressure_reading() {
-                knobs.push(scalar_knob("boiler-pressure", r));
+            if let Some(boiler) = c.steam_drive() {
+                knobs.push(scalar_knob("boiler-demand", boiler.demand_reading()));
+                knobs.push(scalar_knob("boiler-pressure", boiler.pressure_reading()));
             }
         }
         _ => {}
@@ -231,6 +229,6 @@ fn component_state(
                 .setpoint_envelope(id, SetpointAxis::Reactive)
                 .and_then(|b| b.outer_edges()),
         },
-        pressure_target_bar: c.pressure_target_bar(),
+        pressure_target_bar: c.steam_drive().map(|b| b.pressure_target_bar()),
     })
 }

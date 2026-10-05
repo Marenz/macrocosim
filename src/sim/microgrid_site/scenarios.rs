@@ -422,7 +422,7 @@ impl MicrogridSite {
                 self.note_knob_changed(id, "solar-sunlight", value, expr, None);
             }
             KnobKind::BoilerDemand => {
-                let (value, expr) = match component.demand_reading() {
+                let (value, expr) = match component.steam_drive().map(|b| b.demand_reading()) {
                     Some(r) => (Some(r.value), r.expr),
                     None => (None, None),
                 };

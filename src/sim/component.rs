@@ -16,7 +16,7 @@ mod knobs;
 mod reactive_limits;
 
 pub use controllable::{Controllable, GatewaySettings};
-pub use knobs::{MeterDrive, SunlightDrive};
+pub use knobs::{MeterDrive, SteamDrive, SunlightDrive};
 pub use reactive_limits::ReactiveLimits;
 
 /// High-level kind of a component, mirroring the proto category enum but
@@ -366,9 +366,9 @@ pub enum KnobSnapshot {
 ///   - **Lifecycle**: stream_interval, stream_jitter_pct, tick, telemetry.
 ///   - **Capability groups**: controllable ([`Controllable`]),
 ///     reactive_limits ([`ReactiveLimits`]), meter_drive
-///     ([`MeterDrive`]), sunlight_drive ([`SunlightDrive`]). Each
-///     accessor answers `Some` on the components that have the
-///     group.
+///     ([`MeterDrive`]), sunlight_drive ([`SunlightDrive`]),
+///     steam_drive ([`SteamDrive`]). Each accessor answers `Some` on
+///     the components that have the group.
 ///   - **Hardware facts the gateway reads**: soc_window, soc_pct. The
 ///     Microgrid API rules themselves live in `sim::gateway`, never
 ///     here.
@@ -485,6 +485,11 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         None
     }
 
+    /// The steam boiler's demand and pressure inputs.
+    fn steam_drive(&self) -> Option<&dyn SteamDrive> {
+        None
+    }
+
     // ── hardware facts the gateway reads ─────────────────────────────
 
     /// A battery's usable SoC window (`:soc-lower`, `:soc-upper`,
@@ -539,27 +544,6 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         None
     }
 
-    /// Steam boiler: overwrite the pressure state (bar). `false`
-    /// for components without a pressure notion.
-    fn set_pressure_bar(&self, _bar: f32) -> bool {
-        false
-    }
-    fn takes_pressure_bar(&self) -> bool {
-        false
-    }
-
-    /// Steam boiler: constant steam demand in kg/h. Collapses any
-    /// prior dynamic source, like `set_sunlight_pct`.
-    fn set_steam_demand_kg_h(&self, _kg_h: f32) -> bool {
-        false
-    }
-    fn takes_steam_demand(&self) -> bool {
-        false
-    }
-    /// Steam boiler: install a Lisp-driven demand source that
-    /// `refresh_inputs` re-resolves each tick.
-    fn set_steam_demand_source(&self, _scalar: DynamicScalar) {}
-
     // ── scenario teardown (snapshot / restore) ───────────────────────
 
     /// Capture this component's `kind` knob so a later
@@ -604,21 +588,6 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
 
     /// Rated fuse current at the grid connection point.
     fn rated_fuse_current(&self) -> Option<u32> {
-        None
-    }
-
-    // ── knob read-back (inspector snapshot) ──────────────────────────
-
-    /// Resolved demand + source text for the inspector knob.
-    fn demand_reading(&self) -> Option<ScalarReading> {
-        None
-    }
-    /// Live pressure for the inspector knob prefill (expr always None).
-    fn pressure_reading(&self) -> Option<ScalarReading> {
-        None
-    }
-    /// The boiler's thermostat target, for chart annotation.
-    fn pressure_target_bar(&self) -> Option<f32> {
         None
     }
 
@@ -751,6 +720,7 @@ mod tests {
         ("reactive_limits", |c| c.reactive_limits().is_some()),
         ("meter_drive", |c| c.meter_drive().is_some()),
         ("sunlight_drive", |c| c.sunlight_drive().is_some()),
+        ("steam_drive", |c| c.steam_drive().is_some()),
     ];
 
     /// The names of the groups `c` has, in `GROUPS` order.
@@ -799,7 +769,7 @@ mod tests {
             ),
             (
                 Box::new(SteamBoiler::new(8, sec, Default::default())),
-                &["controllable"],
+                &["controllable", "steam_drive"],
             ),
             (Box::new(Hw::new(9)), &["controllable"]),
             (Box::new(Pq::new()), &["controllable", "reactive_limits"]),

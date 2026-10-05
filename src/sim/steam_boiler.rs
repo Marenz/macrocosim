@@ -13,7 +13,7 @@ use parking_lot::{Mutex, RwLock};
 use crate::sim::{
     Category, Controllable, MicrogridSite, SimulatedComponent, Telemetry,
     bounds::VecBounds,
-    component::{GatewaySettings, KnobKind, KnobSnapshot, ScalarReading},
+    component::{GatewaySettings, KnobKind, KnobSnapshot, ScalarReading, SteamDrive},
     device_axis::DeviceAxis,
     dynamic_scalar::DynamicScalar,
     runtime::Health,
@@ -155,13 +155,6 @@ impl SteamBoiler {
         }
     }
 
-    /// Replace the steam-demand source with a Lisp expression that
-    /// `refresh_inputs` re-resolves each tick. Mirrors
-    /// `SunlightDrive::set_sunlight_source`.
-    pub fn set_steam_demand_source(&self, scalar: DynamicScalar) {
-        *self.demand_source.write() = scalar;
-    }
-
     /// Steam demand in W (kg/h × Wh/kg); negative or non-finite reads
     /// as 0.
     fn demand_w(&self) -> f32 {
@@ -291,49 +284,8 @@ impl SimulatedComponent for SteamBoiler {
         Some(self)
     }
 
-    fn set_pressure_bar(&self, bar: f32) -> bool {
-        if !bar.is_finite() {
-            log::warn!("SteamBoiler::set_pressure_bar ignored non-finite value");
-            return true;
-        }
-        self.state.lock().pressure_bar = bar.clamp(f32::MIN_POSITIVE, self.cfg.max_bar);
-        true
-    }
-
-    fn takes_pressure_bar(&self) -> bool {
-        true
-    }
-
-    fn set_steam_demand_kg_h(&self, kg_h: f32) -> bool {
-        *self.demand_source.write() = DynamicScalar::constant(kg_h);
-        true
-    }
-
-    fn takes_steam_demand(&self) -> bool {
-        true
-    }
-
-    fn set_steam_demand_source(&self, scalar: DynamicScalar) {
-        SteamBoiler::set_steam_demand_source(self, scalar);
-    }
-
-    fn demand_reading(&self) -> Option<ScalarReading> {
-        let s = self.demand_source.read();
-        Some(ScalarReading {
-            value: s.get(),
-            expr: s.source_text(),
-        })
-    }
-
-    fn pressure_reading(&self) -> Option<ScalarReading> {
-        Some(ScalarReading {
-            value: self.state.lock().pressure_bar,
-            expr: None,
-        })
-    }
-
-    fn pressure_target_bar(&self) -> Option<f32> {
-        Some(self.cfg.target_bar)
+    fn steam_drive(&self) -> Option<&dyn SteamDrive> {
+        Some(self)
     }
 
     fn snapshot_knob(&self, kind: KnobKind) -> Option<KnobSnapshot> {
@@ -405,6 +357,45 @@ impl SimulatedComponent for SteamBoiler {
     }
 }
 
+impl SteamDrive for SteamBoiler {
+    fn set_steam_demand_kg_h(&self, kg_h: f32) {
+        *self.demand_source.write() = DynamicScalar::constant(kg_h);
+    }
+
+    fn set_steam_demand_source(&self, scalar: DynamicScalar) {
+        *self.demand_source.write() = scalar;
+    }
+
+    /// Ignores a non-finite value (with a warning) and clamps the
+    /// rest to `(0, max_bar]`.
+    fn set_pressure_bar(&self, bar: f32) {
+        if !bar.is_finite() {
+            log::warn!("SteamBoiler::set_pressure_bar ignored non-finite value");
+            return;
+        }
+        self.state.lock().pressure_bar = bar.clamp(f32::MIN_POSITIVE, self.cfg.max_bar);
+    }
+
+    fn demand_reading(&self) -> ScalarReading {
+        let s = self.demand_source.read();
+        ScalarReading {
+            value: s.get(),
+            expr: s.source_text(),
+        }
+    }
+
+    fn pressure_reading(&self) -> ScalarReading {
+        ScalarReading {
+            value: self.state.lock().pressure_bar,
+            expr: None,
+        }
+    }
+
+    fn pressure_target_bar(&self) -> f32 {
+        self.cfg.target_bar
+    }
+}
+
 impl Controllable for SteamBoiler {
     fn has_axis(&self, axis: SetpointAxis) -> bool {
         axis == SetpointAxis::Active
@@ -473,7 +464,7 @@ mod tests {
         let w = crate::sim::MicrogridSite::new();
         let b = boiler(SteamBoilerConfig::default());
         // 100 kg/h × 627 Wh/kg = 62_700 W
-        assert!(b.set_steam_demand_kg_h(100.0));
+        b.set_steam_demand_kg_h(100.0);
         b.set_command(SetpointAxis::Active, 200_000.0);
         b.tick(&w, Utc::now(), dt());
         assert!((b.aggregate_power_w(&w) - 62_700.0).abs() < 1.0);
@@ -514,7 +505,7 @@ mod tests {
         let w = crate::sim::MicrogridSite::new();
         let b = boiler(SteamBoilerConfig::default());
         b.set_steam_demand_kg_h(100.0); // 62_700 W draw
-        assert!(b.set_pressure_bar(9.0));
+        b.set_pressure_bar(9.0);
         b.set_command(SetpointAxis::Active, 100_000.0);
         b.tick(&w, Utc::now(), dt());
         // Declined the allotment entirely.
@@ -696,12 +687,12 @@ mod tests {
     fn set_pressure_clamps_to_max() {
         let w = crate::sim::MicrogridSite::new();
         let b = boiler(SteamBoilerConfig::default());
-        assert!(b.set_pressure_bar(50.0));
+        b.set_pressure_bar(50.0);
         // Clamped to max (10.0); a tick with no demand keeps it there
         // (nothing draws it down).
         b.tick(&w, Utc::now(), dt());
         assert_eq!(b.telemetry(&w).pressure_bar, Some(10.0));
-        assert!(b.set_pressure_bar(f32::NAN));
+        b.set_pressure_bar(f32::NAN);
         assert_eq!(b.telemetry(&w).pressure_bar, Some(10.0), "NaN ignored");
     }
 
@@ -714,7 +705,7 @@ mod tests {
             w.bounds_of(700, SetpointAxis::Active).unwrap().0[0].upper,
             Some(0.0)
         );
-        b.set_steam_demand_kg_h(100.0);
+        b.steam_drive().unwrap().set_steam_demand_kg_h(100.0);
         let upper = w.bounds_of(700, SetpointAxis::Active).unwrap().0[0]
             .upper
             .unwrap();
@@ -748,9 +739,7 @@ mod tests {
         let t = b.telemetry(&w);
         assert_eq!(t.reactive_power_var, Some(0.0));
         assert_eq!(t.pressure_bar, Some(8.0));
-        assert_eq!(b.pressure_target_bar(), Some(8.0));
-        assert!(b.takes_pressure_bar());
-        assert!(b.takes_steam_demand());
+        assert_eq!(b.pressure_target_bar(), 8.0);
     }
 
     /// Every construction kwarg round-trips; :ramp-rate renders only
@@ -816,18 +805,18 @@ mod tests {
         let lambda = ctx.eval_string("(lambda () 77.0)").unwrap();
         let scalar = DynamicScalar::from_lisp(&lambda, 0.0).unwrap();
         b.set_steam_demand_source(scalar);
-        let text_before = b.demand_reading().unwrap().expr;
+        let text_before = b.demand_reading().expr;
         assert!(text_before.is_some());
 
         let snap = b.snapshot_knob(KnobKind::BoilerDemand).unwrap();
 
         // A scenario collapses it to a constant.
-        assert!(b.set_steam_demand_kg_h(15.0));
-        assert!(b.demand_reading().unwrap().expr.is_none());
+        b.set_steam_demand_kg_h(15.0);
+        assert!(b.demand_reading().expr.is_none());
         assert!(!b.has_unrenderable_source());
 
         assert!(b.restore_knob(snap));
-        assert_eq!(b.demand_reading().unwrap().expr, text_before);
+        assert_eq!(b.demand_reading().expr, text_before);
         assert!(b.has_unrenderable_source(), "dynamic source restored");
     }
 
@@ -847,7 +836,7 @@ mod tests {
                 DynamicScalar::constant(1.0)
             )))
         );
-        assert_eq!(b.demand_reading().unwrap().value, 0.0);
+        assert_eq!(b.demand_reading().value, 0.0);
     }
 
     /// Register `b` in a fresh site and hand back both, so a test can
@@ -880,13 +869,13 @@ mod tests {
     #[test]
     fn a_falling_demand_cuts_the_draw_at_once() {
         let (w, b) = sited(slewing_boiler());
-        assert!(b.set_steam_demand_kg_h(100.0)); // 62_700 W equivalent
+        b.steam_drive().unwrap().set_steam_demand_kg_h(100.0); // 62_700 W equivalent
         w.gateway()
             .command(700, SetpointAxis::Active, 200_000.0)
             .unwrap();
         tick_n(&w, &b, 7);
         assert!((b.aggregate_power_w(&w) - 62_700.0).abs() < 1.0);
-        assert!(b.set_steam_demand_kg_h(10.0)); // 6_270 W equivalent
+        b.steam_drive().unwrap().set_steam_demand_kg_h(10.0); // 6_270 W equivalent
         tick_n(&w, &b, 1);
         assert!(
             (b.aggregate_power_w(&w) - 6_270.0).abs() < 1.0,
@@ -902,7 +891,7 @@ mod tests {
     fn faulted_boiler_trips_and_awaits_redispatch() {
         for health in [Health::Error, Health::Standby] {
             let (w, b) = sited(slewing_boiler());
-            assert!(b.set_steam_demand_kg_h(100.0)); // 62_700 W equivalent
+            b.steam_drive().unwrap().set_steam_demand_kg_h(100.0); // 62_700 W equivalent
             w.gateway()
                 .command(700, SetpointAxis::Active, 200_000.0)
                 .unwrap();
@@ -951,7 +940,7 @@ mod tests {
             initial_bar: Some(9.0),
             ..Default::default()
         }));
-        assert!(b.set_steam_demand_kg_h(100.0)); // 62_700 W = 17.4 Wh/s
+        b.steam_drive().unwrap().set_steam_demand_kg_h(100.0); // 62_700 W = 17.4 Wh/s
         w.set_health(700, Health::Error).unwrap();
         tick_n(&w, &b, 10);
         let bar = b.telemetry(&w).pressure_bar.unwrap();
@@ -963,7 +952,7 @@ mod tests {
         assert_eq!(b.aggregate_power_w(&w), 0.0, "still no draw");
         // Back at target the boiler would take demand: that is what
         // it reports even while offline.
-        assert!(b.set_pressure_bar(8.0));
+        b.steam_drive().unwrap().set_pressure_bar(8.0);
         tick_n(&w, &b, 1);
         let eff = w.bounds_of(700, SetpointAxis::Active).unwrap();
         assert_eq!(
@@ -979,7 +968,7 @@ mod tests {
     #[test]
     fn ttl_expiry_slews_down() {
         let (w, b) = sited(slewing_boiler());
-        b.set_steam_demand_kg_h(100.0); // 62_700 W equivalent
+        b.steam_drive().unwrap().set_steam_demand_kg_h(100.0); // 62_700 W equivalent
         w.gateway()
             .command(700, SetpointAxis::Active, 200_000.0)
             .unwrap();

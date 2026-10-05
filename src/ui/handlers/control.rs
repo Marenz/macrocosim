@@ -262,13 +262,16 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
             format!("component {id}: leading requires power_factor in the same request"),
         ));
     }
-    if req.steam_demand_kg_h.is_some() && !component.takes_steam_demand() {
+    // Like `sunlight`, the apply phase writes the steam fields
+    // through this same reference.
+    let steam = component.steam_drive();
+    if req.steam_demand_kg_h.is_some() && steam.is_none() {
         return Err(reject(
             StatusCode::BAD_REQUEST,
             format!("component {id} does not take steam_demand_kg_h (not a steam boiler)"),
         ));
     }
-    if req.pressure_bar.is_some() && !component.takes_pressure_bar() {
+    if req.pressure_bar.is_some() && steam.is_none() {
         return Err(reject(
             StatusCode::BAD_REQUEST,
             format!("component {id} does not take pressure_bar (not a steam boiler)"),
@@ -406,13 +409,10 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
             None,
         );
     }
-    // The debug_asserts catch a takes_* predicate drifting from its
-    // setter: predicate true + setter false would be a 200 that did
-    // nothing, the exact silent no-op this endpoint must not produce.
-    // The second door: emit KnobChanged on the same success path as the
-    // Lisp defuns (src/lisp/defuns/load_drivers.rs), for the same four
-    // tokens — `soc_pct` isn't part of the knob vocabulary the
-    // inspector reads back, so set_soc_pct gets no broadcast.
+    // Each setter below emits KnobChanged on the same success path
+    // as its Lisp defun (src/lisp/defuns/load_drivers.rs) —
+    // `soc_pct` isn't part of the knob vocabulary the inspector
+    // reads back, so set_soc_pct gets no broadcast.
     if let Some(watts) = req.power_w
         && let Some(m) = meter
     {
@@ -436,9 +436,8 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
         if component.takes_ev() {
             site.scenario_snapshot_knob(id, KnobKind::Ev);
         }
-        // Not a debug_assert like the other setters: an unplug landing
-        // between the pre-gate above and here is a real race, not a
-        // predicate/setter disagreement.
+        // Checked again here: an unplug landing between the pre-gate
+        // above and here is a real race.
         if !component.set_soc_pct(pct as f32) {
             return Err(reject(
                 StatusCode::CONFLICT,
@@ -467,20 +466,18 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
             Some(leading),
         );
     }
-    if let Some(kg_h) = req.steam_demand_kg_h {
+    if let Some(kg_h) = req.steam_demand_kg_h
+        && let Some(boiler) = steam
+    {
         site.scenario_snapshot_knob(id, KnobKind::BoilerDemand);
-        let applied = component.set_steam_demand_kg_h(kg_h as f32);
-        debug_assert!(applied, "takes_steam_demand disagrees with setter");
-        if applied {
-            site.note_knob_changed(id, "boiler-demand", Some(kg_h as f32), None, None);
-        }
+        boiler.set_steam_demand_kg_h(kg_h as f32);
+        site.note_knob_changed(id, "boiler-demand", Some(kg_h as f32), None, None);
     }
-    if let Some(bar) = req.pressure_bar {
-        let applied = component.set_pressure_bar(bar as f32);
-        debug_assert!(applied, "takes_pressure_bar disagrees with setter");
-        if applied {
-            site.note_knob_changed(id, "boiler-pressure", Some(bar as f32), None, None);
-        }
+    if let Some(bar) = req.pressure_bar
+        && let Some(boiler) = steam
+    {
+        boiler.set_pressure_bar(bar as f32);
+        site.note_knob_changed(id, "boiler-pressure", Some(bar as f32), None, None);
     }
     Ok(Json(serde_json::json!({})))
 }
@@ -588,7 +585,10 @@ mod tests {
         assert!(apply_drive(&site, 6, &req).is_ok());
 
         let boiler = site.get(6).unwrap();
-        let r = boiler.demand_reading().expect("demand reading");
+        let r = boiler
+            .steam_drive()
+            .expect("demand reading")
+            .demand_reading();
         assert!((r.value - 40.0).abs() < 1e-6, "{}", r.value);
     }
 
@@ -614,7 +614,10 @@ mod tests {
         assert!(apply_drive(&site, 6, &req).is_ok());
 
         let boiler = site.get(6).unwrap();
-        let r = boiler.pressure_reading().expect("pressure reading");
+        let r = boiler
+            .steam_drive()
+            .expect("pressure reading")
+            .pressure_reading();
         assert!((r.value - 9.0).abs() < 1e-6, "{}", r.value);
     }
 

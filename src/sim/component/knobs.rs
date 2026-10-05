@@ -98,3 +98,30 @@ pub trait SunlightDrive: Send + Sync {
     /// (`None` for a constant).
     fn sunlight_reading(&self) -> ScalarReading;
 }
+
+/// The steam boiler's driven inputs: its steam demand and its
+/// pressure state.
+pub trait SteamDrive: Send + Sync {
+    /// Drive the steam demand (kg/h) with a constant. Collapses any
+    /// prior dynamic source, like
+    /// [`SunlightDrive::set_sunlight_pct`].
+    fn set_steam_demand_kg_h(&self, kg_h: f32);
+
+    /// Drive the steam demand with a Lisp expression that
+    /// `refresh_inputs` re-resolves each tick.
+    fn set_steam_demand_source(&self, scalar: DynamicScalar);
+
+    /// Overwrite the pressure state (bar).
+    fn set_pressure_bar(&self, bar: f32);
+
+    /// The live demand (kg/h), with the printed Lisp source of a
+    /// dynamic source (`None` for a constant).
+    fn demand_reading(&self) -> ScalarReading;
+
+    /// The live pressure (bar), for the inspector knob; `expr` is
+    /// always `None`.
+    fn pressure_reading(&self) -> ScalarReading;
+
+    /// The thermostat target (bar), for chart annotation.
+    fn pressure_target_bar(&self) -> f32;
+}

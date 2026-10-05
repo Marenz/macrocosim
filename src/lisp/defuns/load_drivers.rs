@@ -385,9 +385,9 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     // drive the `:demand` (kg/h) input from Lisp. Same numeric /
     // dynamic dispatch — a number installs a constant, a lambda or
     // symbol installs a DynamicScalar the scheduler re-resolves each
-    // refresh tick. Gated on takes_steam_demand() since (unlike the
-    // meter/solar setters) a non-boiler must reject here, not
-    // silently no-op — this is a first-class inspector knob.
+    // refresh tick. Strict: unlike the meter/solar setters, a
+    // non-boiler must reject here, not silently no-op — this is a
+    // first-class inspector knob.
     let r = router.clone();
     ctx.defun(
         "set-boiler-demand",
@@ -398,15 +398,15 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                     "set-boiler-demand: component {id} not found"
                 )));
             };
-            if !c.takes_steam_demand() {
+            let Some(boiler) = c.steam_drive() else {
                 return Err(Error::invalid_argument(format!(
                     "set-boiler-demand: component {id} is not a steam boiler"
                 )));
-            }
+            };
             w.scenario_snapshot_knob(id as u64, KnobKind::BoilerDemand);
             if value.numberp() {
                 let kg_h = f64::try_from(&value)?;
-                let _ = c.set_steam_demand_kg_h(kg_h as f32);
+                boiler.set_steam_demand_kg_h(kg_h as f32);
                 w.note_knob_changed(id as u64, "boiler-demand", Some(kg_h as f32), None, None);
             } else if let Some(scalar) =
                 crate::sim::dynamic_scalar::DynamicScalar::from_lisp(&value, 0.0)
@@ -415,7 +415,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                 // construction — same pattern as set-meter-power above.
                 let printed = value.to_string();
                 let resolved_now = scalar.get();
-                c.set_steam_demand_source(scalar);
+                boiler.set_steam_demand_source(scalar);
                 w.note_knob_changed(
                     id as u64,
                     "boiler-demand",
@@ -433,8 +433,8 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     );
 
     // Steam boiler pressure override — numeric only (unlike demand,
-    // pressure has no dynamic-source door on the trait). Gated on
-    // takes_pressure_bar() for the same reason as set-boiler-demand.
+    // pressure has no dynamic-source door on `SteamDrive`). Strict,
+    // for the same reason as set-boiler-demand.
     let r = router.clone();
     ctx.defun(
         "set-boiler-pressure",
@@ -445,12 +445,12 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                     "set-boiler-pressure: component {id} not found"
                 )));
             };
-            if !c.takes_pressure_bar() {
+            let Some(boiler) = c.steam_drive() else {
                 return Err(Error::invalid_argument(format!(
                     "set-boiler-pressure: component {id} is not a steam boiler"
                 )));
-            }
-            let _ = c.set_pressure_bar(bar as f32);
+            };
+            boiler.set_pressure_bar(bar as f32);
             w.note_knob_changed(id as u64, "boiler-pressure", Some(bar as f32), None, None);
             Ok(true)
         },
@@ -1232,7 +1232,12 @@ mod tests {
         let (cfg, _dir) = config_with("(%make-steam-boiler :id 9)");
         cfg.eval("(set-boiler-demand 9 40.0)").unwrap();
         let site = cfg.site();
-        let r = site.get(9).unwrap().demand_reading().expect("reading");
+        let r = site
+            .get(9)
+            .unwrap()
+            .steam_drive()
+            .expect("reading")
+            .demand_reading();
         assert_eq!(r.value, 40.0);
     }
 
@@ -1247,7 +1252,12 @@ mod tests {
         cfg.site()
             .tick_once(chrono::Utc::now(), std::time::Duration::from_millis(100));
         let site = cfg.site();
-        let r = site.get(9).unwrap().demand_reading().expect("reading");
+        let r = site
+            .get(9)
+            .unwrap()
+            .steam_drive()
+            .expect("reading")
+            .demand_reading();
         assert!((r.value - 25.0).abs() < 1e-6, "{}", r.value);
     }
 
@@ -1258,7 +1268,12 @@ mod tests {
         let (cfg, _dir) = config_with("(%make-steam-boiler :id 9)");
         cfg.eval("(set-boiler-pressure 9 9.0)").unwrap();
         let site = cfg.site();
-        let r = site.get(9).unwrap().pressure_reading().expect("reading");
+        let r = site
+            .get(9)
+            .unwrap()
+            .steam_drive()
+            .expect("reading")
+            .pressure_reading();
         assert_eq!(r.value, 9.0);
     }
 
@@ -1703,7 +1718,7 @@ mod tests {
         let (cfg, _dir) = config_with("(%make-steam-boiler :id 9)");
         cfg.eval("(set-boiler-demand 9 40.0)").unwrap();
         let b = cfg.site().get(9).unwrap();
-        assert_eq!(b.demand_reading().unwrap().value, 40.0);
+        assert_eq!(b.steam_drive().unwrap().demand_reading().value, 40.0);
         assert!(!b.has_unrenderable_source());
 
         cfg.eval("(scenario-start \"boiler\")").unwrap();
@@ -1711,7 +1726,7 @@ mod tests {
         assert!(b.has_unrenderable_source());
 
         cfg.eval("(scenario-stop)").unwrap();
-        assert_eq!(b.demand_reading().unwrap().value, 40.0);
+        assert_eq!(b.steam_drive().unwrap().demand_reading().value, 40.0);
         assert!(!b.has_unrenderable_source());
     }
 
