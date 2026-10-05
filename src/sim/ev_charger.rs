@@ -945,9 +945,9 @@ mod tests {
     fn cmd_for(w: &MicrogridSite, watts: f32, secs: u64) {
         w.gateway()
             .set_power(
-                SetpointAxis::Active,
                 7,
                 w.run_generation(),
+                SetpointAxis::Active,
                 watts,
                 Duration::from_secs(secs),
                 Mode::Reject,

@@ -59,9 +59,9 @@ fn set_power(
     let lifetime = lifetime_from_arg(lifetime_ms, metadata);
     w.gateway()
         .set_power(
-            axis,
             id as u64,
             w.run_generation(),
+            axis,
             value as f32,
             lifetime,
             mode,

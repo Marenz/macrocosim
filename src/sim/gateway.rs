@@ -175,9 +175,9 @@ impl<'a> Gateway<'a> {
     /// the component up; a moved generation is refused.
     pub fn set_power(
         &self,
-        axis: SetpointAxis,
         id: u64,
         generation: u64,
+        axis: SetpointAxis,
         value: f32,
         lifetime: Duration,
         mode: Mode,
@@ -463,9 +463,9 @@ impl<'a> Gateway<'a> {
         value: f32,
     ) -> Result<Applied, GatewayError> {
         self.set_power(
-            axis,
             id,
             self.site.run_generation(),
+            axis,
             value,
             Duration::from_secs(3600),
             Mode::Reject,
@@ -499,9 +499,9 @@ mod tests {
         let applied = site
             .gateway()
             .set_power(
-                SetpointAxis::Active,
                 1,
                 site.run_generation(),
+                SetpointAxis::Active,
                 500.0,
                 Duration::from_secs(30),
                 Mode::Reject,
@@ -531,9 +531,9 @@ mod tests {
         let err = site
             .gateway()
             .set_power(
-                SetpointAxis::Active,
                 1,
                 generation,
+                SetpointAxis::Active,
                 500.0,
                 HOUR,
                 Mode::Reject,
@@ -577,9 +577,9 @@ mod tests {
 
         let e = gw
             .set_power(
-                SetpointAxis::Active,
                 99,
                 generation,
+                SetpointAxis::Active,
                 1.0,
                 HOUR,
                 Mode::Reject,
@@ -588,7 +588,7 @@ mod tests {
         assert_eq!(e.to_string(), "component 99 not found");
 
         let e = gw
-            .set_power(SetpointAxis::Active, 5, generation, 1.0, HOUR, Mode::Reject)
+            .set_power(5, generation, SetpointAxis::Active, 1.0, HOUR, Mode::Reject)
             .unwrap_err();
         assert!(matches!(
             e,
@@ -600,9 +600,9 @@ mod tests {
 
         let e = gw
             .set_power(
-                SetpointAxis::Active,
                 1,
                 generation,
+                SetpointAxis::Active,
                 f32::NAN,
                 HOUR,
                 Mode::Reject,
@@ -612,9 +612,9 @@ mod tests {
 
         let e = gw
             .set_power(
-                SetpointAxis::Active,
                 1,
                 generation,
+                SetpointAxis::Active,
                 5_000.0,
                 HOUR,
                 Mode::Reject,
@@ -638,9 +638,9 @@ mod tests {
         let gw = site.gateway();
         let applied = gw
             .set_power(
-                SetpointAxis::Active,
                 1,
                 site.run_generation(),
+                SetpointAxis::Active,
                 5_000.0,
                 HOUR,
                 Mode::Clamp,
@@ -649,9 +649,9 @@ mod tests {
         assert_eq!(applied.value, 1_000.0);
         let applied = gw
             .set_power(
-                SetpointAxis::Active,
                 1,
                 site.run_generation(),
+                SetpointAxis::Active,
                 0.0,
                 HOUR,
                 Mode::Clamp,
@@ -677,12 +677,10 @@ mod tests {
             HOUR,
         )
         .unwrap();
-        let e = gw
-            .set_power(SetpointAxis::Active, 2, g, 3_000.0, HOUR, Mode::Reject)
-            .unwrap_err();
+        let e = gw.command(2, SetpointAxis::Active, 3_000.0).unwrap_err();
         assert!(matches!(e, GatewayError::OutOfEnvelope(_)), "{e}");
         let applied = gw
-            .set_power(SetpointAxis::Active, 2, g, 3_000.0, HOUR, Mode::Clamp)
+            .set_power(2, g, SetpointAxis::Active, 3_000.0, HOUR, Mode::Clamp)
             .unwrap();
         assert_eq!(applied.value, 0.0);
     }
@@ -713,7 +711,7 @@ mod tests {
         )
         .unwrap();
         let set = |value, mode| {
-            gw.set_power(SetpointAxis::Active, 2, g, value, HOUR, mode)
+            gw.set_power(2, g, SetpointAxis::Active, value, HOUR, mode)
                 .unwrap()
                 .value
         };
@@ -908,9 +906,9 @@ mod tests {
         );
         let applied = gw
             .set_power(
-                SetpointAxis::Active,
                 2,
                 site.run_generation(),
+                SetpointAxis::Active,
                 3_000.0,
                 HOUR,
                 Mode::Clamp,
@@ -1007,9 +1005,9 @@ mod tests {
         let applied = site
             .gateway()
             .set_power(
-                SetpointAxis::Active,
                 1,
                 site.run_generation(),
+                SetpointAxis::Active,
                 5_000.0,
                 HOUR,
                 Mode::Clamp,

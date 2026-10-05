@@ -237,9 +237,9 @@ impl MicrogridServer {
         let applied = site
             .gateway()
             .set_power(
-                axis,
                 req.electrical_component_id,
                 generation,
+                axis,
                 req.power,
                 duration,
                 Mode::Reject,

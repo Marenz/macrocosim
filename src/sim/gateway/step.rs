@@ -208,9 +208,9 @@ mod tests {
         );
         site.gateway()
             .set_power(
-                Active,
                 1,
                 site.run_generation(),
+                Active,
                 600.0,
                 Duration::from_secs(1),
                 Mode::Reject,
@@ -543,9 +543,9 @@ mod tests {
         let run = site.run_generation();
         let set = |w: f32, lifetime_s: u64| {
             gw.set_power(
-                Active,
                 2,
                 run,
+                Active,
                 w,
                 Duration::from_secs(lifetime_s),
                 Mode::Reject,
@@ -708,16 +708,7 @@ mod tests {
     #[test]
     fn a_zero_command_holds_the_window_while_the_output_ramps_down() {
         let site = charging_at_the_edge();
-        site.gateway()
-            .set_power(
-                Active,
-                2,
-                site.run_generation(),
-                0.0,
-                Duration::from_secs(60),
-                Mode::Reject,
-            )
-            .unwrap();
+        site.gateway().command(2, Active, 0.0).unwrap();
         let peak = peak_soc(&site, 80);
         assert!(peak <= 90.02, "past the window, got {peak}");
     }
@@ -817,9 +808,9 @@ mod tests {
         let site = charging_at_the_edge();
         site.gateway()
             .set_power(
-                Active,
                 2,
                 site.run_generation(),
+                Active,
                 5_000.0,
                 Duration::from_millis(300),
                 Mode::Reject,
