@@ -12,8 +12,10 @@ use crate::sim::{
 };
 
 mod controllable;
+mod reactive_limits;
 
 pub use controllable::{Controllable, GatewaySettings};
+pub use reactive_limits::ReactiveLimits;
 
 /// High-level kind of a component, mirroring the proto category enum but
 /// kept Rust-side so non-gRPC code does not need to depend on protobuf.
@@ -360,20 +362,19 @@ pub enum KnobSnapshot {
 /// Reading order:
 ///   - **Identity**: id, category, name, subtype, is_hidden.
 ///   - **Lifecycle**: stream_interval, stream_jitter_pct, tick, telemetry.
-///   - **Capability groups**: controllable ([`Controllable`]). Each
+///   - **Capability groups**: controllable ([`Controllable`]),
+///     reactive_limits ([`ReactiveLimits`]). Each
 ///     accessor answers `Some` on the components that have the group.
 ///   - **Hardware facts the gateway reads**: soc_window, soc_pct. The
 ///     Microgrid API rules themselves live in `sim::gateway`, never
 ///     here.
 ///   - **Stimuli**: set_active_power_override, set_soc_pct, plug_ev,
 ///     …
-///   - **Bounds**: rated_active_bounds, reactive_capability,
-///     rated_fuse_current.
+///   - **Bounds**: rated_active_bounds, rated_fuse_current.
 ///   - **Aggregation** (parent → child): aggregate_power_w,
 ///     aggregate_reactive_var.
 ///   - **Inverter → child wiring**: set_dc_power (active only — Q
 ///     terminates at the inverter and never reaches a DC-side child).
-///   - **Runtime knobs**: set_reactive_pf_limit, set_reactive_apparent_va.
 ///
 /// Every method except the required ones (`id`, `category`, `name`,
 /// `stream_interval`, `tick`, `telemetry`, `make_fn`,
@@ -462,6 +463,11 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// takes a command on at least one axis. The gateway owns axes
     /// only for a component that answers `Some`.
     fn controllable(&self) -> Option<&dyn Controllable> {
+        None
+    }
+
+    /// The runtime reactive caps, or `None`.
+    fn reactive_limits(&self) -> Option<&dyn ReactiveLimits> {
         None
     }
 
@@ -699,21 +705,6 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         None
     }
 
-    /// The Q axis's capability shape (PF cap, kVA cap, both, or
-    /// neither) — the data behind the gateway's live Q envelope
-    /// (`site.bounds_of`, via `ReactiveCapability::q_band_at`).
-    /// `None` for components with no Q axis at all. "Static" relative
-    /// to that envelope means P-independent, not fixed forever: the
-    /// caps this returns are the CURRENT runtime-set PF/kVA limits
-    /// (mutable via `set-reactive-pf-limit` /
-    /// `set-reactive-apparent-va`), not a construction-time
-    /// nameplate. `make_component_proto` uses this (via
-    /// `ReactiveCapability::hull`) to advertise the reactive config
-    /// bound instead of a live-P sample.
-    fn reactive_capability(&self) -> Option<crate::sim::reactive::ReactiveCapability> {
-        None
-    }
-
     /// Rated fuse current at the grid connection point.
     fn rated_fuse_current(&self) -> Option<u32> {
         None
@@ -724,7 +715,7 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// The meter's active-power source knob, as currently configured
     /// — a live value plus, for a dynamic (lambda / symbol) source,
     /// the printed Lisp expression driving it (`None` for a plain
-    /// constant). Distinct from `reactive_capability()`'s PF-limit /
+    /// constant). Distinct from `ReactiveLimits::reactive_capability`'s PF-limit /
     /// kVA-cap read-back: this is the `:power` input side, not the Q
     /// envelope. `None` for components with no active-power source
     /// knob at all (only `Meter` has one).
@@ -804,18 +795,6 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         1.0
     }
 
-    // ── runtime reactive-capability knobs ────────────────────────────
-
-    /// Replace the PF cap on the reactive envelope at runtime.
-    /// `None` disables the PF constraint. Mirrors the SunSpec /
-    /// IEEE 1547-2018 PF setpoint surface a real EMS pushes via
-    /// Modbus.
-    fn set_reactive_pf_limit(&self, _pf: Option<f32>) {}
-
-    /// Replace the apparent-power (kVA) cap on the reactive envelope
-    /// at runtime. `None` disables the kVA constraint.
-    fn set_reactive_apparent_va(&self, _va: Option<f32>) {}
-
     // ── microgrid-file rendering ──────────────────────────────────────
 
     /// The `%make-*` primitive that rebuilds this component on load.
@@ -889,13 +868,17 @@ mod tests {
         Battery, BatteryInverter, Category, EvCharger, Grid, Marker, Meter, SolarInverter,
         SteamBoiler,
     };
+    use crate::timeout_tracker::SetpointAxis;
 
     /// Whether a component answers `Some` from one group accessor.
     type Has = fn(&dyn SimulatedComponent) -> bool;
 
     /// Every capability-group accessor on `SimulatedComponent`, by
     /// group name.
-    const GROUPS: &[(&str, Has)] = &[("controllable", |c| c.controllable().is_some())];
+    const GROUPS: &[(&str, Has)] = &[
+        ("controllable", |c| c.controllable().is_some()),
+        ("reactive_limits", |c| c.reactive_limits().is_some()),
+    ];
 
     /// The names of the groups `c` has, in `GROUPS` order.
     fn groups_of(c: &dyn SimulatedComponent) -> Vec<&'static str> {
@@ -904,6 +887,15 @@ mod tests {
             .filter(|(_, has)| has(c))
             .map(|(name, _)| *name)
             .collect()
+    }
+
+    /// A component with a reactive axis has the caps that shape it.
+    fn assert_reactive_axis_has_limits(c: &dyn SimulatedComponent) {
+        if c.controllable()
+            .is_some_and(|ctl| ctl.has_axis(SetpointAxis::Reactive))
+        {
+            assert!(c.reactive_limits().is_some(), "{c}");
+        }
     }
 
     /// Each component answers `Some` from the accessors of exactly
@@ -919,11 +911,11 @@ mod tests {
             (Box::new(Battery::new(4, sec, Default::default())), &[]),
             (
                 Box::new(BatteryInverter::new(5, sec, Default::default())),
-                &["controllable"],
+                &["controllable", "reactive_limits"],
             ),
             (
                 Box::new(SolarInverter::new(6, sec, Default::default())),
-                &["controllable"],
+                &["controllable", "reactive_limits"],
             ),
             (
                 Box::new(EvCharger::new(7, sec, Default::default())),
@@ -934,10 +926,11 @@ mod tests {
                 &["controllable"],
             ),
             (Box::new(Hw::new(9)), &["controllable"]),
-            (Box::new(Pq::new()), &["controllable"]),
+            (Box::new(Pq::new()), &["controllable", "reactive_limits"]),
         ];
         for (c, want) in &rows {
             assert_eq!(groups_of(c.as_ref()), *want, "{c}");
+            assert_reactive_axis_has_limits(c.as_ref());
         }
     }
 

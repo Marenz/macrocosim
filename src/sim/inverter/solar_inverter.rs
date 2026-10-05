@@ -17,7 +17,7 @@ use rand::Rng;
 use tulisp::TulispContext;
 
 use crate::sim::{
-    Category, Controllable, MicrogridSite, SimulatedComponent, Telemetry,
+    Category, Controllable, MicrogridSite, ReactiveLimits, SimulatedComponent, Telemetry,
     bounds::VecBounds,
     component::{GatewaySettings, KnobKind, KnobSnapshot, ScalarReading},
     device_axis::DeviceAxis,
@@ -426,20 +426,12 @@ impl SimulatedComponent for SolarInverter {
         Some(self)
     }
 
+    fn reactive_limits(&self) -> Option<&dyn ReactiveLimits> {
+        Some(self)
+    }
+
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
         Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
-    }
-
-    fn reactive_capability(&self) -> Option<ReactiveCapability> {
-        Some(*self.caps.lock())
-    }
-
-    fn set_reactive_pf_limit(&self, pf: Option<f32>) {
-        self.caps.lock().pf_limit = pf;
-    }
-
-    fn set_reactive_apparent_va(&self, va: Option<f32>) {
-        self.caps.lock().apparent_va = va;
     }
 
     fn subtype(&self) -> Option<&'static str> {
@@ -597,6 +589,20 @@ impl SimulatedComponent for SolarInverter {
             ));
         }
         kw
+    }
+}
+
+impl ReactiveLimits for SolarInverter {
+    fn reactive_capability(&self) -> ReactiveCapability {
+        *self.caps.lock()
+    }
+
+    fn set_reactive_pf_limit(&self, pf: Option<f32>) {
+        self.caps.lock().pf_limit = pf;
+    }
+
+    fn set_reactive_apparent_va(&self, va: Option<f32>) {
+        self.caps.lock().apparent_va = va;
     }
 }
 

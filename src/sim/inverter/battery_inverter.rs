@@ -4,9 +4,9 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    Category, Controllable, MicrogridSite, SimulatedComponent, Telemetry, bounds::VecBounds,
-    component::GatewaySettings, device_axis::DeviceAxis, reactive::ReactiveCapability,
-    runtime::Health,
+    Category, Controllable, MicrogridSite, ReactiveLimits, SimulatedComponent, Telemetry,
+    bounds::VecBounds, component::GatewaySettings, device_axis::DeviceAxis,
+    reactive::ReactiveCapability, runtime::Health,
 };
 use crate::timeout_tracker::SetpointAxis;
 
@@ -189,6 +189,10 @@ impl SimulatedComponent for BatteryInverter {
         Some(self)
     }
 
+    fn reactive_limits(&self) -> Option<&dyn ReactiveLimits> {
+        Some(self)
+    }
+
     fn aggregate_power_w(&self, _world: &MicrogridSite) -> f32 {
         *self.measured_w.lock()
     }
@@ -209,18 +213,6 @@ impl SimulatedComponent for BatteryInverter {
         self.cfg.stream_jitter_pct
     }
 
-    fn reactive_capability(&self) -> Option<ReactiveCapability> {
-        Some(*self.caps.lock())
-    }
-
-    fn set_reactive_pf_limit(&self, pf: Option<f32>) {
-        self.caps.lock().pf_limit = pf;
-    }
-
-    fn set_reactive_apparent_va(&self, va: Option<f32>) {
-        self.caps.lock().apparent_va = va;
-    }
-
     fn make_fn(&self) -> &'static str {
         "%make-battery-inverter"
     }
@@ -238,6 +230,20 @@ impl SimulatedComponent for BatteryInverter {
             reactive_ramp_rate_var_per_s: self.cfg.reactive_ramp_rate_var_per_s,
             device_delay: self.cfg.device_delay,
         })
+    }
+}
+
+impl ReactiveLimits for BatteryInverter {
+    fn reactive_capability(&self) -> ReactiveCapability {
+        *self.caps.lock()
+    }
+
+    fn set_reactive_pf_limit(&self, pf: Option<f32>) {
+        self.caps.lock().pf_limit = pf;
+    }
+
+    fn set_reactive_apparent_va(&self, va: Option<f32>) {
+        self.caps.lock().apparent_va = va;
     }
 }
 

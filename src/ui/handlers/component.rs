@@ -145,7 +145,8 @@ fn knobs_for(c: &dyn crate::sim::SimulatedComponent) -> Vec<KnobState> {
             {
                 knobs.push(scalar_knob("solar-sunlight", r));
             }
-            if let Some(cap) = c.reactive_capability() {
+            if let Some(r) = c.reactive_limits() {
+                let cap = r.reactive_capability();
                 knobs.push(knob("reactive-pf-limit", cap.pf_limit, None, None));
                 knobs.push(knob("reactive-apparent-va", cap.apparent_va, None, None));
             }

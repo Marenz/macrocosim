@@ -19,7 +19,9 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
             match w.get(id as u64) {
                 Some(c) => {
                     let clamped = if k > 0.0 { Some(k as f32) } else { None };
-                    c.set_reactive_pf_limit(clamped);
+                    if let Some(r) = c.reactive_limits() {
+                        r.set_reactive_pf_limit(clamped);
+                    }
                     w.note_knob_changed(id as u64, "reactive-pf-limit", clamped, None, None);
                     Ok(true)
                 }
@@ -38,7 +40,9 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
             match w.get(id as u64) {
                 Some(c) => {
                     let clamped = if va > 0.0 { Some(va as f32) } else { None };
-                    c.set_reactive_apparent_va(clamped);
+                    if let Some(r) = c.reactive_limits() {
+                        r.set_reactive_apparent_va(clamped);
+                    }
                     w.note_knob_changed(id as u64, "reactive-apparent-va", clamped, None, None);
                     Ok(true)
                 }

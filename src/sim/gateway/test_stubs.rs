@@ -6,7 +6,8 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    Battery, BatteryInverter, Category, Controllable, MicrogridSite, SimulatedComponent, Telemetry,
+    Battery, BatteryInverter, Category, Controllable, MicrogridSite, ReactiveLimits,
+    SimulatedComponent, Telemetry,
     battery::BatteryConfig,
     bounds::VecBounds,
     component::GatewaySettings,
@@ -241,13 +242,10 @@ impl SimulatedComponent for Pq {
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
         Some((-1000.0, 1000.0))
     }
-    fn reactive_capability(&self) -> Option<ReactiveCapability> {
-        Some(ReactiveCapability {
-            pf_limit: None,
-            apparent_va: Some(1000.0),
-        })
-    }
     fn controllable(&self) -> Option<&dyn Controllable> {
+        Some(self)
+    }
+    fn reactive_limits(&self) -> Option<&dyn ReactiveLimits> {
         Some(self)
     }
     fn make_fn(&self) -> &'static str {
@@ -256,6 +254,18 @@ impl SimulatedComponent for Pq {
     fn constructor_kwargs(&self) -> Vec<(&'static str, String)> {
         Vec::new()
     }
+}
+
+/// Fixed caps: the setters are never called on the stub.
+impl ReactiveLimits for Pq {
+    fn reactive_capability(&self) -> ReactiveCapability {
+        ReactiveCapability {
+            pf_limit: None,
+            apparent_va: Some(1000.0),
+        }
+    }
+    fn set_reactive_pf_limit(&self, _: Option<f32>) {}
+    fn set_reactive_apparent_va(&self, _: Option<f32>) {}
 }
 
 impl Controllable for Pq {
@@ -269,7 +279,7 @@ impl Controllable for Pq {
         }
     }
     fn physical_band(&self, axis: SetpointAxis, _: Duration) -> Option<VecBounds> {
-        let cap = self.reactive_capability()?;
+        let cap = self.reactive_capability();
         (axis == SetpointAxis::Reactive).then(|| cap.q_band_at(*self.p.lock()))
     }
 }

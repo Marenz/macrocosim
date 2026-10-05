@@ -146,14 +146,14 @@ pub fn make_component_proto(
         // themselves are runtime-mutable (`set-reactive-pf-limit` /
         // `set-reactive-apparent-va`), so this hull tracks whatever PF
         // / kVA band is live right now, not a frozen nameplate value.
-        // A component with no Q axis at all (`reactive_capability() ==
+        // A component with no reactive caps (`reactive_limits() ==
         // None`) honestly advertises `(0.0, 0.0)` instead of a fake
         // ±p_max edge.
         if cat != ElectricalComponentCategory::Battery {
             let p_max = lower.abs().max(upper.abs());
             let (rlo, rhi) = c
-                .reactive_capability()
-                .map(|caps| caps.hull(p_max))
+                .reactive_limits()
+                .map(|r| r.reactive_capability().hull(p_max))
                 .unwrap_or((0.0, 0.0));
             bounds.push(MetricConfigBounds {
                 metric: Metric::AcPowerReactive as i32,

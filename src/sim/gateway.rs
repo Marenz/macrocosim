@@ -396,8 +396,11 @@ impl<'a> Gateway<'a> {
                 .map(|(lo, hi)| VecBounds::single(lo, hi))
                 .unwrap_or_default(),
             SetpointAxis::Reactive => c
-                .reactive_capability()
-                .map(|cap| cap.q_band_at(c.active_power_w(self.site).unwrap_or(0.0)))
+                .reactive_limits()
+                .map(|r| {
+                    r.reactive_capability()
+                        .q_band_at(c.active_power_w(self.site).unwrap_or(0.0))
+                })
                 .unwrap_or_default(),
         }
     }
