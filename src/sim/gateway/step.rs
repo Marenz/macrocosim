@@ -145,7 +145,7 @@ mod tests {
 
     use super::super::{
         Mode,
-        test_stubs::{Hw, put, sim_site},
+        test_stubs::{Hw, instant_inverter, nearly_full_pack, put, ramping_inverter, sim_site},
     };
     use chrono::{DateTime, Utc};
     use parking_lot::Mutex;
@@ -400,39 +400,13 @@ mod tests {
         }
     }
 
-    /// No gateway delay, no ramp, no device delay.
-    fn instant_inverter(id: u64) -> BatteryInverter {
-        BatteryInverter::new(
-            id,
-            Duration::from_secs(1),
-            BatteryInverterConfig {
-                rated_lower_w: -10_000.0,
-                rated_upper_w: 10_000.0,
-                device_delay: Duration::ZERO,
-                ..Default::default()
-            },
-        )
-    }
-
     /// A running charge command tapers to nothing at `:soc-upper`
     /// instead of running the battery past it; the command stands,
     /// and the battery never has to clip what it is pushed.
     #[test]
     fn a_running_setpoint_holds_inside_the_soc_window() {
         let site = MicrogridSite::new();
-        site.register(Battery::new(
-            1,
-            Duration::from_secs(1),
-            BatteryConfig {
-                capacity_wh: 1_000.0,
-                initial_soc_pct: 89.5,
-                soc_upper_pct: 90.0,
-                soc_protect_margin_pct: 0.0,
-                rated_lower_w: -5_000.0,
-                rated_upper_w: 5_000.0,
-                ..Default::default()
-            },
-        ));
+        site.register(nearly_full_pack(1));
         site.register(instant_inverter(2));
         site.connect(2, 1);
         site.gateway().command(2, Active, 3_600.0).unwrap();
@@ -461,19 +435,7 @@ mod tests {
     #[test]
     fn the_window_holds_within_one_device_delay() {
         let site = MicrogridSite::new();
-        site.register(Battery::new(
-            1,
-            Duration::from_secs(1),
-            BatteryConfig {
-                capacity_wh: 1_000.0,
-                initial_soc_pct: 89.5,
-                soc_upper_pct: 90.0,
-                soc_protect_margin_pct: 0.0,
-                rated_lower_w: -5_000.0,
-                rated_upper_w: 5_000.0,
-                ..Default::default()
-            },
-        ));
+        site.register(nearly_full_pack(1));
         site.register(BatteryInverter::new(
             2,
             Duration::from_secs(1),
@@ -566,17 +528,7 @@ mod tests {
                 ..Default::default()
             },
         ));
-        site.register(BatteryInverter::new(
-            2,
-            Duration::from_secs(1),
-            BatteryInverterConfig {
-                rated_lower_w: -10_000.0,
-                rated_upper_w: 10_000.0,
-                ramp_rate_w_per_s: 1_000.0,
-                device_delay: Duration::ZERO,
-                ..Default::default()
-            },
-        ));
+        site.register(ramping_inverter(2));
         site.connect(2, 1);
         let inv = site.get(2).unwrap();
         let out = || inv.aggregate_power_w(&site);
@@ -681,17 +633,7 @@ mod tests {
     fn a_narrowing_room_cuts_a_ramping_output_at_once() {
         let site = MicrogridSite::new();
         site.register(tapering_battery(1, 50.0));
-        site.register(BatteryInverter::new(
-            2,
-            Duration::from_secs(1),
-            BatteryInverterConfig {
-                rated_lower_w: -10_000.0,
-                rated_upper_w: 10_000.0,
-                ramp_rate_w_per_s: 1_000.0,
-                device_delay: Duration::ZERO,
-                ..Default::default()
-            },
-        ));
+        site.register(ramping_inverter(2));
         site.connect(2, 1);
         let inv = site.get(2).unwrap();
         site.gateway().command(2, Active, 3_000.0).unwrap();

@@ -6,9 +6,11 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    Category, MicrogridSite, SimulatedComponent, Telemetry,
+    Battery, BatteryInverter, Category, MicrogridSite, SimulatedComponent, Telemetry,
+    battery::BatteryConfig,
     bounds::VecBounds,
     component::GatewaySettings,
+    inverter::battery_inverter::BatteryInverterConfig,
     sim_clock::{NowSource, headless_base},
 };
 use crate::timeout_tracker::SetpointAxis;
@@ -18,6 +20,54 @@ pub(crate) fn put<C: SimulatedComponent + 'static>(site: &MicrogridSite, c: Arc<
     let d: Arc<dyn SimulatedComponent> = c.clone();
     site.register_arc(d);
     c
+}
+
+/// A battery inverter rated ±10 kW with no gateway delay, no ramp and
+/// no device delay.
+pub(crate) fn instant_inverter(id: u64) -> BatteryInverter {
+    BatteryInverter::new(
+        id,
+        Duration::from_secs(1),
+        BatteryInverterConfig {
+            rated_lower_w: -10_000.0,
+            rated_upper_w: 10_000.0,
+            device_delay: Duration::ZERO,
+            ..Default::default()
+        },
+    )
+}
+
+/// `instant_inverter` with a 1 kW/s gateway ramp.
+pub(crate) fn ramping_inverter(id: u64) -> BatteryInverter {
+    BatteryInverter::new(
+        id,
+        Duration::from_secs(1),
+        BatteryInverterConfig {
+            rated_lower_w: -10_000.0,
+            rated_upper_w: 10_000.0,
+            ramp_rate_w_per_s: 1_000.0,
+            device_delay: Duration::ZERO,
+            ..Default::default()
+        },
+    )
+}
+
+/// A 1 kWh battery at 89.5 % SoC, rated ±5 kW, whose window closes at
+/// a 90 % `:soc-upper` with no protect margin.
+pub(crate) fn nearly_full_pack(id: u64) -> Battery {
+    Battery::new(
+        id,
+        Duration::from_secs(1),
+        BatteryConfig {
+            capacity_wh: 1_000.0,
+            initial_soc_pct: 89.5,
+            soc_upper_pct: 90.0,
+            soc_protect_margin_pct: 0.0,
+            rated_lower_w: -5_000.0,
+            rated_upper_w: 5_000.0,
+            ..Default::default()
+        },
+    )
 }
 
 /// A site on a hand-advanced clock that starts at `headless_base`.

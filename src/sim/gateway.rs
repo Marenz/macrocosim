@@ -484,7 +484,7 @@ fn clamp_into(value: f32, envelope: Option<VecBounds>) -> f32 {
 mod tests {
     use std::sync::Arc;
 
-    use super::test_stubs::{Hw, put, sim_site};
+    use super::test_stubs::{Hw, instant_inverter, put, sim_site};
     use super::*;
     use crate::sim::{component::GatewaySettings, sim_clock::headless_base};
 
@@ -684,24 +684,14 @@ mod tests {
     /// once.
     #[test]
     fn a_command_reaches_the_output_in_one_tick() {
-        use crate::sim::{
-            Battery, BatteryInverter, battery::BatteryConfig,
-            inverter::battery_inverter::BatteryInverterConfig,
-        };
+        use crate::sim::{Battery, battery::BatteryConfig};
         let site = MicrogridSite::new();
         site.register(Battery::new(
             1,
             Duration::from_secs(1),
             BatteryConfig::default(),
         ));
-        site.register(BatteryInverter::new(
-            2,
-            Duration::from_secs(1),
-            BatteryInverterConfig {
-                device_delay: Duration::ZERO,
-                ..Default::default()
-            },
-        ));
+        site.register(instant_inverter(2));
         site.connect(2, 1);
         site.gateway()
             .command(2, SetpointAxis::Active, 3_000.0)
