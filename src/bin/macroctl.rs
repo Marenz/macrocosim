@@ -211,14 +211,9 @@ enum Cmd {
 #[derive(Subcommand, Debug)]
 enum DispatchCmd {
     /// List a microgrid's dispatches (newest created first).
-    List {
-        /// Microgrid id.
-        microgrid_id: u64,
-    },
+    List,
     /// Show a single dispatch.
     Get {
-        /// Microgrid id.
-        microgrid_id: u64,
         /// Dispatch id.
         dispatch_id: u64,
     },
@@ -227,8 +222,6 @@ enum DispatchCmd {
     /// ev_charger, chp, steam_boiler) or numeric component ids
     /// (e.g. "1,2,3").
     Create {
-        /// Microgrid id.
-        microgrid_id: u64,
         /// Dispatch type the downstream actor keys on.
         #[arg(name = "type")]
         type_: String,
@@ -252,22 +245,16 @@ enum DispatchCmd {
     },
     /// Pause a dispatch (set it inactive).
     Pause {
-        /// Microgrid id.
-        microgrid_id: u64,
         /// Dispatch id.
         dispatch_id: u64,
     },
     /// Resume a paused dispatch (set it active).
     Resume {
-        /// Microgrid id.
-        microgrid_id: u64,
         /// Dispatch id.
         dispatch_id: u64,
     },
     /// Delete a dispatch.
     Delete {
-        /// Microgrid id.
-        microgrid_id: u64,
         /// Dispatch id.
         dispatch_id: u64,
     },
@@ -439,7 +426,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         // the HTTP client, not a live gRPC channel. Avoids paying
         // for a failing gRPC connect when the user only wants
         // a scenario readout.
-        Cmd::Dispatch(d) => run_dispatch(d, &cli.dispatch_addr, cli.json).await,
+        Cmd::Dispatch(d) => {
+            let http = reqwest::Client::new();
+            let mg = resolve_microgrid_id(&http, &cli.ui_addr, cli.microgrid_id).await?;
+            run_dispatch(d, &cli.dispatch_addr, mg, cli.json).await
+        }
         Cmd::Scenario(s) => run_scenario(s, &cli.ui_addr, cli.microgrid_id, cli.json).await,
         Cmd::Snapshot(s) => run_snapshot(s, &cli.ui_addr, cli.microgrid_id, cli.json).await,
         Cmd::Dashboard { tail, interval } => {
@@ -561,11 +552,12 @@ async fn set_active_dispatch(
 async fn run_dispatch(
     cmd: DispatchCmd,
     addr: &str,
+    microgrid_id: u64,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut client = MicrogridDispatchServiceClient::connect(addr.to_string()).await?;
     match cmd {
-        DispatchCmd::List { microgrid_id } => {
+        DispatchCmd::List => {
             let resp = client
                 .list_microgrid_dispatches(ListMicrogridDispatchesRequest {
                     microgrid_id,
@@ -587,10 +579,7 @@ async fn run_dispatch(
             }
             Ok(())
         }
-        DispatchCmd::Get {
-            microgrid_id,
-            dispatch_id,
-        } => {
+        DispatchCmd::Get { dispatch_id } => {
             let resp = client
                 .get_microgrid_dispatch(GetMicrogridDispatchRequest {
                     microgrid_id,
@@ -609,7 +598,6 @@ async fn run_dispatch(
             Ok(())
         }
         DispatchCmd::Create {
-            microgrid_id,
             type_,
             target,
             duration,
@@ -664,18 +652,13 @@ async fn run_dispatch(
             }
             Ok(())
         }
-        DispatchCmd::Pause {
-            microgrid_id,
-            dispatch_id,
-        } => set_active_dispatch(&mut client, microgrid_id, dispatch_id, false, json).await,
-        DispatchCmd::Resume {
-            microgrid_id,
-            dispatch_id,
-        } => set_active_dispatch(&mut client, microgrid_id, dispatch_id, true, json).await,
-        DispatchCmd::Delete {
-            microgrid_id,
-            dispatch_id,
-        } => {
+        DispatchCmd::Pause { dispatch_id } => {
+            set_active_dispatch(&mut client, microgrid_id, dispatch_id, false, json).await
+        }
+        DispatchCmd::Resume { dispatch_id } => {
+            set_active_dispatch(&mut client, microgrid_id, dispatch_id, true, json).await
+        }
+        DispatchCmd::Delete { dispatch_id } => {
             let resp = client
                 .delete_microgrid_dispatch(DeleteMicrogridDispatchRequest {
                     microgrid_id,
