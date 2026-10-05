@@ -252,25 +252,27 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                     "set-battery-soc: component {id} not found"
                 )));
             };
-            // A charger's SoC is the plugged car's; with no car there
-            // is nothing to move, and silently doing nothing would
-            // hide a scenario's ordering bug.
-            if c.takes_ev() && !c.takes_soc_pct() {
-                return Err(Error::invalid_argument(format!(
-                    "set-battery-soc: charger {id} has no EV plugged in"
-                )));
-            }
-            // Past that guard a charger has a car, and on a charger
-            // this IS a write to the car — so it takes the plug knob's
-            // snapshot, like `plug-ev` and `unplug-ev` do. The `Ev`
-            // baseline holds the whole car, SoC included, so teardown
-            // puts it back exactly as it was whatever order a run did
-            // its plugging and its SoC writes in. A battery keeps the
-            // old contract: its SoC has no snapshot on any door.
-            if c.takes_ev() {
+            if let Some(port) = c.ev_port() {
+                // A charger's SoC is the plugged car's; with no car
+                // there is nothing to move, and silently doing
+                // nothing would hide a scenario's ordering bug.
+                if port.ev_info().is_none() {
+                    return Err(Error::invalid_argument(format!(
+                        "set-battery-soc: charger {id} has no EV plugged in"
+                    )));
+                }
+                // Past that guard the charger has a car, and this IS
+                // a write to the car — so it takes the plug knob's
+                // snapshot, like `plug-ev` and `unplug-ev` do. The
+                // `Ev` baseline holds the whole car, SoC included, so
+                // teardown puts it back exactly as it was whatever
+                // order a run did its plugging and its SoC writes in.
                 w.scenario_snapshot_knob(id as u64, KnobKind::Ev);
+                let _ = port.set_ev_soc_pct(pct as f32);
+            } else {
+                // A battery's SoC has no snapshot on any door.
+                let _ = c.set_soc_pct(pct as f32);
             }
-            let _ = c.set_soc_pct(pct as f32);
             Ok(true)
         },
     );
@@ -474,17 +476,17 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                     "plug-ev: component {id} not found"
                 )));
             };
-            if !c.takes_ev() {
+            let Some(port) = c.ev_port() else {
                 return Err(Error::invalid_argument(format!(
                     "plug-ev: component {id} is not an EV charger"
                 )));
-            }
+            };
             // Rejected BEFORE the snapshot below, not by `plug_ev`'s own
             // guard afterwards: an `Ev` baseline holds a live clone of
             // the car, so seeding one from a refused plug would make
             // `(scenario-stop)` rewind that car's SoC and accumulated
             // energy to the instant of a call that changed nothing.
-            if c.ev_info().is_some() {
+            if port.ev_info().is_some() {
                 return Err(Error::invalid_argument(format!(
                     "plug-ev: component {id}: an EV is already plugged in"
                 )));
@@ -523,7 +525,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                 .map_err(|e| Error::invalid_argument(format!("plug-ev: component {id}: {e}")))?;
             let soc = ev.soc_pct;
             w.scenario_snapshot_knob(id, KnobKind::Ev);
-            c.plug_ev(ev)
+            port.plug_ev(ev)
                 .map_err(|e| Error::invalid_argument(format!("plug-ev: component {id}: {e}")))?;
             // `expr` is for printed Lisp source a write installed;
             // the preset name is not that, so it stays out of it.
@@ -540,21 +542,21 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                 "unplug-ev: component {id} not found"
             )));
         };
-        if !c.takes_ev() {
+        let Some(port) = c.ev_port() else {
             return Err(Error::invalid_argument(format!(
                 "unplug-ev: component {id} is not an EV charger"
             )));
-        }
+        };
         // Only when there is a car to take away: this suppresses a
         // teardown restore (and its `knob_changed`) on a charger the
         // run never displaced. It does NOT protect a car an operator
         // plugs mid-scenario — `plug-ev` snapshots `Ev(None)` itself,
         // and teardown then unplugs it by design, per the transient-
         // knob contract.
-        if c.ev_info().is_some() {
+        if port.ev_info().is_some() {
             w.scenario_snapshot_knob(id as u64, KnobKind::Ev);
         }
-        let had = c.unplug_ev();
+        let had = port.unplug_ev();
         if had {
             w.note_knob_changed(id as u64, "ev", None, None, None);
         }
@@ -573,7 +575,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                     "ev-info: component {id} not found"
                 )));
             };
-            let Some(info) = c.ev_info() else {
+            let Some(info) = c.ev_port().and_then(|p| p.ev_info()) else {
                 return Ok(TulispObject::nil());
             };
             let ev = info.ev;
@@ -1739,7 +1741,7 @@ mod tests {
         let ev = cfg.site().get(7).unwrap();
         cfg.eval("(plug-ev 7 'sedan :soc 30 :phases 2 :target-soc 80)")
             .unwrap();
-        let info = ev.ev_info().expect("plugged");
+        let info = ev.ev_port().unwrap().ev_info().expect("plugged");
         assert_eq!(
             (
                 info.ev.preset,
@@ -1755,7 +1757,7 @@ mod tests {
             "{printed}"
         );
         cfg.eval("(unplug-ev 7)").unwrap();
-        assert!(ev.ev_info().is_none());
+        assert!(ev.ev_port().unwrap().ev_info().is_none());
         assert_eq!(cfg.eval("(ev-info 7)").unwrap(), "nil");
     }
 
@@ -1815,9 +1817,13 @@ mod tests {
         // `set-battery-soc`: every Lisp/HTTP door onto a charger's SoC
         // now takes the plug snapshot itself, so a door here would
         // seed the very baseline this test is trying to prove absent.
-        assert!(ev.set_soc_pct(77.0));
+        assert!(ev.ev_port().unwrap().set_ev_soc_pct(77.0));
         cfg.eval("(scenario-stop)").unwrap();
-        let info = ev.ev_info().expect("the van is still plugged in");
+        let info = ev
+            .ev_port()
+            .unwrap()
+            .ev_info()
+            .expect("the van is still plugged in");
         assert_eq!(info.ev.preset, "van");
         assert_eq!(
             info.ev.soc_pct, 77.0,
@@ -1837,7 +1843,15 @@ mod tests {
         cfg.eval("(plug-ev 7 'sedan)").unwrap();
         cfg.eval("(set-battery-soc 7 50)").unwrap();
         assert_eq!(
-            cfg.site().get(7).unwrap().ev_info().unwrap().ev.soc_pct,
+            cfg.site()
+                .get(7)
+                .unwrap()
+                .ev_port()
+                .unwrap()
+                .ev_info()
+                .unwrap()
+                .ev
+                .soc_pct,
             50.0
         );
     }
@@ -1853,12 +1867,22 @@ mod tests {
         cfg.eval("(scenario-start \"ev\")").unwrap();
         cfg.eval("(plug-ev 7 'sedan)").unwrap();
         cfg.eval("(unplug-ev 8)").unwrap();
-        assert!(site.get(7).unwrap().ev_info().is_some());
-        assert!(site.get(8).unwrap().ev_info().is_none());
+        assert!(site.get(7).unwrap().ev_port().unwrap().ev_info().is_some());
+        assert!(site.get(8).unwrap().ev_port().unwrap().ev_info().is_none());
         cfg.eval("(scenario-stop)").unwrap();
-        assert!(site.get(7).unwrap().ev_info().is_none(), "teardown unplugs");
+        assert!(
+            site.get(7).unwrap().ev_port().unwrap().ev_info().is_none(),
+            "teardown unplugs"
+        );
         assert_eq!(
-            site.get(8).unwrap().ev_info().unwrap().ev.preset,
+            site.get(8)
+                .unwrap()
+                .ev_port()
+                .unwrap()
+                .ev_info()
+                .unwrap()
+                .ev
+                .preset,
             "van",
             "teardown replugs"
         );
@@ -1879,7 +1903,13 @@ mod tests {
         // write's baseline can carry the van's pre-scenario 40 %.
         cfg.eval("(unplug-ev 7)").unwrap();
         cfg.eval("(scenario-stop)").unwrap();
-        let info = site.get(7).unwrap().ev_info().expect("the van is back");
+        let info = site
+            .get(7)
+            .unwrap()
+            .ev_port()
+            .unwrap()
+            .ev_info()
+            .expect("the van is back");
         assert_eq!(
             (info.ev.preset, info.ev.soc_pct),
             ("van", 40.0),

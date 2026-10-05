@@ -16,7 +16,7 @@ mod knobs;
 mod reactive_limits;
 
 pub use controllable::{Controllable, GatewaySettings};
-pub use knobs::{MeterDrive, SteamDrive, SunlightDrive};
+pub use knobs::{EvPort, MeterDrive, SteamDrive, SunlightDrive};
 pub use reactive_limits::ReactiveLimits;
 
 /// High-level kind of a component, mirroring the proto category enum but
@@ -367,13 +367,12 @@ pub enum KnobSnapshot {
 ///   - **Capability groups**: controllable ([`Controllable`]),
 ///     reactive_limits ([`ReactiveLimits`]), meter_drive
 ///     ([`MeterDrive`]), sunlight_drive ([`SunlightDrive`]),
-///     steam_drive ([`SteamDrive`]). Each accessor answers `Some` on
-///     the components that have the group.
+///     steam_drive ([`SteamDrive`]), ev_port ([`EvPort`]). Each
+///     accessor answers `Some` on the components that have the group.
 ///   - **Hardware facts the gateway reads**: soc_window, soc_pct. The
 ///     Microgrid API rules themselves live in `sim::gateway`, never
 ///     here.
-///   - **Stimuli**: set_soc_pct, plug_ev,
-///     …
+///   - **Stimuli**: set_soc_pct, …
 ///   - **Bounds**: rated_active_bounds, rated_fuse_current.
 ///   - **Aggregation** (parent → child): aggregate_power_w,
 ///     aggregate_reactive_var.
@@ -490,6 +489,12 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         None
     }
 
+    /// The car port: `Some` on an EV charger, whether or not a car
+    /// is plugged in.
+    fn ev_port(&self) -> Option<&dyn EvPort> {
+        None
+    }
+
     // ── hardware facts the gateway reads ─────────────────────────────
 
     /// A battery's usable SoC window (`:soc-lower`, `:soc-upper`,
@@ -518,30 +523,6 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// request changes nothing.
     fn takes_soc_pct(&self) -> bool {
         false
-    }
-
-    /// Whether this component is an EV charger a car can be plugged
-    /// into. The strict doors (`plug-ev`, the EV HTTP route) check it.
-    fn takes_ev(&self) -> bool {
-        false
-    }
-
-    /// Plug `ev` in. Errors when a car is already connected or the
-    /// component takes no EV.
-    fn plug_ev(&self, _ev: crate::sim::ev_presets::ConnectedEv) -> Result<(), String> {
-        Err("this component takes no EV".to_string())
-    }
-
-    /// Unplug the connected car. `false` when there was none (or the
-    /// component takes no EV).
-    fn unplug_ev(&self) -> bool {
-        false
-    }
-
-    /// The connected car and what the charger is doing with it, or
-    /// `None` for an empty charger / a non-charger.
-    fn ev_info(&self) -> Option<crate::sim::ev_presets::EvInfo> {
-        None
     }
 
     // ── scenario teardown (snapshot / restore) ───────────────────────
@@ -721,6 +702,7 @@ mod tests {
         ("meter_drive", |c| c.meter_drive().is_some()),
         ("sunlight_drive", |c| c.sunlight_drive().is_some()),
         ("steam_drive", |c| c.steam_drive().is_some()),
+        ("ev_port", |c| c.ev_port().is_some()),
     ];
 
     /// The names of the groups `c` has, in `GROUPS` order.
@@ -765,7 +747,7 @@ mod tests {
             ),
             (
                 Box::new(EvCharger::new(7, sec, Default::default())),
-                &["controllable"],
+                &["controllable", "ev_port"],
             ),
             (
                 Box::new(SteamBoiler::new(8, sec, Default::default())),

@@ -911,7 +911,7 @@ mod tests {
             ":idle must survive render → reload, got {kw:?}"
         );
         assert!(
-            ev2.ev_info().is_none(),
+            ev2.ev_port().unwrap().ev_info().is_none(),
             "a plugged car is runtime state, never rendered"
         );
         // …and the reloaded PV inverter is really following the sky
@@ -959,7 +959,7 @@ mod tests {
         };
         let ev = site.get(2).expect("the charger was built");
         assert!(
-            ev.ev_info().is_none(),
+            ev.ev_port().unwrap().ev_info().is_none(),
             "the pack kwargs buy no car: the charger starts empty"
         );
         // The kwargs that DID survive are still honoured, so the

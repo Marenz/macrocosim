@@ -56,14 +56,14 @@ pub(in crate::ui) async fn ev_for_mg(
     let c = site
         .get(id)
         .ok_or((StatusCode::NOT_FOUND, format!("component {id} not found")))?;
-    if !c.takes_ev() {
+    let Some(port) = c.ev_port() else {
         return Err((
             StatusCode::BAD_REQUEST,
             format!("component {id} is not an EV charger"),
         ));
-    }
+    };
     let presets = PRESETS.iter().map(|p| p.name).collect();
-    Ok(Json(match c.ev_info() {
+    Ok(Json(match port.ev_info() {
         None => EvResponse {
             plugged: false,
             presets,

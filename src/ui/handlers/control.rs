@@ -215,17 +215,22 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
             format!("component {id} does not take sunlight_pct (not a solar inverter)"),
         ));
     }
-    if req.soc_pct.is_some() && !component.takes_soc_pct() {
-        // A charger takes soc_pct exactly while a car is plugged in —
-        // the SoC is the car's.
-        return Err(reject(
-            StatusCode::BAD_REQUEST,
-            if component.takes_ev() {
-                format!("charger {id} has no EV plugged in")
-            } else {
-                format!("component {id} does not take soc_pct (not a battery)")
-            },
-        ));
+    // A charger takes soc_pct exactly while a car is plugged in —
+    // the SoC is the car's.
+    let ev_port = component.ev_port();
+    if req.soc_pct.is_some() {
+        if ev_port.is_some_and(|e| e.ev_info().is_none()) {
+            return Err(reject(
+                StatusCode::BAD_REQUEST,
+                format!("charger {id} has no EV plugged in"),
+            ));
+        }
+        if ev_port.is_none() && !component.takes_soc_pct() {
+            return Err(reject(
+                StatusCode::BAD_REQUEST,
+                format!("component {id} does not take soc_pct (not a battery)"),
+            ));
+        }
     }
     // reactive_var and power_factor are both Q stimuli of the meter
     // drive, the group set-meter-reactive-power /
@@ -412,7 +417,7 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
     // Each setter below emits KnobChanged on the same success path
     // as its Lisp defun (src/lisp/defuns/load_drivers.rs) —
     // `soc_pct` isn't part of the knob vocabulary the inspector
-    // reads back, so set_soc_pct gets no broadcast.
+    // reads back, so a SoC write gets no broadcast.
     if let Some(watts) = req.power_w
         && let Some(m) = meter
     {
@@ -428,21 +433,24 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
         site.note_knob_changed(id, "solar-sunlight", Some(pct as f32), None, None);
     }
     if let Some(pct) = req.soc_pct {
-        // On a charger this writes the CAR, so it takes the plug
-        // knob's snapshot, exactly as `set-battery-soc` in Lisp does
-        // (src/lisp/defuns/load_drivers.rs) — teardown then puts the
-        // car back as it was however a run ordered its SoC writes and
-        // its plugs. A battery's SoC still has no snapshot on any door.
-        if component.takes_ev() {
+        if let Some(port) = ev_port {
+            // On a charger this writes the CAR, so it takes the plug
+            // knob's snapshot, exactly as `set-battery-soc` in Lisp
+            // does (src/lisp/defuns/load_drivers.rs) — teardown then
+            // puts the car back as it was however a run ordered its
+            // SoC writes and its plugs.
             site.scenario_snapshot_knob(id, KnobKind::Ev);
-        }
-        // Checked again here: an unplug landing between the pre-gate
-        // above and here is a real race.
-        if !component.set_soc_pct(pct as f32) {
-            return Err(reject(
-                StatusCode::CONFLICT,
-                format!("charger {id} has no EV plugged in"),
-            ));
+            // An unplug landing between the check above and here is a
+            // real race, so the write can still find no car.
+            if !port.set_ev_soc_pct(pct as f32) {
+                return Err(reject(
+                    StatusCode::CONFLICT,
+                    format!("charger {id} has no EV plugged in"),
+                ));
+            }
+        } else {
+            // A battery's SoC has no snapshot on any door.
+            let _ = component.set_soc_pct(pct as f32);
         }
     }
     if let Some(vars) = req.reactive_var
@@ -873,9 +881,10 @@ mod tests {
     }
 
     /// A charger whose car leaves between the drive's validation and
-    /// its write: `takes_soc_pct` still says yes, then `set_soc_pct`
-    /// finds no car. Stands in for an unplug racing the request,
-    /// which a real charger cannot be made to lose on cue.
+    /// its write: `ev_info` still reports a car, then
+    /// `set_ev_soc_pct` finds none. Stands in for an unplug racing
+    /// the request, which a real charger cannot be made to lose on
+    /// cue.
     struct CarLeavesMidRequest;
 
     impl std::fmt::Display for CarLeavesMidRequest {
@@ -901,20 +910,32 @@ mod tests {
         fn telemetry(&self, _: &MicrogridSite) -> crate::sim::Telemetry {
             crate::sim::Telemetry::default()
         }
-        fn takes_ev(&self) -> bool {
-            true
-        }
-        fn takes_soc_pct(&self) -> bool {
-            true
-        }
-        fn set_soc_pct(&self, _pct: f32) -> bool {
-            false
+        fn ev_port(&self) -> Option<&dyn crate::sim::component::EvPort> {
+            Some(self)
         }
         fn make_fn(&self) -> &'static str {
             "%make-test-stub"
         }
         fn constructor_kwargs(&self) -> Vec<(&'static str, String)> {
             Vec::new()
+        }
+    }
+
+    impl crate::sim::component::EvPort for CarLeavesMidRequest {
+        fn plug_ev(&self, _ev: crate::sim::ev_presets::ConnectedEv) -> Result<(), String> {
+            Err("test stub".into())
+        }
+        fn unplug_ev(&self) -> bool {
+            false
+        }
+        fn ev_info(&self) -> Option<crate::sim::ev_presets::EvInfo> {
+            Some(crate::sim::ev_presets::EvInfo {
+                ev: crate::sim::ev_presets::test_car("sedan", None),
+                state: crate::sim::ev_presets::EvDrawState::Paused,
+            })
+        }
+        fn set_ev_soc_pct(&self, _pct: f32) -> bool {
+            false
         }
     }
 

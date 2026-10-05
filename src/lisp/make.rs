@@ -1682,7 +1682,7 @@ mod tests {
             .expect("a retired pack kwarg is ignored, not a load failure");
         let charger = cfg.site().get(11).expect("the charger was still built");
         assert!(
-            charger.ev_info().is_none(),
+            charger.ev_port().unwrap().ev_info().is_none(),
             ":capacity buys no pack — the charger is empty"
         );
 

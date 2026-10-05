@@ -1509,7 +1509,12 @@ mod tests {
         w.gateway()
             .command(3, SetpointAxis::Active, 5_000.0)
             .unwrap();
-        w.get(2).unwrap().plug_ev(test_car("van", None)).unwrap();
+        w.get(2)
+            .unwrap()
+            .ev_port()
+            .unwrap()
+            .plug_ev(test_car("van", None))
+            .unwrap();
         w.gateway()
             .command(2, SetpointAxis::Active, 11_000.0)
             .unwrap();

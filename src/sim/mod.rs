@@ -35,7 +35,7 @@ pub mod weather;
 
 pub use battery::Battery;
 pub use component::{
-    AugmentError, Category, ComponentHandle, Controllable, MeterDrive, OperationalMode,
+    AugmentError, Category, ComponentHandle, Controllable, EvPort, MeterDrive, OperationalMode,
     ReactiveLimits, SimulatedComponent, SteamDrive, SunlightDrive, Telemetry,
 };
 pub use energy::EnergyAccum;

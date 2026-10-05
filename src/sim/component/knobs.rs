@@ -1,9 +1,12 @@
-//! The scenario and UI knob families: the inputs a scenario, a Lisp
-//! command or the inspector drives on one kind of component.
+//! Inputs that belong to one kind of component (meter, solar
+//! inverter, steam boiler, EV charger), set by Lisp commands,
+//! scenarios and the HTTP drive op. The reactive caps the inverters
+//! share are `ReactiveLimits`.
 
 use crate::sim::{
     component::{ReactiveReading, ScalarReading},
     dynamic_scalar::DynamicScalar,
+    ev_presets::{ConnectedEv, EvInfo},
 };
 
 /// A meter's driven sources: the active and reactive power it
@@ -124,4 +127,24 @@ pub trait SteamDrive: Send + Sync {
 
     /// The thermostat target (bar), for chart annotation.
     fn pressure_target_bar(&self) -> f32;
+}
+
+/// An EV charger's car port. The car is runtime state, driven by
+/// `plug-ev` / `unplug-ev` and read by `ev-info`; it is never a
+/// construction kwarg, so the managed file never renders it.
+pub trait EvPort: Send + Sync {
+    /// Plug `ev` in. Errors when a car is already plugged in.
+    fn plug_ev(&self, ev: ConnectedEv) -> Result<(), String>;
+
+    /// Unplug the connected car. `false` when there was none.
+    fn unplug_ev(&self) -> bool;
+
+    /// The connected car and what the charger is doing with it, or
+    /// `None` for an empty charger.
+    fn ev_info(&self) -> Option<EvInfo>;
+
+    /// Teleport the plugged car's state of charge to `pct` (clamped
+    /// to 0..=100; a non-finite value is ignored). `false` when no
+    /// car is plugged in, so the caller can say so.
+    fn set_ev_soc_pct(&self, pct: f32) -> bool;
 }

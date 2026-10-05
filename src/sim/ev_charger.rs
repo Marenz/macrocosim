@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use crate::sim::{
     Category, Controllable, MicrogridSite, SimulatedComponent, Telemetry,
     bounds::VecBounds,
-    component::{GatewaySettings, KnobKind, KnobSnapshot},
+    component::{EvPort, GatewaySettings, KnobKind, KnobSnapshot},
     decay::sanitize_soc_pct,
     device_axis::DeviceAxis,
     ev_presets::{ConnectedEv, EvDrawState, EvInfo, offered_current_a},
@@ -171,51 +171,8 @@ impl SimulatedComponent for EvCharger {
         self.cfg.stream_jitter_pct
     }
 
-    fn set_soc_pct(&self, pct: f32) -> bool {
-        let mut s = self.state.lock();
-        let Some(ev) = s.ev.as_mut() else {
-            return false;
-        };
-        if let Some(pct) = sanitize_soc_pct("EvCharger::set_soc_pct", pct) {
-            ev.soc_pct = pct;
-        }
-        true
-    }
-
-    fn takes_soc_pct(&self) -> bool {
-        self.state.lock().ev.is_some()
-    }
-
-    fn takes_ev(&self) -> bool {
-        true
-    }
-
-    fn plug_ev(&self, ev: ConnectedEv) -> Result<(), String> {
-        let mut s = self.state.lock();
-        if s.ev.is_some() {
-            return Err("an EV is already plugged in".to_string());
-        }
-        s.ev = Some(ev);
-        // A fresh car starts from a clean slate, the way `unplug_ev`
-        // and `restore_knob` leave one: otherwise the draw and state
-        // of whatever was here before are reported until the next
-        // tick overwrites them.
-        s.draw_w = 0.0;
-        s.last = EvDrawState::Paused;
-        Ok(())
-    }
-
-    fn unplug_ev(&self) -> bool {
-        let mut s = self.state.lock();
-        let had = s.ev.take().is_some();
-        s.draw_w = 0.0;
-        s.last = EvDrawState::Paused;
-        had
-    }
-
-    fn ev_info(&self) -> Option<EvInfo> {
-        let s = self.state.lock();
-        s.ev.clone().map(|ev| EvInfo { ev, state: s.last })
+    fn ev_port(&self) -> Option<&dyn EvPort> {
+        Some(self)
     }
 
     fn snapshot_knob(&self, kind: KnobKind) -> Option<KnobSnapshot> {
@@ -395,6 +352,47 @@ impl Controllable for EvCharger {
     }
 }
 
+impl EvPort for EvCharger {
+    fn plug_ev(&self, ev: ConnectedEv) -> Result<(), String> {
+        let mut s = self.state.lock();
+        if s.ev.is_some() {
+            return Err("an EV is already plugged in".to_string());
+        }
+        s.ev = Some(ev);
+        // A fresh car starts from a clean slate, the way `unplug_ev`
+        // and `restore_knob` leave one: otherwise the draw and state
+        // of whatever was here before are reported until the next
+        // tick overwrites them.
+        s.draw_w = 0.0;
+        s.last = EvDrawState::Paused;
+        Ok(())
+    }
+
+    fn unplug_ev(&self) -> bool {
+        let mut s = self.state.lock();
+        let had = s.ev.take().is_some();
+        s.draw_w = 0.0;
+        s.last = EvDrawState::Paused;
+        had
+    }
+
+    fn ev_info(&self) -> Option<EvInfo> {
+        let s = self.state.lock();
+        s.ev.clone().map(|ev| EvInfo { ev, state: s.last })
+    }
+
+    fn set_ev_soc_pct(&self, pct: f32) -> bool {
+        let mut s = self.state.lock();
+        let Some(ev) = s.ev.as_mut() else {
+            return false;
+        };
+        if let Some(pct) = sanitize_soc_pct("EvCharger::set_ev_soc_pct", pct) {
+            ev.soc_pct = pct;
+        }
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +403,11 @@ mod tests {
     use crate::sim::runtime::Health;
     use crate::timeout_tracker::SetpointAxis;
     use std::sync::Arc;
+
+    /// The charger's car port.
+    fn port(ev: &Arc<dyn SimulatedComponent>) -> &dyn EvPort {
+        ev.ev_port().expect("a charger has a car port")
+    }
 
     /// A 22 kW three-phase charger with no delay and no ramp, sited
     /// under id 7 so tests can drive its health.
@@ -433,13 +436,13 @@ mod tests {
         assert_eq!(ev.aggregate_power_w(&w), 0.0);
         let b = w.bounds_of(7, SetpointAxis::Active).unwrap();
         assert_eq!(b.0[0].upper, Some(22_000.0), "bounds are the charger's own");
-        assert!(ev.ev_info().is_none());
+        assert!(port(&ev).ev_info().is_none());
     }
 
     #[test]
     fn plugged_car_draws_within_the_limit_on_its_own_phases() {
         let (w, ev) = sited(instant());
-        ev.plug_ev(test_car("city", Some(30.0))).unwrap(); // 1 ph, 32 A
+        port(&ev).plug_ev(test_car("city", Some(30.0))).unwrap(); // 1 ph, 32 A
         cmd(&w, 22_000.0).unwrap();
         tick_n(&w, 2);
         // 22 kW over the charger's three phases is 31.9 A; the car takes
@@ -449,17 +452,17 @@ mod tests {
             (p - 22_000.0 / 3.0).abs() < 1.0,
             "one phase of the offer, got {p}"
         );
-        assert_eq!(ev.ev_info().unwrap().state, EvDrawState::Charging);
+        assert_eq!(port(&ev).ev_info().unwrap().state, EvDrawState::Charging);
     }
 
     #[test]
     fn limit_under_six_amps_pauses() {
         let (w, ev) = sited(instant());
-        ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
+        port(&ev).plug_ev(test_car("sedan", Some(30.0))).unwrap();
         cmd(&w, 4_000.0).unwrap(); // 5.8 A on 3 phases
         tick_n(&w, 2);
         assert_eq!(ev.aggregate_power_w(&w), 0.0);
-        assert_eq!(ev.ev_info().unwrap().state, EvDrawState::Paused);
+        assert_eq!(port(&ev).ev_info().unwrap().state, EvDrawState::Paused);
         cmd(&w, 4_200.0).unwrap(); // 6.09 A
         tick_n(&w, 2);
         assert!(ev.aggregate_power_w(&w) > 4_100.0);
@@ -468,7 +471,7 @@ mod tests {
     #[test]
     fn idle_paused_draws_nothing_and_idle_full_draws_the_cap() {
         let (w, ev) = sited(instant());
-        ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
+        port(&ev).plug_ev(test_car("sedan", Some(30.0))).unwrap();
         tick_n(&w, 2);
         assert_eq!(ev.aggregate_power_w(&w), 0.0, "no command, paused idle");
 
@@ -476,7 +479,7 @@ mod tests {
             idle: EvIdle::Full,
             ..instant()
         });
-        ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
+        port(&ev).plug_ev(test_car("sedan", Some(30.0))).unwrap();
         tick_n(&w, 2);
         let p = ev.aggregate_power_w(&w);
         assert!((p - 3.0 * 230.0 * 16.0).abs() < 1.0, "11 kW cap, got {p}");
@@ -485,27 +488,28 @@ mod tests {
     #[test]
     fn target_soc_ends_the_session_and_unplug_clears_it() {
         let (w, ev) = sited(instant());
-        ev.plug_ev(
-            ConnectedEv::new(
-                preset("phev").unwrap(),
-                &EvOverrides {
-                    soc_pct: Some(99.9),
-                    target_soc_pct: Some(100.0),
-                    ..Default::default()
-                },
-                Utc::now(),
+        port(&ev)
+            .plug_ev(
+                ConnectedEv::new(
+                    preset("phev").unwrap(),
+                    &EvOverrides {
+                        soc_pct: Some(99.9),
+                        target_soc_pct: Some(100.0),
+                        ..Default::default()
+                    },
+                    Utc::now(),
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        )
-        .unwrap();
+            .unwrap();
         cmd(&w, 22_000.0).unwrap();
         // ~4 A after the taper on a 13 kWh pack: 0.1 % takes ~50 s.
         tick_n(&w, 90);
-        assert_eq!(ev.ev_info().unwrap().state, EvDrawState::Done);
+        assert_eq!(port(&ev).ev_info().unwrap().state, EvDrawState::Done);
         assert_eq!(ev.aggregate_power_w(&w), 0.0);
-        assert!(ev.unplug_ev());
-        assert!(ev.ev_info().is_none());
-        assert!(!ev.unplug_ev(), "empty already");
+        assert!(port(&ev).unplug_ev());
+        assert!(port(&ev).ev_info().is_none());
+        assert!(!port(&ev).unplug_ev(), "empty already");
     }
 
     /// A plug is a clean slate: whatever the charger last did with
@@ -518,11 +522,15 @@ mod tests {
         let (w, ev) = sited(instant());
         w.set_health(7, Health::Error).unwrap();
         tick_n(&w, 1);
-        assert_eq!(ev.ev_info().map(|i| i.state), None, "nothing plugged yet");
-        w.set_health(7, Health::Ok).unwrap();
-        ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
         assert_eq!(
-            ev.ev_info().unwrap().state,
+            port(&ev).ev_info().map(|i| i.state),
+            None,
+            "nothing plugged yet"
+        );
+        w.set_health(7, Health::Ok).unwrap();
+        port(&ev).plug_ev(test_car("sedan", Some(30.0))).unwrap();
+        assert_eq!(
+            port(&ev).ev_info().unwrap().state,
             EvDrawState::Paused,
             "a freshly plugged car is paused, not tripped",
         );
@@ -532,15 +540,15 @@ mod tests {
     #[test]
     fn plug_while_plugged_errors() {
         let (_w, ev) = sited(instant());
-        ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
-        assert!(ev.plug_ev(test_car("van", Some(30.0))).is_err());
-        assert_eq!(ev.ev_info().unwrap().ev.preset, "sedan");
+        port(&ev).plug_ev(test_car("sedan", Some(30.0))).unwrap();
+        assert!(port(&ev).plug_ev(test_car("van", Some(30.0))).is_err());
+        assert_eq!(port(&ev).ev_info().unwrap().ev.preset, "sedan");
     }
 
     #[test]
     fn health_trip_still_zeroes_and_clears_the_command() {
         let (w, ev) = sited(instant());
-        ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
+        port(&ev).plug_ev(test_car("sedan", Some(30.0))).unwrap();
         cmd(&w, 22_000.0).unwrap();
         tick_n(&w, 2);
         assert!(ev.aggregate_power_w(&w) > 10_000.0);
@@ -552,7 +560,7 @@ mod tests {
             "the lifetime goes with the command"
         );
         assert_eq!(ev.aggregate_power_w(&w), 0.0);
-        assert_eq!(ev.ev_info().unwrap().state, EvDrawState::Tripped);
+        assert_eq!(port(&ev).ev_info().unwrap().state, EvDrawState::Tripped);
         w.set_health(7, Health::Ok).unwrap();
         tick_n(&w, 3);
         assert_eq!(
@@ -568,7 +576,7 @@ mod tests {
             ramp_rate_w_per_s: 1_000.0,
             ..instant()
         });
-        ev.plug_ev(test_car("van", Some(30.0))).unwrap(); // 3 ph 32 A = 22 kW cap
+        port(&ev).plug_ev(test_car("van", Some(30.0))).unwrap(); // 3 ph 32 A = 22 kW cap
         cmd(&w, 22_000.0).unwrap();
         tick_n(&w, 25);
         assert!((ev.aggregate_power_w(&w) - 22_000.0).abs() < 100.0);
@@ -581,10 +589,10 @@ mod tests {
     #[test]
     fn energy_matches_the_integrated_draw() {
         let (w, ev) = sited(instant());
-        ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
+        port(&ev).plug_ev(test_car("sedan", Some(30.0))).unwrap();
         cmd(&w, 22_000.0).unwrap();
         tick_n(&w, 10);
-        let info = ev.ev_info().unwrap();
+        let info = port(&ev).ev_info().unwrap();
         // First tick has no draw yet (limit promoted this tick), so nine
         // seconds at 11 040 W.
         let expected = 9.0 * 11_040.0 / 3600.0;
@@ -598,11 +606,10 @@ mod tests {
     #[test]
     fn set_soc_moves_the_plugged_car_only() {
         let (_w, ev) = sited(instant());
-        assert!(!ev.takes_soc_pct(), "no car, no SoC");
-        ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
-        assert!(ev.takes_soc_pct());
-        assert!(ev.set_soc_pct(55.0));
-        assert_eq!(ev.ev_info().unwrap().ev.soc_pct, 55.0);
+        assert!(!port(&ev).set_ev_soc_pct(55.0), "no car, no SoC");
+        port(&ev).plug_ev(test_car("sedan", Some(30.0))).unwrap();
+        assert!(port(&ev).set_ev_soc_pct(55.0));
+        assert_eq!(port(&ev).ev_info().unwrap().ev.soc_pct, 55.0);
     }
 
     #[test]
@@ -610,14 +617,14 @@ mod tests {
         let (_w, ev) = sited(instant());
         let before = ev.snapshot_knob(KnobKind::Ev);
         assert!(matches!(before, Some(KnobSnapshot::Ev(None))));
-        ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
+        port(&ev).plug_ev(test_car("sedan", Some(30.0))).unwrap();
         assert!(ev.restore_knob(before.unwrap()));
-        assert!(ev.ev_info().is_none(), "restore unplugs");
-        ev.plug_ev(test_car("van", Some(30.0))).unwrap();
+        assert!(port(&ev).ev_info().is_none(), "restore unplugs");
+        port(&ev).plug_ev(test_car("van", Some(30.0))).unwrap();
         let plugged = ev.snapshot_knob(KnobKind::Ev).unwrap();
-        assert!(ev.unplug_ev());
+        assert!(port(&ev).unplug_ev());
         assert!(ev.restore_knob(plugged));
-        assert_eq!(ev.ev_info().unwrap().ev.preset, "van");
+        assert_eq!(port(&ev).ev_info().unwrap().ev.preset, "van");
     }
 
     #[test]
@@ -655,7 +662,7 @@ mod tests {
             resume_on_recovery: true,
             ..instant()
         });
-        ev.plug_ev(test_car("van", Some(30.0))).unwrap(); // 3 ph 32 A: takes the whole offer
+        port(&ev).plug_ev(test_car("van", Some(30.0))).unwrap(); // 3 ph 32 A: takes the whole offer
         cmd(&w, 22_000.0).unwrap();
         tick_n(&w, 2);
         assert!((ev.aggregate_power_w(&w) - 22_000.0).abs() < 100.0);
@@ -669,7 +676,7 @@ mod tests {
             "the lifetime stays with the command"
         );
         assert_eq!(ev.aggregate_power_w(&w), 0.0, "stays off while faulted");
-        assert_eq!(ev.ev_info().unwrap().state, EvDrawState::Tripped);
+        assert_eq!(port(&ev).ev_info().unwrap().state, EvDrawState::Tripped);
 
         w.set_health(7, Health::Ok).unwrap();
         tick_n(&w, 2);
@@ -688,7 +695,7 @@ mod tests {
     #[test]
     fn standby_trips_like_an_error_and_awaits_redispatch() {
         let (w, ev) = sited(instant());
-        ev.plug_ev(test_car("van", Some(30.0))).unwrap();
+        port(&ev).plug_ev(test_car("van", Some(30.0))).unwrap();
         cmd(&w, 22_000.0).unwrap();
         tick_n(&w, 2);
         assert!(ev.aggregate_power_w(&w) > 10_000.0);
@@ -696,7 +703,7 @@ mod tests {
         w.set_health(7, Health::Standby).unwrap();
         tick_n(&w, 1);
         assert_eq!(ev.aggregate_power_w(&w), 0.0, "standby is offline too");
-        assert_eq!(ev.ev_info().unwrap().state, EvDrawState::Tripped);
+        assert_eq!(port(&ev).ev_info().unwrap().state, EvDrawState::Tripped);
 
         w.set_health(7, Health::Ok).unwrap();
         tick_n(&w, 3);
@@ -720,7 +727,7 @@ mod tests {
     #[test]
     fn augmentation_narrows_the_offer_and_the_draw_follows() {
         let (w, ev) = sited(instant());
-        ev.plug_ev(test_car("van", Some(30.0))).unwrap();
+        port(&ev).plug_ev(test_car("van", Some(30.0))).unwrap();
         cmd(&w, 22_000.0).unwrap();
         tick_n(&w, 2);
         assert!((ev.aggregate_power_w(&w) - 22_000.0).abs() < 100.0);
@@ -764,7 +771,7 @@ mod tests {
     #[test]
     fn an_augmentation_disjoint_from_rated_is_rejected() {
         let (w, ev) = sited(instant());
-        ev.plug_ev(test_car("van", Some(30.0))).unwrap();
+        port(&ev).plug_ev(test_car("van", Some(30.0))).unwrap();
         cmd(&w, 22_000.0).unwrap();
         assert!(matches!(
             w.gateway().augment(
@@ -847,7 +854,7 @@ mod tests {
         assert_eq!(t.cable_states, &["ev-charging-cable-unplugged"][..]);
         assert_eq!(t.soc_pct, None, "an empty charger has no SoC to report");
 
-        ev.plug_ev(test_car("sedan", Some(30.0))).unwrap();
+        port(&ev).plug_ev(test_car("sedan", Some(30.0))).unwrap();
         let t = ev.telemetry(&w);
         assert_eq!(t.reactive_power_var, Some(0.0));
         assert_eq!(
@@ -875,7 +882,7 @@ mod tests {
             "an empty charger is ready, not charging",
         );
 
-        ev.plug_ev(test_car("van", Some(30.0))).unwrap();
+        port(&ev).plug_ev(test_car("van", Some(30.0))).unwrap();
         tick_n(&w, 2);
         assert_eq!(
             ev.telemetry(&w).component_state,
@@ -917,7 +924,7 @@ mod tests {
             phases: 1,
             ..instant()
         });
-        ev.plug_ev(test_car("van", Some(30.0))).unwrap(); // a 3 ph, 32 A car
+        port(&ev).plug_ev(test_car("van", Some(30.0))).unwrap(); // a 3 ph, 32 A car
         // 7 360 W on one phase is 32 A — the car's cap, on the single
         // phase the charger has.
         cmd(&w, 7_360.0).unwrap();
@@ -944,7 +951,7 @@ mod tests {
             idle: EvIdle::Full,
             ..instant()
         });
-        ev.plug_ev(test_car("van", Some(30.0))).unwrap();
+        port(&ev).plug_ev(test_car("van", Some(30.0))).unwrap();
         cmd(&w, 7_000.0).unwrap();
         tick_n(&w, 2);
         assert!((ev.aggregate_power_w(&w) - 7_000.0).abs() < 50.0);
@@ -975,7 +982,7 @@ mod tests {
             ramp_rate_w_per_s: 1_000.0,
             ..instant()
         });
-        ev.plug_ev(test_car("van", Some(30.0))).unwrap();
+        port(&ev).plug_ev(test_car("van", Some(30.0))).unwrap();
         cmd_for(&w, 22_000.0, 30);
         tick_n(&w, 29);
         assert!((ev.aggregate_power_w(&w) - 22_000.0).abs() < 100.0);
@@ -998,7 +1005,7 @@ mod tests {
             resume_on_recovery: true,
             ..instant()
         });
-        ev.plug_ev(test_car("van", Some(30.0))).unwrap();
+        port(&ev).plug_ev(test_car("van", Some(30.0))).unwrap();
         cmd_for(&w, 22_000.0, 5);
         tick_n(&w, 2);
         assert!((ev.aggregate_power_w(&w) - 22_000.0).abs() < 100.0);
@@ -1018,7 +1025,7 @@ mod tests {
             device_delay: Duration::from_secs(2),
             ..instant()
         });
-        ev.plug_ev(test_car("van", Some(30.0))).unwrap();
+        port(&ev).plug_ev(test_car("van", Some(30.0))).unwrap();
         cmd(&w, 22_000.0).unwrap();
         tick_n(&w, 1);
         assert_eq!(ev.aggregate_power_w(&w), 0.0, "still in the delay line");

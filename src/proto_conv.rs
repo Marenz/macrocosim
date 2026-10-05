@@ -669,7 +669,10 @@ mod tests {
         let w = MicrogridSite::new();
         w.register(EvCharger::new(1, Duration::from_secs(1), instant()));
         let ev = w.get(1).unwrap();
-        ev.plug_ev(test_car("sedan", None)).unwrap();
+        ev.ev_port()
+            .unwrap()
+            .plug_ev(test_car("sedan", None))
+            .unwrap();
         w.gateway()
             .command(1, crate::timeout_tracker::SetpointAxis::Active, 22_000.0)
             .unwrap();

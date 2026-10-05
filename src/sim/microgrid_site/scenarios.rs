@@ -431,7 +431,10 @@ impl MicrogridSite {
             KnobKind::Ev => {
                 // Value only: `expr` carries printed Lisp source, and a
                 // restored car's preset name is not that.
-                let value = component.ev_info().map(|i| i.ev.soc_pct);
+                let value = component
+                    .ev_port()
+                    .and_then(|p| p.ev_info())
+                    .map(|i| i.ev.soc_pct);
                 self.note_knob_changed(id, "ev", value, None, None);
             }
         }
