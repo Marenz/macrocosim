@@ -2369,3 +2369,49 @@ async fn component_snapshot_boiler_knobs_and_pressure_target() {
     assert_eq!(knobs[1]["value"], 9.0);
     assert_eq!(v["pressure_target_bar"], 8.0);
 }
+
+/// Each component in a mixed topology lists exactly the knobs of the
+/// capabilities it has, in order, and one with no knob capability
+/// lists none.
+#[tokio::test]
+async fn component_snapshot_lists_exactly_the_knobs_each_kind_has() {
+    let cfg = config_with(
+        "(%make-grid-connection-point :id 1
+           :successors
+           (list (%make-meter :id 2 :power 1000.0 :reactive-power 200.0)
+                 (%make-meter :id 3 :power 1000.0 :power-factor 0.9)
+                 (%make-solar-inverter :id 4)
+                 (%make-battery-inverter :id 5
+                   :successors (list (%make-battery :id 6)))
+                 (%make-ev-charger :id 7)))",
+    )
+    .await;
+    let want: [(u64, &[&str]); 7] = [
+        (1, &[]),
+        (2, &["meter-power", "meter-reactive-power"]),
+        (3, &["meter-power", "meter-power-factor"]),
+        (
+            4,
+            &[
+                "solar-sunlight",
+                "reactive-pf-limit",
+                "reactive-apparent-va",
+            ],
+        ),
+        (5, &["reactive-pf-limit", "reactive-apparent-va"]),
+        (6, &[]),
+        (7, &[]),
+    ];
+    for (id, names) in want {
+        let (status, body) = call(cfg.clone(), get(&format!("/api/component?id={id}"))).await;
+        assert_eq!(status, StatusCode::OK, "component {id}");
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let got: Vec<&str> = v["knobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k["knob"].as_str().unwrap())
+            .collect();
+        assert_eq!(got, names, "component {id}");
+    }
+}

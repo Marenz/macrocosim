@@ -16,7 +16,6 @@ use chrono::{Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::lisp::Config;
-use crate::sim::Category;
 use crate::sim::component::{ReactiveReading, ScalarReading};
 use crate::sim::setpoints::{SetpointKind, SetpointOutcome};
 use crate::timeout_tracker::SetpointAxis;
@@ -120,44 +119,34 @@ fn scalar_knob(name: &'static str, r: ScalarReading) -> KnobState {
     knob(name, Some(r.value), r.expr, None)
 }
 
-/// Knobs the component's category actually has — mirrors the
-/// client's `KNOBS_BY_CATEGORY` plus its solar-sunlight rule: meters
-/// get the three meter knobs, inverters get the reactive caps, and a
-/// solar inverter additionally gets sunlight.
+/// The runtime knobs the component has, one set per capability it
+/// answers for. For each kind of component this is the list the
+/// client's `KNOBS_BY_CATEGORY` and its solar-sunlight rule show.
 fn knobs_for(c: &dyn crate::sim::SimulatedComponent) -> Vec<KnobState> {
     let mut knobs = Vec::new();
-    match c.category() {
-        Category::Meter => {
-            if let Some(r) = c.meter_drive().and_then(|m| m.meter_power_reading()) {
-                knobs.push(scalar_knob("meter-power", r));
-            }
-            match c.meter_drive().and_then(|m| m.meter_reactive_reading()) {
-                Some(ReactiveReading::Var(r)) => knobs.push(scalar_knob("meter-reactive-power", r)),
-                Some(ReactiveReading::PowerFactor { pf, leading }) => {
-                    knobs.push(knob("meter-power-factor", Some(pf), None, Some(leading)));
-                }
-                None => {}
-            }
+    if let Some(meter) = c.meter_drive() {
+        if let Some(r) = meter.meter_power_reading() {
+            knobs.push(scalar_knob("meter-power", r));
         }
-        Category::Inverter => {
-            if c.subtype() == Some("solar")
-                && let Some(sun) = c.sunlight_drive()
-            {
-                knobs.push(scalar_knob("solar-sunlight", sun.sunlight_reading()));
+        match meter.meter_reactive_reading() {
+            Some(ReactiveReading::Var(r)) => knobs.push(scalar_knob("meter-reactive-power", r)),
+            Some(ReactiveReading::PowerFactor { pf, leading }) => {
+                knobs.push(knob("meter-power-factor", Some(pf), None, Some(leading)));
             }
-            if let Some(r) = c.reactive_limits() {
-                let cap = r.reactive_capability();
-                knobs.push(knob("reactive-pf-limit", cap.pf_limit, None, None));
-                knobs.push(knob("reactive-apparent-va", cap.apparent_va, None, None));
-            }
+            None => {}
         }
-        Category::SteamBoiler => {
-            if let Some(boiler) = c.steam_drive() {
-                knobs.push(scalar_knob("boiler-demand", boiler.demand_reading()));
-                knobs.push(scalar_knob("boiler-pressure", boiler.pressure_reading()));
-            }
-        }
-        _ => {}
+    }
+    if let Some(sun) = c.sunlight_drive() {
+        knobs.push(scalar_knob("solar-sunlight", sun.sunlight_reading()));
+    }
+    if let Some(r) = c.reactive_limits() {
+        let cap = r.reactive_capability();
+        knobs.push(knob("reactive-pf-limit", cap.pf_limit, None, None));
+        knobs.push(knob("reactive-apparent-va", cap.apparent_va, None, None));
+    }
+    if let Some(boiler) = c.steam_drive() {
+        knobs.push(scalar_knob("boiler-demand", boiler.demand_reading()));
+        knobs.push(scalar_knob("boiler-pressure", boiler.pressure_reading()));
     }
     knobs
 }
