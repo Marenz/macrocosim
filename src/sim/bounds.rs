@@ -13,6 +13,7 @@ use std::{collections::VecDeque, fmt, time::Duration};
 use chrono::{DateTime, Utc};
 
 use crate::proto::common::metrics::Bounds;
+use crate::timeout_tracker::deadline_after;
 
 #[derive(Debug, Clone, Default)]
 pub struct VecBounds(pub Vec<Bounds>);
@@ -321,18 +322,11 @@ struct Aug {
 
 impl Aug {
     /// Live at `now` if `now` is before the advertised `valid_until`
-    /// (create_ts + lifetime) — the same inclusive horizon handed back
-    /// to the client.
+    /// (create_ts + lifetime, saturating) — the same inclusive
+    /// horizon handed back to the client, so an absurdly long
+    /// lifetime means "effectively forever", not "never live".
     fn live_at(&self, now: DateTime<Utc>) -> bool {
-        // Saturate UP on overflow (both in the chrono conversion
-        // and in the timestamp addition): an absurdly long lifetime
-        // means "effectively forever", not "never live" — the old
-        // fallback to zero silently dropped the augmentation.
-        let ttl = chrono::Duration::from_std(self.lifetime).unwrap_or(chrono::Duration::MAX);
-        match self.create_ts.checked_add_signed(ttl) {
-            Some(until) => until > now,
-            None => true,
-        }
+        deadline_after(self.create_ts, self.lifetime) > now
     }
 }
 
