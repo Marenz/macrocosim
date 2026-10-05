@@ -5,7 +5,14 @@
 import { escapeHtml, mutate, notify, selectMicrogrid } from "./app.js";
 import { refreshPaletteLock } from "./editor.js";
 import { errorText } from "./http.js";
-import { publishMgFlags, readSelectedMg, reconcileSelection, renderReplMgChip } from "./routing.js";
+import {
+  mgFetch,
+  mgPath,
+  publishMgFlags,
+  readSelectedMg,
+  reconcileSelection,
+  renderReplMgChip,
+} from "./routing.js";
 
 // Lowest id `POST /api/microgrids` allocates when none is asked
 // for (`DEFAULT_MICROGRID_ID` server-side). The create dialog
@@ -693,17 +700,18 @@ export const microgridsPanel = (() => {
 // timeline since they happen server-side without a WS push.
 // Driven by the unified registry: /api/scenarios (the registered
 // scenarios + their cue/check timeline) plus the journal readers
-// /api/scenario (lifecycle), /api/scenario/report (live metrics + the
-// scenario-expect ledger), and /api/scenario/events (activity feed).
+// the selected microgrid's scenario (lifecycle), scenario/report (live
+// metrics + the scenario-expect ledger), and scenario/events (activity
+// feed), all under /api/mg/{mg}.
 // The journal tracks one scenario at a time; Run starts a scenario on
 // the wall clock, Stop ends it. Headless/deterministic runs are a
 // `macroctl scenario run --stepped` / CI concern, not a UI action.
 export const scenariosPanel = (() => {
   let scenarios = []; // /api/scenarios snapshot
-  let summary = null; // /api/scenario (running/last journal)
-  let report = null; // /api/scenario/report
-  let events = []; // /api/scenario/events
-  let csv = { dir: null, files: [] }; // /api/scenario/csv
+  let summary = null; // mg scenario (running/last journal)
+  let report = null; // mg scenario/report
+  let events = []; // mg scenario/events
+  let csv = { dir: null, files: [] }; // mg scenario/csv
   let pollTimer = null;
 
   function listEl() { return document.getElementById("scenarios-list"); }
@@ -903,9 +911,12 @@ export const scenariosPanel = (() => {
     const el = document.getElementById("sc-run-csv");
     if (!el) return;
     if (!csv.files || csv.files.length === 0) { el.innerHTML = ""; return; }
-    const links = csv.files.map((f) =>
-      `<a class="sc-csv-link" href="/api/scenario/csv/${encodeURIComponent(f)}" download>${escapeHtml(f)}</a>`,
-    ).join("");
+    const links = csv.files.map((f) => {
+      const href = mgPath(`scenario/csv/${encodeURIComponent(f)}`);
+      return href == null
+        ? `<span class="sc-csv-link">${escapeHtml(f)}</span>`
+        : `<a class="sc-csv-link" href="${href}" download>${escapeHtml(f)}</a>`;
+    }).join("");
     el.innerHTML = `<h3>recorded csv${csv.dir ? ` <span class="muted">${escapeHtml(csv.dir)}</span>` : ""}</h3>${links}`;
   }
 
@@ -948,24 +959,31 @@ export const scenariosPanel = (() => {
     if (!r.ok) throw new Error(await errorText(r));
     return r.json();
   };
+  // Journal readout of the selected microgrid; null with none selected.
+  const getMgJson = async (suffix) => {
+    const r = await mgFetch(suffix);
+    if (r == null) return null;
+    if (!r.ok) throw new Error(await errorText(r));
+    return r.json();
+  };
   const settled = (r, fallback) => (r.status === "fulfilled" ? r.value : fallback);
 
   async function refresh() {
     // Two stages of concurrent fetches: the journal reads depend on
     // the summary's name, nothing else depends on anything — so
     // latency is two round-trips, not five.
-    const [sc, sum] = await Promise.allSettled([getJson("/api/scenarios"), getJson("/api/scenario")]);
+    const [sc, sum] = await Promise.allSettled([getJson("/api/scenarios"), getMgJson("scenario")]);
     scenarios = settled(sc, []);
     summary = settled(sum, null);
     if (journalName()) {
       const [rep, ev, cs] = await Promise.allSettled([
-        getJson("/api/scenario/report"),
-        getJson("/api/scenario/events?limit=50"),
-        getJson("/api/scenario/csv"),
+        getMgJson("scenario/report"),
+        getMgJson("scenario/events?limit=50"),
+        getMgJson("scenario/csv"),
       ]);
       report = settled(rep, null);
-      events = settled(ev, {}).events || [];
-      csv = settled(cs, { dir: null, files: [] });
+      events = settled(ev, null)?.events || [];
+      csv = settled(cs, null) ?? { dir: null, files: [] };
     } else {
       report = null;
       events = [];
@@ -980,7 +998,7 @@ export const scenariosPanel = (() => {
   // while its panels are actually showing.
   async function refreshChip() {
     try {
-      summary = await getJson("/api/scenario");
+      summary = await getMgJson("scenario");
     } catch (_) {
       summary = null;
     }

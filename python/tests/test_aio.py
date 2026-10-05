@@ -263,7 +263,7 @@ async def test_scenario_assert_passed_returns_report_when_clean() -> None:
     site = _site()
 
     async def fake_get_json(path: str) -> Any:
-        assert path == "/api/scenario/report"
+        assert path == "/api/mg/1/scenario/report"
         return {"name": "s", "checks_passed": 2, "checks_failed": 0, "checks": []}
 
     site._http.get_json = fake_get_json  # type: ignore[method-assign]
@@ -275,7 +275,7 @@ async def test_scenario_assert_passed_raises_when_no_check_ran() -> None:
     site = _site()
 
     async def fake_get_json(path: str) -> Any:
-        assert path == "/api/scenario/report"
+        assert path == "/api/mg/1/scenario/report"
         return {"name": "s", "checks_passed": 0, "checks_failed": 0, "checks": []}
 
     site._http.get_json = fake_get_json  # type: ignore[method-assign]

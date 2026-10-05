@@ -311,6 +311,8 @@ async fn unscoped_microgrid_routes_are_gone() {
         "/api/microgrid/latest",
         "/api/microgrid/history",
         "/api/microgrid/formulas",
+        "/api/scenario",
+        "/api/scenario/report",
         "/api/mg/2200/microgrid/status",
         "/api/mg/2200/component?id=1",
         "/api/mg/2200/history?id=1&metric=active_power",
@@ -542,7 +544,7 @@ async fn scenario_endpoints_round_trip_lifecycle_and_events() {
     let cfg = config_with("").await;
 
     // Pre-start: name is null, count is 0.
-    let (_, body) = call(cfg.clone(), get("/api/scenario")).await;
+    let (_, body) = call(cfg.clone(), get("/api/mg/2200/scenario")).await;
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(v["name"].is_null());
     assert_eq!(v["event_count"], 0);
@@ -565,15 +567,15 @@ async fn scenario_endpoints_round_trip_lifecycle_and_events() {
     .await;
 
     // Summary reflects the events.
-    let (status, body) = call(cfg.clone(), get("/api/scenario")).await;
+    let (status, body) = call(cfg.clone(), get("/api/mg/2200/scenario")).await;
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["name"], "warmup");
     assert_eq!(v["event_count"], 2);
     assert_eq!(v["next_event_id"], 2);
 
-    // /api/scenario/events with default since=0 returns both.
-    let (status, body) = call(cfg.clone(), get("/api/scenario/events")).await;
+    // The events route with default since=0 returns both.
+    let (status, body) = call(cfg.clone(), get("/api/mg/2200/scenario/events")).await;
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let events = v["events"].as_array().unwrap();
@@ -582,7 +584,7 @@ async fn scenario_endpoints_round_trip_lifecycle_and_events() {
     assert_eq!(events[1]["kind"], "note");
 
     // since=1 cursor returns only id 1 onward.
-    let (_, body) = call(cfg.clone(), get("/api/scenario/events?since=1")).await;
+    let (_, body) = call(cfg.clone(), get("/api/mg/2200/scenario/events?since=1")).await;
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let events = v["events"].as_array().unwrap();
     assert_eq!(events.len(), 1);
@@ -604,13 +606,109 @@ async fn scenario_report_endpoint_returns_grid_peak() {
     // forwarder makes.
     cfg.site().record_grid_power_sample(4500.0, Utc::now());
 
-    let (status, body) = call(cfg, get("/api/scenario/report")).await;
+    let (status, body) = call(cfg, get("/api/mg/2200/scenario/report")).await;
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     // No meter id: the main-meter concept is retired from the report.
     assert!(v.get("main_meter_id").is_none(), "{v}");
     let peak = v["peak_grid_w"].as_f64().unwrap();
     assert!((peak - 4500.0).abs() < 1e-3, "got peak {peak}");
+}
+
+/// A scenario started from the whole-site eval journals on every
+/// microgrid, but its events land on the first one only.
+#[tokio::test]
+async fn scenario_readouts_read_each_microgrids_own_journal() {
+    let cfg = config_with(
+        "(make-microgrid :id 2200 :grpc-port 8800 :topology (lambda () \
+           (%make-meter :id 1)))\n\
+         (make-microgrid :id 2201 :grpc-port 8802 :topology (lambda () nil))",
+    )
+    .await;
+    call(cfg.clone(), post("/api/eval", "(scenario-start \"two\")")).await;
+    let csv_dir = std::env::temp_dir().join(format!("mc-readouts-csv-{}", std::process::id()));
+    call(
+        cfg.clone(),
+        post(
+            "/api/eval",
+            &format!("(scenario-record-csv {:?})", csv_dir.to_str().unwrap()),
+        ),
+    )
+    .await;
+    call(
+        cfg.clone(),
+        post("/api/eval", "(scenario-event \"note\" \"hi\")"),
+    )
+    .await;
+
+    let (status, body) = call(cfg.clone(), get("/api/mg/2200/scenario")).await;
+    assert_eq!(status, StatusCode::OK);
+    let first: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(first["name"], "two");
+    assert_eq!(first["event_count"], 1);
+
+    let (status, body) = call(cfg.clone(), get("/api/mg/2201/scenario")).await;
+    assert_eq!(status, StatusCode::OK);
+    let second: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(second["name"], "two");
+    assert_eq!(second["event_count"], 0);
+    // Both journals ran: each has a start time and a numeric elapsed.
+    for s in [&first, &second] {
+        assert!(!s["started_at"].is_null(), "{s}");
+        assert!(s["elapsed_s"].is_f64(), "{s}");
+    }
+
+    let (status, body) = call(cfg.clone(), get("/api/mg/2200/scenario/events")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["events"].as_array().unwrap().len(), 1);
+    let (status, body) = call(cfg.clone(), get("/api/mg/2201/scenario/events")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v["events"].as_array().unwrap().is_empty(), "{v}");
+
+    // The recording belongs to the first microgrid alone.
+    let (status, body) = call(cfg.clone(), get("/api/mg/2200/scenario/csv")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["files"], serde_json::json!(["1-meter.csv"]), "{v}");
+    let (status, _) = call(cfg.clone(), get("/api/mg/2200/scenario/csv/1-meter.csv")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = call(cfg.clone(), get("/api/mg/2201/scenario/csv")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v["dir"].is_null(), "{v}");
+    assert!(v["files"].as_array().unwrap().is_empty(), "{v}");
+    let (status, body) = call(cfg.clone(), get("/api/mg/2201/scenario/csv/1-meter.csv")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(!error_of(&body).is_empty());
+    let _ = std::fs::remove_dir_all(&csv_dir);
+
+    // A check lands on the first microgrid's report alone.
+    let (status, _) = call(
+        cfg.clone(),
+        post(
+            "/api/eval",
+            "(scenario-expect :component 1 :metric 'active-power :min -1e9)",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = call(cfg.clone(), get("/api/mg/2200/scenario/report")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let checks = v["checks"].as_array().unwrap();
+    assert_eq!(checks.len(), 1, "{v}");
+    assert_eq!(checks[0]["component_id"], 1);
+    let (status, body) = call(cfg.clone(), get("/api/mg/2201/scenario/report")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v["checks"].as_array().unwrap().is_empty(), "{v}");
+    assert_eq!(v["checks_passed"], 0);
+    assert_eq!(v["checks_failed"], 0);
+    let (status, body) = call(cfg, get("/api/mg/9999/scenario")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(error_of(&body), "microgrid 9999 not registered");
 }
 
 fn seed_dispatch(

@@ -31,7 +31,7 @@ const TOPOLOGY: &str = r#"
 
 async fn report(client: &reqwest::Client, s: &TestServer) -> Value {
     client
-        .get(format!("{}/api/scenario/report", s.ui_url))
+        .get(s.mg_url("scenario/report"))
         .send()
         .await
         .unwrap()
@@ -51,7 +51,7 @@ async fn topology(client: &reqwest::Client, s: &TestServer) -> Value {
         .unwrap()
 }
 
-/// Poll `/api/scenario/report` until `peak_grid_w` reaches `want`
+/// Poll the scenario report until `peak_grid_w` reaches `want`
 /// within `tol`, then return it. The peak now rides the microgrid
 /// loopback's `grid_power` formula stream, which resamples at ~1 Hz
 /// off the gRPC telemetry — so a value driven through `/api/eval`

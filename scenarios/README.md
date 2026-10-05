@@ -5,7 +5,7 @@ test — sudden load spikes, cloud cover, battery outages, silent
 components — while a Rust **reporter** records metrics and a
 **journal** records named events. At any time you can ask the
 running simulator what's happened so far via
-`GET /api/scenario/report` or the **Report** panel in the UI.
+`GET /api/mg/{mg}/scenario/report` or the **Report** panel in the UI.
 
 The framework is two layers:
 
@@ -199,16 +199,16 @@ still-firing timers.
 The reporter exposes:
 
 ```sh
-curl -s http://127.0.0.1:8801/api/scenario          # lifecycle
-curl -s http://127.0.0.1:8801/api/scenario/events   # journal (paginated)
-curl -s http://127.0.0.1:8801/api/scenario/report   # aggregate metrics
+curl -s http://127.0.0.1:8801/api/mg/2200/scenario          # lifecycle
+curl -s http://127.0.0.1:8801/api/mg/2200/scenario/events   # journal (paginated)
+curl -s http://127.0.0.1:8801/api/mg/2200/scenario/report   # aggregate metrics
 ```
 
-`/api/scenario/events` takes `?since=N&limit=M` for incremental
+`/api/mg/{mg}/scenario/events` takes `?since=N&limit=M` for incremental
 polling — pass back the previous response's `next_event_id`
 unchanged.
 
-`/api/scenario/report` returns:
+`/api/mg/{mg}/scenario/report` returns:
 
 | Field                          | Meaning                                                   |
 |--------------------------------|-----------------------------------------------------------|

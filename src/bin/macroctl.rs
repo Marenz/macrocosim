@@ -438,9 +438,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         // HTTP-backed commands dispatch directly — they only need
         // the HTTP client, not a live gRPC channel. Avoids paying
         // for a failing gRPC connect when the user only wants
-        // /api/scenario.
+        // a scenario readout.
         Cmd::Dispatch(d) => run_dispatch(d, &cli.dispatch_addr, cli.json).await,
-        Cmd::Scenario(s) => run_scenario(s, &cli.ui_addr, cli.json).await,
+        Cmd::Scenario(s) => run_scenario(s, &cli.ui_addr, cli.microgrid_id, cli.json).await,
         Cmd::Snapshot(s) => run_snapshot(s, &cli.ui_addr, cli.microgrid_id, cli.json).await,
         Cmd::Dashboard { tail, interval } => {
             run_dashboard(&cli.ui_addr, cli.microgrid_id, tail, interval).await
@@ -949,17 +949,19 @@ async fn build_dashboard_line(
     ))
 }
 
-/// Fetch `/api/scenario/report`, print it, and — with `assert` — return
-/// an error when any check failed. Shared by the live `--wait` gate and
-/// the standalone `scenario report` command so the two stay in lockstep.
+/// Fetch microgrid `mg`'s `scenario/report`, print it, and — with
+/// `assert` — return an error when any check failed. Shared by the
+/// live `--wait` gate and the standalone `scenario report` command so
+/// the two stay in lockstep.
 async fn fetch_print_assert_report(
     http: &reqwest::Client,
     ui_addr: &str,
+    mg: u64,
     json: bool,
     assert: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let r: serde_json::Value = checked(
-        http.get(format!("{ui_addr}/api/scenario/report"))
+        http.get(format!("{ui_addr}/api/mg/{mg}/scenario/report"))
             .send()
             .await?,
     )
@@ -979,6 +981,7 @@ async fn fetch_print_assert_report(
 async fn run_scenario(
     cmd: ScenarioCmd,
     ui_addr: &str,
+    microgrid_id: Option<u64>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let http = reqwest::Client::new();
@@ -1037,6 +1040,13 @@ async fn run_scenario(
                         "`--assert` on a live run needs `--wait` (or use `--stepped`)".into(),
                     );
                 }
+                // The microgrid whose journal --wait polls and
+                // reports.
+                let mg = if wait {
+                    Some(resolve_microgrid_id(&http, ui_addr, microgrid_id).await?)
+                } else {
+                    None
+                };
                 // Resolve the wait length BEFORE starting, so a --wait on
                 // a scenario with no :length and no --until fails fast
                 // instead of leaving the run orphaned server-side with
@@ -1084,6 +1094,7 @@ async fn run_scenario(
                 // reports ended, or elapsed reaches the run length), then
                 // stop it so the report freezes + any CSV sinks flush.
                 let wait_secs = wait_secs.expect("wait ⇒ wait_secs resolved above");
+                let mg = mg.expect("wait ⇒ mg resolved above");
                 eprintln!("waiting up to {wait_secs}s for {name} to finish…");
                 let deadline = wait_secs + 5; // small grace past the run length
                 let mut waited = 0u64;
@@ -1095,7 +1106,7 @@ async fn run_scenario(
                     // "not done yet" rather than aborting the run — the
                     // deadline below still bounds the wait.
                     let done = match http
-                        .get(format!("{ui_addr}/api/scenario"))
+                        .get(format!("{ui_addr}/api/mg/{mg}/scenario"))
                         .send()
                         .await
                         .and_then(|r| r.error_for_status())
@@ -1124,7 +1135,7 @@ async fn run_scenario(
                 )
                 .await
                 .map_err(|e| format!("failed to stop scenario: {e}"))?;
-                fetch_print_assert_report(&http, ui_addr, json, assert).await?;
+                fetch_print_assert_report(&http, ui_addr, mg, json, assert).await?;
             }
         }
         ScenarioCmd::Start { name } => {
@@ -1175,19 +1186,25 @@ async fn run_scenario(
             println!("loaded {path}");
         }
         ScenarioCmd::Summary => {
-            let s: serde_json::Value =
-                checked(http.get(format!("{ui_addr}/api/scenario")).send().await?)
-                    .await?
-                    .json()
-                    .await?;
+            let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
+            let s: serde_json::Value = checked(
+                http.get(format!("{ui_addr}/api/mg/{mg}/scenario"))
+                    .send()
+                    .await?,
+            )
+            .await?
+            .json()
+            .await?;
             print_summary(&s, json);
         }
         ScenarioCmd::Report { assert } => {
-            fetch_print_assert_report(&http, ui_addr, json, assert).await?;
+            let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
+            fetch_print_assert_report(&http, ui_addr, mg, json, assert).await?;
         }
         ScenarioCmd::Events { since, limit } => {
+            let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
             let e: serde_json::Value = checked(
-                http.get(format!("{ui_addr}/api/scenario/events"))
+                http.get(format!("{ui_addr}/api/mg/{mg}/scenario/events"))
                     .query(&[("since", since.to_string()), ("limit", limit.to_string())])
                     .send()
                     .await?,

@@ -250,8 +250,8 @@ fn parse_expect_metric(name: &str) -> Option<Metric> {
 /// to mark the beginning, drop `(scenario-event KIND PAYLOAD)` markers
 /// at interesting moments, assert state via `(scenario-expect …)`,
 /// and `(scenario-stop)` when finished. The underlying journal lives
-/// on `MicrogridSite` and is read by the `/api/scenario` and
-/// `/api/scenario/events` endpoints.
+/// on `MicrogridSite` and is read by the `scenario` and
+/// `scenario/events` endpoints under `/api/mg/{mg}`.
 ///
 /// POLICY — `scenario-stop` returns every driven knob (a meter's
 /// `:power` / `:reactive-power` / power-factor override, a solar

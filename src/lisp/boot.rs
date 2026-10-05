@@ -891,10 +891,11 @@ impl Config {
 
     /// The current microgrid's scenario report (peak / charge / SoC
     /// stats + the `scenario-expect` pass/fail ledger) at sim/wall now,
-    /// serialized to JSON — the same shape `GET /api/scenario/report`
-    /// returns. Public + JSON so an out-of-crate stepped runner
-    /// (`macroctl scenario run --stepped`) can print + assert on it
-    /// without a server or exposing the internal report type.
+    /// serialized to JSON — the same shape
+    /// `GET /api/mg/{mg}/scenario/report` returns. Public + JSON so
+    /// an out-of-crate stepped runner (`macroctl scenario run
+    /// --stepped`) can print + assert on it without a server or
+    /// exposing the internal report type.
     pub fn scenario_report_json(&self) -> serde_json::Value {
         serde_json::to_value(self.site().scenario_report(self.now.now())).unwrap_or_default()
     }

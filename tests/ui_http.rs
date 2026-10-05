@@ -83,7 +83,7 @@ async fn scenario_endpoints_round_trip_via_eval() {
     let client = reqwest::Client::new();
 
     // Pre-start: lifecycle is empty.
-    let pre = json(&client, format!("{}/api/scenario", s.ui_url)).await;
+    let pre = json(&client, s.mg_url("scenario")).await;
     assert!(pre["name"].is_null());
 
     // Start + record an event via /api/eval.
@@ -104,17 +104,17 @@ async fn scenario_endpoints_round_trip_via_eval() {
         );
     }
 
-    let summary = json(&client, format!("{}/api/scenario", s.ui_url)).await;
+    let summary = json(&client, s.mg_url("scenario")).await;
     assert_eq!(summary["name"], "smoke");
     assert_eq!(summary["event_count"], 1);
 
-    let events = json(&client, format!("{}/api/scenario/events", s.ui_url)).await;
+    let events = json(&client, s.mg_url("scenario/events")).await;
     let arr = events["events"].as_array().unwrap();
     assert_eq!(arr[0]["kind"], "note");
 
     // The report is keyed on the grid formula streams now, so it
     // carries no meter id at all — the retired main-meter concept.
-    let report = json(&client, format!("{}/api/scenario/report", s.ui_url)).await;
+    let report = json(&client, s.mg_url("scenario/report")).await;
     assert!(
         report.get("main_meter_id").is_none(),
         "main_meter_id should be retired from the report: {report}"

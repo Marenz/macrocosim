@@ -24,9 +24,10 @@ use crate::sim::scenario_csv::{CsvSink, CsvSinks};
 
 use super::MicrogridSite;
 
-/// Snapshot of `ScenarioJournal` lifecycle state for `/api/scenario`.
-/// Excludes the events themselves — those live behind a paginated
-/// `/api/scenario/events` endpoint with a `since=` cursor.
+/// Snapshot of `ScenarioJournal` lifecycle state for
+/// `/api/mg/{mg}/scenario`. Excludes the events themselves — those
+/// live behind a paginated `scenario/events` endpoint with a
+/// `since=` cursor.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ScenarioSummary {
     pub name: Option<String>,
@@ -35,7 +36,7 @@ pub(crate) struct ScenarioSummary {
     pub elapsed_s: f64,
     pub event_count: usize,
     /// One past the highest event id ever recorded. Stable cursor
-    /// for `/api/scenario/events?since=N` — clients pass this back
+    /// for `scenario/events?since=N` — clients pass this back
     /// unchanged to mean "anything newer than what I last saw".
     pub next_event_id: u64,
     /// Lowest event id still retained in the ring. Clients compare
@@ -45,7 +46,7 @@ pub(crate) struct ScenarioSummary {
     pub earliest_event_id: u64,
 }
 
-/// Snapshot of scenario-scoped metrics for `/api/scenario/report`.
+/// Snapshot of scenario-scoped metrics for `scenario/report`.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ScenarioReport {
     /// The scenario the report belongs to (`None` before any start).
@@ -456,7 +457,7 @@ impl MicrogridSite {
         self.inner.scenario.read().elapsed_s(now)
     }
 
-    /// Snapshot of scenario lifecycle for `/api/scenario`.
+    /// Snapshot of scenario lifecycle for `scenario`.
     pub(crate) fn scenario_summary(&self, now: DateTime<Utc>) -> ScenarioSummary {
         let g = self.inner.scenario.read();
         ScenarioSummary {
@@ -472,12 +473,12 @@ impl MicrogridSite {
 
     /// Pull events with id >= `since` (callers pass the cursor from
     /// `next_event_id`), capped at `limit`. Used by
-    /// `/api/scenario/events`.
+    /// `scenario/events`.
     pub(crate) fn scenario_events_since(&self, since: u64, limit: usize) -> Vec<ScenarioEvent> {
         self.inner.scenario.read().events_since(since, limit)
     }
 
-    /// Aggregate metrics for `/api/scenario/report`. Returns a
+    /// Aggregate metrics for `scenario/report`. Returns a
     /// snapshot. SoC stats are computed at fetch time from each
     /// battery's current telemetry — cheap, no accumulator needed.
     pub(crate) fn scenario_report(&self, now: DateTime<Utc>) -> ScenarioReport {

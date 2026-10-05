@@ -44,7 +44,7 @@ const WINDOW_AVG_CAPACITY: usize = 96;
 /// Single entry in the scenario journal. `id` is monotonic and
 /// stable across the journal's lifetime — it does not reset on
 /// `scenario_start`. Clients use it as the `since=` cursor for
-/// `/api/scenario/events`.
+/// `/api/mg/{mg}/scenario/events`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScenarioEvent {
     pub id: u64,
@@ -91,7 +91,7 @@ pub struct PvIntegrals {
 
 /// Scenario journal: name + lifecycle + capped event ring + the
 /// metric accumulators the reporter exposes via
-/// `/api/scenario/report`.
+/// `/api/mg/{mg}/scenario/report`.
 #[derive(Debug, Default)]
 pub struct ScenarioJournal {
     pub name: Option<String>,
@@ -159,8 +159,8 @@ pub struct ScenarioJournal {
 impl ScenarioJournal {
     /// Begin a fresh scenario. Replaces any prior name, clears the
     /// stop marker, and empties the event ring. Event ids continue
-    /// monotonically — a client polling /api/scenario/events across
-    /// a restart sees a gap rather than an id rewind.
+    /// monotonically — a client polling the scenario events route
+    /// across a restart sees a gap rather than an id rewind.
     pub fn start(&mut self, name: String, now: DateTime<Utc>) {
         self.name = Some(name);
         self.started_at = Some(now);
@@ -383,7 +383,7 @@ impl ScenarioJournal {
 
     /// Returns events with id >= `from_id`, capped at `limit`.
     /// Oldest first. The `from_id` cursor is inclusive — clients
-    /// poll `/api/scenario/events?since=N` and pass back
+    /// poll `scenario/events?since=N` and pass back
     /// `next_event_id` from the previous response unchanged: that's
     /// "the id of the next event that hasn't been written yet", so
     /// id >= cursor naturally returns only new entries.

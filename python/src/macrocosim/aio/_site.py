@@ -584,6 +584,10 @@ class ScenarioRun:
         self._site = site
         self._name = name
 
+    def _journal_path(self, suffix: str = "") -> str:
+        """Readout path under the default (lowest-id) microgrid."""
+        return f"/api/mg/{self._site._resolve_mg(None)}/scenario{suffix}"
+
     async def _length_s(self) -> float | None:
         for scenario in await self._site._http.get_json("/api/scenarios"):
             if scenario.get("name") == self._name:
@@ -643,7 +647,7 @@ class ScenarioRun:
         deadline = time.monotonic() + length + 5.0
         interval = poll.total_seconds()
         while time.monotonic() < deadline:
-            state = await self._site._http.get_json("/api/scenario")
+            state = await self._site._http.get_json(self._journal_path())
             self._assert_active(state)
             if state.get("ended_at") is not None:
                 break
@@ -657,7 +661,7 @@ class ScenarioRun:
         """The parsed scenario report (pass/fail ledger + peak/soc stats)."""
         # The report carries the scenario name it belongs to; checking
         # it in the same response avoids a two-request race.
-        report = await self._site._http.get_json("/api/scenario/report")
+        report = await self._site._http.get_json(self._journal_path("/report"))
         self._assert_active(report)
         return report
 
@@ -670,7 +674,9 @@ class ScenarioRun:
 
     async def events(self, *, since: int = 0) -> list[JournalEvent]:
         """The scenario's journal events (list of ``{kind, payload, …}``)."""
-        body = await self._site._http.get_json(f"/api/scenario/events?since={since}")
+        body = await self._site._http.get_json(
+            self._journal_path(f"/events?since={since}")
+        )
         return body.get("events", [])
 
 

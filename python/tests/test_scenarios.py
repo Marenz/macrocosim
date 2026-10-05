@@ -26,15 +26,17 @@ class FakeHttp:
         # Real reports carry the scenario name; the client checks it.
         self._report = {"name": "s", **report}
         self.posts: list[str] = []
+        self.gets: list[str] = []
 
     def get_json(self, path: str):
         if path == "/api/scenarios":
             return [{"name": "s", "length_s": 0.0}]
-        if path == "/api/scenario":
+        self.gets.append(path)
+        if path == "/api/mg/3/scenario":
             return {"name": "s", "ended_at": "2026-01-01T00:00:00Z", "elapsed_s": 1.0}
-        if path == "/api/scenario/report":
+        if path == "/api/mg/3/scenario/report":
             return self._report
-        if path.startswith("/api/scenario/events"):
+        if path.startswith("/api/mg/3/scenario/events"):
             return {"events": [{"kind": "note", "payload": "hi"}], "next_event_id": 1}
         raise AssertionError(f"unexpected GET {path}")
 
@@ -44,8 +46,14 @@ class FakeHttp:
 
 
 class FakeSite:
+    """A site with microgrids 7 and 3: readouts go to the lowest."""
+
     def __init__(self, report: dict) -> None:
         self._http = FakeHttp(report)
+        self.microgrids = {7: object(), 3: object()}
+
+    def _resolve_mg(self, mg_id: int | None) -> int:
+        return mg_id if mg_id is not None else min(self.microgrids)
 
 
 METER = mc_meter(id=2)
@@ -110,9 +118,9 @@ def test_wait_and_report_reject_an_inactive_scenario() -> None:
     class OtherActiveHttp(FakeHttp):
         def get_json(self, path: str):
             # No scenario ever started: summary and report are empty.
-            if path == "/api/scenario":
+            if path == "/api/mg/3/scenario":
                 return {"name": None, "ended_at": None, "elapsed_s": 0.0}
-            if path == "/api/scenario/report":
+            if path == "/api/mg/3/scenario/report":
                 return {"name": None, "checks_passed": 0, "checks_failed": 0}
             return super().get_json(path)
 
@@ -163,6 +171,19 @@ def test_assert_passed_raises_on_failure() -> None:
 def test_events_unwraps_list() -> None:
     events = ScenarioRun(FakeSite({}), "s").events()
     assert events == [{"kind": "note", "payload": "hi"}]
+
+
+def test_readouts_carry_the_lowest_microgrid_id() -> None:
+    site = FakeSite({"checks_passed": 1, "checks_failed": 0, "checks": []})
+    run = ScenarioRun(site, "s")
+    run.wait(until=timedelta(seconds=1))
+    run.report()
+    run.events(since=2)
+    assert site._http.gets == [
+        "/api/mg/3/scenario",
+        "/api/mg/3/scenario/report",
+        "/api/mg/3/scenario/events?since=2",
+    ]
 
 
 def test_scenario_authoring_emits_define_scenario() -> None:

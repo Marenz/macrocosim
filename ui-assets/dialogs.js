@@ -152,9 +152,16 @@ async function renderScenarioReport(contentEl) {
 async function refreshScenarioReport() {
   try {
     const [reportRes, eventsRes] = await Promise.all([
-      fetch("/api/scenario/report"),
-      fetch("/api/scenario/events?limit=50"),
+      mgFetch("scenario/report"),
+      mgFetch("scenario/events?limit=50"),
     ]);
+    if (reportRes == null || eventsRes == null) {
+      const card = document.getElementById("sc-report-card");
+      if (card) card.innerHTML = `<span class="hint">no microgrid selected</span>`;
+      const list = document.getElementById("sc-report-events");
+      if (list) list.innerHTML = `<li class="hint">—</li>`;
+      return;
+    }
     if (!reportRes.ok || !eventsRes.ok) return;
     const r = await reportRes.json();
     const ev = await eventsRes.json();

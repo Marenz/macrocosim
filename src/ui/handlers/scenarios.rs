@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::lisp::Config;
 use crate::sim::microgrid_site::{ScenarioReport, ScenarioSummary};
-use crate::ui::api::{ApiError, Json, Path, Query};
+use crate::ui::api::{ApiError, Json, Mg, Path, Query};
 
 pub(in crate::ui) async fn scenarios_list(
     State(config): State<Config>,
@@ -43,11 +43,11 @@ pub(in crate::ui) async fn scenarios_stop(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Snapshot of the running scenario's lifecycle. Empty (`name:
+/// Snapshot of this microgrid's scenario lifecycle. Empty (`name:
 /// null`, zero counts) before any `(scenario-start)`; freezes
 /// `elapsed_s` once `(scenario-stop)` fires.
-pub(in crate::ui) async fn scenario_summary(State(config): State<Config>) -> Json<ScenarioSummary> {
-    Json(config.legacy_site().scenario_summary(Utc::now()))
+pub(in crate::ui) async fn scenario_summary(mg: Mg) -> Json<ScenarioSummary> {
+    Json(mg.site.scenario_summary(Utc::now()))
 }
 
 #[derive(Deserialize)]
@@ -74,14 +74,15 @@ pub(in crate::ui) struct ScenarioEventsResponse {
     earliest_event_id: u64,
 }
 
+/// Events in this microgrid's journal past the `since` cursor.
 pub(in crate::ui) async fn scenario_events(
-    State(config): State<Config>,
+    mg: Mg,
     Query(q): Query<ScenarioEventsQuery>,
 ) -> Json<ScenarioEventsResponse> {
     let since = q.since.unwrap_or(0);
     let limit = q.limit.unwrap_or(200).min(1000);
-    let events = config.legacy_site().scenario_events_since(since, limit);
-    let summary = config.legacy_site().scenario_summary(Utc::now());
+    let events = mg.site.scenario_events_since(since, limit);
+    let summary = mg.site.scenario_summary(Utc::now());
     Json(ScenarioEventsResponse {
         events,
         next_event_id: summary.next_event_id,
@@ -96,12 +97,11 @@ pub(in crate::ui) struct ScenarioCsvList {
     files: Vec<String>,
 }
 
-/// The CSV files the active/most-recent recording wrote, for the run
-/// view's download links. Empty when nothing has been recorded.
-pub(in crate::ui) async fn scenario_csv_list(
-    State(config): State<Config>,
-) -> Json<ScenarioCsvList> {
-    match config.legacy_site().scenario_csv_listing() {
+/// The CSV files this microgrid's active/most-recent recording wrote,
+/// for the run view's download links. Empty when nothing has been
+/// recorded.
+pub(in crate::ui) async fn scenario_csv_list(mg: Mg) -> Json<ScenarioCsvList> {
+    match mg.site.scenario_csv_listing() {
         Some((dir, files)) => Json(ScenarioCsvList {
             dir: Some(dir.to_string_lossy().into_owned()),
             files,
@@ -118,14 +118,14 @@ pub(in crate::ui) async fn scenario_csv_list(
 /// be one the listing actually reports — so this only ever serves
 /// files inside the recording directory.
 pub(in crate::ui) async fn scenario_csv_file(
-    State(config): State<Config>,
-    Path(file): Path<String>,
+    mg: Mg,
+    Path((_, file)): Path<(u64, String)>,
 ) -> Result<Response, ApiError> {
     if file.contains('/') || file.contains('\\') || file.contains("..") || !file.ends_with(".csv") {
         return Err(ApiError::bad_request("invalid filename"));
     }
-    let (dir, files) = config
-        .legacy_site()
+    let (dir, files) = mg
+        .site
         .scenario_csv_listing()
         .ok_or_else(|| ApiError::not_found("no recording"))?;
     if !files.contains(&file) {
@@ -157,10 +157,10 @@ pub(in crate::ui) async fn scenario_csv_file(
         .map_err(|e| ApiError::internal(e.to_string()))
 }
 
-/// Aggregate metrics for the running scenario (peak grid power so
-/// far, energy integrals, SoC stats, checks). Independent of
-/// `/api/scenario/events` so a dashboard can poll metrics
-/// frequently without scanning the whole event log.
-pub(in crate::ui) async fn scenario_report(State(config): State<Config>) -> Json<ScenarioReport> {
-    Json(config.legacy_site().scenario_report(Utc::now()))
+/// Aggregate metrics for this microgrid's running scenario (peak grid
+/// power so far, energy integrals, SoC stats, checks). Independent of
+/// the events route so a dashboard can poll metrics frequently
+/// without scanning the whole event log.
+pub(in crate::ui) async fn scenario_report(mg: Mg) -> Json<ScenarioReport> {
+    Json(mg.site.scenario_report(Utc::now()))
 }
