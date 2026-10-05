@@ -222,8 +222,8 @@ mod tests {
         let res = cfg.eval("(set-active-power 999 1500.0)");
         assert!(res.is_err(), "expected error, got {res:?}");
         assert!(res.unwrap_err().contains("999"));
-        // Meter doesn't support active setpoints — set_active_setpoint
-        // returns Unsupported, which we surface as a Lisp error.
+        // Meter takes no active setpoints — the gateway answers
+        // Unsupported, which we surface as a Lisp error.
         let res = cfg.eval("(set-active-power 1 1500.0)");
         assert!(res.is_err(), "expected error, got {res:?}");
     }

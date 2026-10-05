@@ -149,16 +149,6 @@ pub enum SetpointError {
         unit: &'static str,
         envelope: VecBounds,
     },
-    /// The component type doesn't accept this operation (e.g. a
-    /// meter being asked for an active-power setpoint). Maps to
-    /// `tonic::Status::unimplemented` server-side.
-    ///
-    /// Health-based rejection is *not* in here: the server's
-    /// `do_set_power` gates on `runtime.health != Health::Ok`
-    /// before reaching the component, returning its own
-    /// `failed_precondition` status. Adding a component-side
-    /// variant would just be a second source of the same error.
-    Unsupported,
 }
 
 impl fmt::Display for SetpointError {
@@ -171,7 +161,6 @@ impl fmt::Display for SetpointError {
             } => {
                 write!(f, "set-point {value} {unit} out of bounds {envelope}")
             }
-            Self::Unsupported => write!(f, "operation not supported by this component type"),
         }
     }
 }
@@ -287,9 +276,8 @@ pub struct Telemetry {
 
     pub active_power_bounds: Option<VecBounds>,
     /// Live reactive-power envelope at the current P — caps band ∩
-    /// live Q augmentations, possibly multi-band. Set on inverters
-    /// that implement `reactive_bounds()`; left None for batteries /
-    /// meters / EV chargers / CHP.
+    /// live Q augmentations, possibly multi-band. Overlaid from the
+    /// gateway by `MicrogridSite::telemetry_of`.
     pub reactive_power_bounds: Option<VecBounds>,
 
     pub component_state: Option<&'static str>,
@@ -444,22 +432,26 @@ pub enum KnobSnapshot {
 /// Reading order:
 ///   - **Identity**: id, category, name, subtype, is_hidden.
 ///   - **Lifecycle**: stream_interval, stream_jitter_pct, tick, telemetry.
-///   - **Setpoints**: set_active_setpoint, set_reactive_setpoint,
-///     reset_setpoint, try_augment_active_bounds,
-///     try_augment_reactive_bounds (the per-axis atomic augment doors
-///     behind `try_augment_bounds`), augment_reactive_bounds (the
-///     unchecked test-only Q door), set_active_power_override.
-///   - **Bounds**: rated_active_bounds, effective_active_bounds,
-///     reactive_bounds, rated_fuse_current.
+///   - **Hardware facts the gateway reads**: has_axis, set_command,
+///     physical_band, idle_value, park_value, initial_value,
+///     keeps_command_through_fault, advertises_physical_band,
+///     augment_checks_physical_band, gateway_settings, soc_window,
+///     soc_pct. The Microgrid API rules themselves live in
+///     `sim::gateway`, never here.
+///   - **Stimuli**: set_active_power_override, set_soc_pct, plug_ev,
+///     …
+///   - **Bounds**: rated_active_bounds, reactive_capability,
+///     rated_fuse_current.
 ///   - **Aggregation** (parent → child): aggregate_power_w,
 ///     aggregate_reactive_var.
 ///   - **Inverter → child wiring**: set_dc_power (active only — Q
 ///     terminates at the inverter and never reaches a DC-side child).
 ///   - **Runtime knobs**: set_reactive_pf_limit, set_reactive_apparent_va.
 ///
-/// Every method except the six required ones (`id`, `category`,
-/// `name`, `stream_interval`, `tick`, `telemetry`) has a sane default
-/// — components implement only the surface they need.
+/// Every method except the required ones (`id`, `category`, `name`,
+/// `stream_interval`, `tick`, `telemetry`, `make_fn`,
+/// `constructor_kwargs`) has a default — components implement only
+/// the surface they need.
 pub trait SimulatedComponent: Send + Sync + fmt::Display {
     // ── identity ─────────────────────────────────────────────────────
 
@@ -605,96 +597,6 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// A battery's state of charge in %; `None` for everything else.
     fn soc_pct(&self) -> Option<f32> {
         None
-    }
-
-    // ── setpoints (control surface) ──────────────────────────────────
-
-    /// Apply an active-power setpoint. Default returns `Unsupported`
-    /// for components that don't accept commands (Battery, Meter,
-    /// Grid, …).
-    fn set_active_setpoint(&self, _power_w: f32) -> Result<(), SetpointError> {
-        Err(SetpointError::Unsupported)
-    }
-
-    /// Apply a reactive-power setpoint. Default returns `Unsupported`.
-    fn set_reactive_setpoint(&self, _vars: f32) -> Result<(), SetpointError> {
-        Err(SetpointError::Unsupported)
-    }
-
-    /// Clear any pending / armed setpoint — BOTH axes — and ramp the
-    /// output back to the component's idle value (0 for inverters,
-    /// sunlight-driven power for solar). The ramp is retargeted at
-    /// the axis's ramp rate, not snapped; what telemetry shows
-    /// meanwhile is the implementation's call (see `PowerAxis::reset`).
-    /// The full fail-safe reset.
-    fn reset_setpoint(&self) {}
-
-    /// Clear one power axis's setpoint, leaving the other running.
-    /// Called by the `TimeoutTracker` when that axis's request
-    /// lifetime elapses without a refresh — a short-lived Q command
-    /// expiring must not clear a long-lived P command.
-    ///
-    /// The default falls back to the full reset, which is exact for
-    /// single-axis components (their "everything" IS that axis).
-    /// Components that accept BOTH active and reactive setpoints must
-    /// override, or an expiry on one axis wipes the other.
-    fn reset_setpoint_axis(&self, _axis: crate::timeout_tracker::SetpointAxis) {
-        self.reset_setpoint();
-    }
-
-    /// Add a time-limited reactive-power bounds augmentation,
-    /// narrowing the Q envelope, with no validation of any kind.
-    ///
-    /// This does NOT back the gRPC `AugmentElectricalComponentBounds`
-    /// method any more — [`Self::try_augment_reactive_bounds`] does,
-    /// and it validates atomically with the insert. What's left here
-    /// is the unchecked door, which no component overrides.
-    ///
-    /// The default is a silent no-op: a component with no reactive
-    /// axis has nothing to narrow.
-    fn augment_reactive_bounds(
-        &self,
-        _create_ts: DateTime<Utc>,
-        _bounds: VecBounds,
-        _lifetime: Duration,
-    ) {
-    }
-
-    /// Check an active-power bounds augmentation against the live
-    /// envelope and apply it atomically. Reached through
-    /// `try_augment_bounds` (on `dyn SimulatedComponent`), which runs
-    /// the shape checks first; this door does not. The components with
-    /// a `PowerAxis` (`EvCharger`, `SteamBoiler`, `SolarInverter`)
-    /// override this to route through their axis's
-    /// `PowerAxis::try_augment`, which composes, checks and inserts
-    /// under one lock.
-    ///
-    /// The default says `Unsupported`: this component stores no
-    /// augmentation on its active axis. A battery, a meter, a grid
-    /// connection point have no `PowerAxis` to insert into, so there
-    /// is nothing an ACK could promise — the gateway answers
-    /// UNIMPLEMENTED, exactly as it does for a setpoint a component
-    /// takes none of.
-    fn try_augment_active_bounds(
-        &self,
-        _create_ts: DateTime<Utc>,
-        _bounds: VecBounds,
-        _lifetime: Duration,
-    ) -> Result<(), AugmentError> {
-        Err(AugmentError::Unsupported)
-    }
-
-    /// Q twin of [`Self::try_augment_active_bounds`], with the same
-    /// default: a component with no reactive `PowerAxis` stores no
-    /// reactive augmentation and says `Unsupported` rather than
-    /// acknowledging a cap that is never armed.
-    fn try_augment_reactive_bounds(
-        &self,
-        _create_ts: DateTime<Utc>,
-        _bounds: VecBounds,
-        _lifetime: Duration,
-    ) -> Result<(), AugmentError> {
-        Err(AugmentError::Unsupported)
     }
 
     /// Override the active-power value a meter publishes with a
@@ -918,46 +820,6 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         None
     }
 
-    /// Current effective active-power envelope (W) — for batteries
-    /// this is DC, for inverters AC. Default falls through to
-    /// `rated_active_bounds` so simple components get the obvious
-    /// behaviour for free.
-    fn effective_active_bounds(&self) -> Option<VecBounds> {
-        self.rated_active_bounds()
-            .map(|(l, u)| VecBounds::single(l, u))
-    }
-
-    /// Current reactive-power envelope (possibly multi-band) at the
-    /// component's current P, normalized for TELEMETRY: a live
-    /// envelope with no legal band left is reported as a present
-    /// `(0, 0)` band rather than an absent one (see
-    /// [`VecBounds::or_zero_band`]), so a proto stream / WS scalar /
-    /// history chart shows "zero headroom" instead of leaving stale
-    /// bounds on screen. `None` for components that don't model
-    /// reactive power.
-    ///
-    /// Implement [`Self::reactive_bounds_raw`] instead of this — the
-    /// default here is exactly that plus the normalization, so the two
-    /// can never drift apart.
-    fn reactive_bounds(&self) -> Option<VecBounds> {
-        self.reactive_bounds_raw().map(VecBounds::or_zero_band)
-    }
-
-    /// The same envelope WITHOUT the zero-headroom normalization: an
-    /// empty `VecBounds` really means "no band is legal right now".
-    ///
-    /// The raw form exists so that `reactive_bounds()`'s zero-headroom
-    /// normalization stays a telemetry-only concern: a `(0, 0)` band
-    /// is what a stream consumer needs to see, but it would read as
-    /// "zero is still legal" to anything doing set arithmetic. No
-    /// augment path calls either method — `PowerAxis::try_augment`
-    /// composes the axis's own band under its lock and checks against
-    /// that. Callers that need the envelope as a set, rather than as a
-    /// sample to display, want this one.
-    fn reactive_bounds_raw(&self) -> Option<VecBounds> {
-        None
-    }
-
     /// The Q axis's capability shape (PF cap, kVA cap, both, or
     /// neither) — the data behind `reactive_bounds()`'s live sample.
     /// `None` for components with no Q axis at all. "Static" relative
@@ -1015,19 +877,6 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// The boiler's thermostat target, for chart annotation.
     fn pressure_target_bar(&self) -> Option<f32> {
         None
-    }
-
-    /// Whether a live (unexpired) augmentation is currently narrowing
-    /// `axis` — the inspector's "augmented" badge. Defaults to `false`
-    /// for components with no `PowerAxis` of their own; overridden by
-    /// components that own one to delegate to its
-    /// `PowerAxis::augmented`.
-    fn augmentation_active(
-        &self,
-        _axis: crate::timeout_tracker::SetpointAxis,
-        _now: DateTime<Utc>,
-    ) -> bool {
-        false
     }
 
     // ── aggregation (parent reads from child) ────────────────────────
@@ -1109,29 +958,6 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// format rules: floats via `lisp_float`, non-finite values omitted,
     /// disabled reactive caps pinned as `0`.
     fn constructor_kwargs(&self) -> Vec<(&'static str, String)>;
-}
-
-impl dyn SimulatedComponent {
-    /// Validate and apply a bounds augmentation on `axis`: the shape
-    /// checks ([`VecBounds::check_augmentation_shape`]), then that
-    /// axis's atomic door. Callers use this rather than the per-axis
-    /// doors, which skip the shape checks.
-    pub fn try_augment_bounds(
-        &self,
-        axis: crate::timeout_tracker::SetpointAxis,
-        create_ts: DateTime<Utc>,
-        bounds: VecBounds,
-        lifetime: Duration,
-    ) -> Result<(), AugmentError> {
-        use crate::timeout_tracker::SetpointAxis;
-        bounds
-            .check_augmentation_shape()
-            .map_err(AugmentError::Malformed)?;
-        match axis {
-            SetpointAxis::Active => self.try_augment_active_bounds(create_ts, bounds, lifetime),
-            SetpointAxis::Reactive => self.try_augment_reactive_bounds(create_ts, bounds, lifetime),
-        }
-    }
 }
 
 /// Cloneable handle that we hand to Lisp via `Shared<dyn TulispAny>`.

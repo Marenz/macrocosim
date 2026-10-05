@@ -610,10 +610,10 @@ async fn augment_on_a_component_without_storage_is_unimplemented() {
     }
 }
 
-/// The refusal does not depend on the band. A battery has no
-/// `PowerAxis` to store an augmentation in, so a band disjoint from
-/// the ±5 kW envelope it advertises and a band that overlaps it are
-/// both answered UNIMPLEMENTED: neither would have armed anything, so
+/// The refusal does not depend on the band. A battery has no gateway
+/// axis to store an augmentation in, so a band disjoint from the ±5
+/// kW envelope it advertises and a band that overlaps it are both
+/// answered UNIMPLEMENTED: neither would have armed anything, so
 /// neither is a matter of the client picking better numbers.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_axis_less_component_refuses_every_augmentation_band() {
@@ -625,7 +625,7 @@ async fn an_axis_less_component_refuses_every_augmentation_band() {
     ] {
         let err = c
             .augment_electrical_component_bounds(AugmentElectricalComponentBoundsRequest {
-                electrical_component_id: 3, // the battery: no PowerAxis
+                electrical_component_id: 3, // the battery: no gateway axis
                 target_metric: Metric::AcPowerActive as i32,
                 bounds: vec![Bounds {
                     lower: Some(lower),
@@ -686,7 +686,7 @@ async fn an_augmentation_disjoint_from_a_derate_is_rejected() {
 }
 
 /// Storage on one axis is not storage on the other. A steam boiler
-/// has an active `PowerAxis` but no reactive one, so it stores an
+/// has an active gateway axis but no reactive one, so it stores an
 /// active augmentation and refuses a reactive one as unimplemented —
 /// the per-axis answer, not a per-component one.
 #[tokio::test(flavor = "multi_thread")]
@@ -878,7 +878,7 @@ async fn reactive_augmentation_is_accepted_and_narrows_the_stream() {
 /// Zero Q headroom must not be a loophole in the augment gate.
 ///
 /// The disjoint check runs against the component's LIVE Q envelope,
-/// composed inside `PowerAxis::try_augment`. Telemetry normalizes a
+/// composed inside `GatewayAxis::try_augment`. Telemetry normalizes a
 /// genuinely empty envelope to a present `(0, 0)` band
 /// (`VecBounds::or_zero_band`) so consumers see "zero headroom"
 /// rather than an absent bound — but the axis never applies that
@@ -1071,10 +1071,11 @@ async fn reactive_augmentation_on_a_q_less_component_is_unimplemented() {
     assert_eq!(err.code(), tonic::Code::Unimplemented, "{err:?}");
 }
 
-/// The reactive route feeds client input into `PowerAxis::augment`
-/// just like the active one, so it must inherit the same shape
-/// checks. A NaN edge is rejected rather than stored as a de-facto
-/// no-op — and the Q band stays exactly where it was.
+/// The reactive route feeds client input into
+/// `GatewayAxis::try_augment` just like the active one, so it must
+/// inherit the same shape checks. A NaN edge is rejected rather than
+/// stored as a de-facto no-op — and the Q band stays exactly where it
+/// was.
 #[tokio::test(flavor = "multi_thread")]
 async fn malformed_reactive_augmentation_is_rejected() {
     let s = TestServer::start(REACTIVE_TOPOLOGY).await;

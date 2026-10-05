@@ -2100,11 +2100,12 @@ async fn component_snapshot_inverter_knobs_and_reactive_envelope() {
 
 /// A battery inverter's own reactive capability must populate
 /// `envelope.reactive` even when its only child is a battery, which
-/// (correctly) exposes no Q bounds of its own — `reactive_bounds()`
-/// terminates at the inverter. The setpoint envelope falls back to
-/// the inverter's own band when no child reports one, so the WS-fed
-/// graduation the inspector draws is not clobbered to null on every
-/// snapshot re-fetch (every accepted setpoint).
+/// (correctly) exposes no Q bounds of its own — Q terminates at the
+/// inverter. The gateway's setpoint envelope falls back to the
+/// inverter's own band when no child reports one; returning nothing
+/// there would clobber the WS-fed graduation the inspector already
+/// draws to null on every snapshot re-fetch (every accepted setpoint)
+/// — the once-a-second flicker this test guards against.
 #[tokio::test]
 async fn component_snapshot_reactive_envelope_falls_back_to_own_bounds() {
     let cfg = config_with(

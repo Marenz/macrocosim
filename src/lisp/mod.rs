@@ -1,6 +1,7 @@
 //! Lisp glue: load the config DSL, register the `make-*` functions
-//! against a `MicrogridSite`, and act as the runtime entry point for the gRPC
-//! server (which calls into us for `set_active_setpoint` and friends).
+//! against a `MicrogridSite`, and act as the runtime entry point for
+//! the gRPC server (which reads the same sites through their
+//! gateways).
 //!
 //! The `Config` struct is intentionally thin — the simulation state
 //! lives in `MicrogridSite`, the lisp interpreter is just the configuration

@@ -23,8 +23,8 @@
 //!   scrape. Same envelope-bearing component set as setpoints.
 //! - `<id>-reactive-bounds.csv` — the Q twin of `<id>-bounds.csv`:
 //!   the live reactive-power envelope, sampled at the same pass, for
-//!   components that report one (`reactive_bounds().is_some()`) —
-//!   a different component set than the active-bounds files, since
+//!   components that report one (`bounds_of(id, Reactive)` is `Some`)
+//!   — a different component set than the active-bounds files, since
 //!   an inverter has a Q axis but the battery behind it doesn't.
 //!
 //! Each sink is a `BufWriter<File>`; `(scenario-stop-csv)` and

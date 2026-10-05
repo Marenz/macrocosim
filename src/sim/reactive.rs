@@ -1,8 +1,8 @@
 //! Inverter reactive-power capability envelope: the shape a Q axis is
 //! allowed to sit in (PF-limit, kVA-limit, or both). Pure data; cheap
-//! to copy. The per-tick state machine that drives Q through a
-//! command-delay and a ramp lives in `crate::sim::axis::PowerAxis`,
-//! which both inverters use for P and Q alike.
+//! to copy. The gateway drives Q through its delay and ramp
+//! (`crate::sim::gateway_axis::GatewayAxis`), and each inverter's
+//! `DeviceAxis` holds the output inside this envelope at the live P.
 //!
 //! Real inverters limit Q via two composable constraints:
 //!

@@ -274,8 +274,8 @@ struct MicrogridSiteInner {
     scenario_bounds_csv: RwLock<CsvSinks>,
     /// Effective-reactive-bounds CSV sinks — the Q twin of
     /// `scenario_bounds_csv`, one per component with a Q axis
-    /// (`reactive_bounds().is_some()`), sampled at the same pass.
-    /// Same lifecycle as `scenario_csv`.
+    /// (`bounds_of(id, Reactive)` is `Some`), sampled at the same
+    /// pass. Same lifecycle as `scenario_csv`.
     scenario_reactive_bounds_csv: RwLock<CsvSinks>,
     /// Directory the active (or most recent) CSV recording wrote to,
     /// so the UI can list + offer the files for download. Set by

@@ -53,11 +53,11 @@ fn bound_edge(router: &SharedSiteRouter, id: i64, edge: Edge) -> Result<f64, Err
 
 /// The outermost finite edge of a component's live reactive-power
 /// envelope on the requested side, in VAr. Collapses a multi-band
-/// envelope exactly as `bound_edge` collapses P — min over the lowers,
-/// max over the uppers. A component with no Q axis at all
-/// (`reactive_bounds()` is `None`) errors — mirrors `bound_edge`'s
-/// not-found-style shape, but names the missing axis instead of
-/// missing bounds.
+/// envelope exactly as `bound_edge` collapses P — min over the
+/// lowers, max over the uppers. A component with no Q axis at all
+/// (`bounds_of(id, Reactive)` is `None`) errors — mirrors
+/// `bound_edge`'s not-found-style shape, but names the missing axis
+/// instead of missing bounds.
 fn reactive_bound_edge(router: &SharedSiteRouter, id: i64, edge: Edge) -> Result<f64, Error> {
     let w = router.site();
     if w.get(id as u64).is_none() {
@@ -192,11 +192,11 @@ mod tests {
         assert!((p - 2000.0).abs() < 1.0, "expected +2 kW, got {p}");
     }
 
-    /// `component-reactive-power` mirrors `component-active-power` over
-    /// the Q axis; the bound queries mirror the active-bound queries
-    /// over `reactive_bounds()`. A component with no Q axis (a battery
-    /// — `reactive_bounds()` is `None`) errors on the bound query
-    /// instead of returning a bogus edge.
+    /// `component-reactive-power` mirrors `component-active-power`
+    /// over the Q axis; the bound queries mirror the active-bound
+    /// queries over `bounds_of(id, Reactive)`. A component with no Q
+    /// axis (a battery — `bounds_of(id, Reactive)` is `None`) errors
+    /// on the bound query instead of returning a bogus edge.
     #[test]
     fn reactive_queries_mirror_active() {
         let (cfg, _dir) = config_with(
@@ -234,8 +234,9 @@ mod tests {
         assert!((upper - 5000.0).abs() < 1.0, "upper {upper}");
         assert!((lower + 5000.0).abs() < 1.0, "lower {lower}");
 
-        // The battery has no Q axis: reactive_bounds() is None, so the
-        // bound query errors rather than returning a bogus edge.
+        // The battery has no Q axis: bounds_of(id, Reactive) is None,
+        // so the bound query errors rather than returning a bogus
+        // edge.
         let err = cfg.eval("(component-reactive-bound-upper 1)").unwrap_err();
         assert!(
             err.contains("no reactive envelope"),

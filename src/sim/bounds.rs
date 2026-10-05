@@ -64,7 +64,8 @@ impl VecBounds {
 
     /// The shape checks a bounds augmentation must pass: at least one
     /// band, no non-finite edge, no inverted band. The check against
-    /// the live envelope is the component's (`PowerAxis::try_augment`).
+    /// the live envelope is the component's
+    /// (`GatewayAxis::try_augment`).
     pub fn check_augmentation_shape(&self) -> Result<(), String> {
         if self.0.is_empty() {
             return Err("augmentation contains no bounds".to_string());
@@ -431,27 +432,6 @@ impl ComponentBounds {
         self.effective().contains(value)
     }
 
-    /// Gate an active-power setpoint against the effective envelope
-    /// (rated ∩ live augmentations). 0 W (the fail-safe park) is
-    /// always accepted, even when an augmentation has narrowed the
-    /// envelope to exclude it — a controller can always stop the
-    /// component. Shared by every setpoint-taking component so the
-    /// park rule has one home.
-    pub fn validate_active_setpoint(
-        &self,
-        power_w: f32,
-    ) -> Result<(), crate::sim::component::SetpointError> {
-        let envelope = self.effective();
-        if power_w != 0.0 && !envelope.contains(power_w) {
-            return Err(crate::sim::component::SetpointError::OutOfBounds {
-                value: power_w,
-                unit: "W",
-                envelope,
-            });
-        }
-        Ok(())
-    }
-
     pub fn clamp(&self, value: f32) -> f32 {
         self.effective().clamp(value)
     }
@@ -695,7 +675,7 @@ mod tests {
     /// on its own: it means "nothing live, so no constraint" OR "live
     /// augmentations that exclude each other, so nothing is legal".
     /// `has_live_augmentations` is what tells the two apart — callers
-    /// (`PowerAxis::envelope`) must fold the second case in as a real,
+    /// (`GatewayAxis::validation_envelope`) must fold the second case in as a real,
     /// if degenerate, constraint instead of skipping it.
     #[test]
     fn has_live_augmentations_separates_unconstrained_from_mutually_disjoint() {
@@ -726,29 +706,5 @@ mod tests {
         let later = t0 + chrono::Duration::seconds(120);
         assert!(cb.effective_at(later).0.is_empty());
         assert!(!cb.has_live_augmentations(later));
-    }
-
-    /// The fail-safe park: 0 W is accepted even when an augmentation
-    /// narrows the envelope to exclude it, while other out-of-envelope
-    /// values are still rejected. Pins the `power_w != 0.0` short
-    /// circuit in `validate_active_setpoint` — every setpoint-taking
-    /// component relies on it to guarantee "a controller can always
-    /// stop the component".
-    #[test]
-    fn park_zero_accepted_outside_envelope() {
-        let mut cb = ComponentBounds::rated(-100.0, 100.0);
-        cb.add_augmentation(
-            Utc::now(),
-            VecBounds::single(50.0, 100.0),
-            std::time::Duration::from_secs(60),
-        );
-        // Effective envelope is rated ∩ augmentation = [50, 100]:
-        // 0 W is outside it but must still be accepted.
-        assert!(cb.validate_active_setpoint(0.0).is_ok());
-        assert!(matches!(
-            cb.validate_active_setpoint(40.0),
-            Err(crate::sim::component::SetpointError::OutOfBounds { .. })
-        ));
-        assert!(cb.validate_active_setpoint(60.0).is_ok());
     }
 }
