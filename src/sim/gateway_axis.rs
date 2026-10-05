@@ -12,7 +12,6 @@ use chrono::{DateTime, Utc};
 
 use crate::sim::{
     bounds::{ComponentBounds, VecBounds},
-    component::SetpointError,
     ramp::{CommandDelay, Ramp},
 };
 
@@ -24,8 +23,6 @@ pub struct GatewayAxisConfig {
     pub ramp_rate_per_s: f32,
     /// Where the ramp starts: the component's `initial_value`.
     pub initial: f32,
-    /// "W" or "VAr", carried into `SetpointError::OutOfBounds`.
-    pub unit: &'static str,
 }
 
 /// Per-tick inputs `advance` needs beyond the axis's own state.
@@ -46,7 +43,6 @@ pub struct GatewayAxis {
     augs: ComponentBounds,
     delay: CommandDelay,
     ramp: Ramp,
-    unit: &'static str,
 }
 
 impl GatewayAxis {
@@ -55,7 +51,6 @@ impl GatewayAxis {
             augs: ComponentBounds::default(),
             delay: CommandDelay::new(cfg.command_delay),
             ramp: Ramp::new(cfg.ramp_rate_per_s, cfg.initial),
-            unit: cfg.unit,
         }
     }
 
@@ -72,20 +67,12 @@ impl GatewayAxis {
 
     /// NaN is refused; 0 is always accepted; any other value must lie
     /// inside the validation envelope. An empty envelope rejects
-    /// every nonzero value.
-    pub fn check(
-        &self,
-        value: f32,
-        base: &VecBounds,
-        now: DateTime<Utc>,
-    ) -> Result<(), SetpointError> {
+    /// every nonzero value. On `Err` the payload is the validation
+    /// envelope the value missed.
+    pub fn check(&self, value: f32, base: &VecBounds, now: DateTime<Utc>) -> Result<(), VecBounds> {
         let envelope = self.validation_envelope(base, now);
         if !value.is_finite() || (value != 0.0 && !envelope.contains(value)) {
-            return Err(SetpointError::OutOfBounds {
-                value,
-                unit: self.unit,
-                envelope,
-            });
+            return Err(envelope);
         }
         Ok(())
     }
@@ -223,12 +210,11 @@ mod tests {
     use crate::proto::common::metrics::Bounds;
     use crate::sim::reactive::ReactiveCapability;
 
-    fn axis(unit: &'static str) -> GatewayAxis {
+    fn axis() -> GatewayAxis {
         GatewayAxis::new(GatewayAxisConfig {
             command_delay: Duration::ZERO,
             ramp_rate_per_s: f32::INFINITY,
             initial: 0.0,
-            unit,
         })
     }
 
@@ -249,7 +235,7 @@ mod tests {
     /// base ∩ live augmentations.
     #[test]
     fn zero_is_always_accepted_and_nan_never() {
-        let mut ax = axis("W");
+        let mut ax = axis();
         let rated = VecBounds::single(-100.0, 100.0);
         let t0 = Utc::now();
         ax.try_augment(
@@ -262,10 +248,7 @@ mod tests {
         .unwrap();
         assert!(ax.check(0.0, &rated, t0).is_ok());
         assert!(ax.check(60.0, &rated, t0).is_ok());
-        assert!(matches!(
-            ax.check(40.0, &rated, t0),
-            Err(SetpointError::OutOfBounds { unit: "W", .. })
-        ));
+        assert!(ax.check(40.0, &rated, t0).is_err());
         assert!(ax.check(f32::NAN, &rated, t0).is_err());
     }
 
@@ -273,7 +256,7 @@ mod tests {
     /// narrowed by its augmentations.
     #[test]
     fn q_validation_follows_caps_and_augmentations() {
-        let mut ax = axis("VAr");
+        let mut ax = axis();
         let t0 = Utc::now();
         // At P=3000, the 5 kVA circle allows |Q| ≤ 4000.
         let base = caps_at(kva(5_000.0), 3_000.0);
@@ -291,11 +274,11 @@ mod tests {
         assert!(ax.check(0.0, &base, t0).is_ok());
     }
 
-    /// An out-of-envelope error names the value, the unit and the
-    /// envelope it missed.
+    /// An out-of-envelope error carries the envelope the value
+    /// missed.
     #[test]
-    fn out_of_bounds_error_names_the_envelope() {
-        let ax = axis("VAr");
+    fn out_of_bounds_error_carries_the_envelope() {
+        let ax = axis();
         let base = caps_at(
             ReactiveCapability {
                 pf_limit: Some(0.5),
@@ -304,22 +287,19 @@ mod tests {
             10_000.0,
         );
         match ax.check(6_000.0, &base, Utc::now()) {
-            Err(SetpointError::OutOfBounds {
-                value, envelope, ..
-            }) => {
-                assert_eq!(value, 6_000.0);
+            Err(envelope) => {
                 let b = envelope.0.first().expect("single band");
                 assert!((b.lower.unwrap() + 5_000.0).abs() < 1.0);
                 assert!((b.upper.unwrap() - 5_000.0).abs() < 1.0);
             }
-            other => panic!("expected OutOfBounds, got {other:?}"),
+            other => panic!("expected an envelope, got {other:?}"),
         }
     }
 
     /// Fully unbounded augmentations, even stacked, narrow nothing.
     #[test]
     fn stacked_unbounded_augmentations_narrow_nothing() {
-        let mut ax = axis("VAr");
+        let mut ax = axis();
         let t0 = Utc::now();
         let base = caps_at(kva(5_000.0), 3_000.0);
         let open = VecBounds::new(vec![Bounds {
@@ -339,7 +319,7 @@ mod tests {
     /// caps band that shrank away from a live augmentation.
     #[test]
     fn an_emptied_envelope_rejects_everything_but_zero() {
-        let mut ax = axis("W");
+        let mut ax = axis();
         let t0 = Utc::now();
         let rated = VecBounds::single(0.0, 100.0);
         ax.try_augment(
@@ -355,7 +335,7 @@ mod tests {
         assert!(ax.check(20.0, &narrowed, t0).is_err());
         assert!(ax.check(0.0, &narrowed, t0).is_ok());
 
-        let mut q = axis("VAr");
+        let mut q = axis();
         let at_idle = caps_at(kva(5_000.0), 0.0);
         q.try_augment(
             &at_idle,
@@ -374,7 +354,7 @@ mod tests {
     /// the refusal names the current envelope, not the empty result.
     #[test]
     fn try_augment_rejects_a_band_disjoint_with_live_augmentations() {
-        let mut ax = axis("W");
+        let mut ax = axis();
         let t0 = Utc::now();
         let rated = VecBounds::single(-10_000.0, 10_000.0);
         ax.try_augment(
@@ -405,7 +385,7 @@ mod tests {
     /// caller passes it, and the refusal names the narrowed envelope.
     #[test]
     fn try_augment_rejects_a_band_disjoint_with_the_physical_band() {
-        let mut ax = axis("W");
+        let mut ax = axis();
         let t0 = Utc::now();
         let rated = VecBounds::single(0.0, 22_000.0);
         let need = VecBounds::single(0.0, 2_000.0);
@@ -435,7 +415,7 @@ mod tests {
         );
         // Without the physical band the same disjoint request goes
         // in.
-        let mut pv = axis("W");
+        let mut pv = axis();
         assert!(
             pv.try_augment(
                 &rated,
@@ -452,7 +432,7 @@ mod tests {
     /// `drop_expired` reaps lapsed ones.
     #[test]
     fn augmented_reflects_live_augmentations_and_expiry() {
-        let mut ax = axis("W");
+        let mut ax = axis();
         let t0 = Utc::now();
         let rated = VecBounds::single(0.0, 100.0);
         assert!(!ax.augmented(t0));
@@ -478,7 +458,7 @@ mod tests {
     /// `accept` arms the value behind the gateway delay.
     #[test]
     fn accept_arms_the_value() {
-        let mut ax = axis("W");
+        let mut ax = axis();
         ax.accept(1_500.0);
         assert_eq!(ax.armed(), Some(1_500.0));
     }
@@ -488,7 +468,6 @@ mod tests {
             command_delay: delay,
             ramp_rate_per_s: rate,
             initial: 0.0,
-            unit: "W",
         })
     }
 
@@ -744,7 +723,6 @@ mod tests {
             command_delay: Duration::from_millis(100),
             ramp_rate_per_s: 1_000.0,
             initial: 0.0,
-            unit: "VAr",
         });
         let base = caps_at(kva(10_000.0), 0.0);
         let now = Utc::now();
@@ -793,7 +771,6 @@ mod tests {
             command_delay: Duration::ZERO,
             ramp_rate_per_s: 2_000.0,
             initial: -6_000.0,
-            unit: "W",
         });
         assert_eq!(ax.actual(), -6_000.0);
         let rated = VecBounds::single(-30_000.0, 0.0);

@@ -132,41 +132,6 @@ impl fmt::Display for OperationalMode {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum SetpointError {
-    /// `envelope` is the *effective* envelope (rated ∩ live
-    /// augmentations, possibly ∩ reactive cap) — not the rated
-    /// envelope. A client whose request was rejected because they
-    /// just augmented the bounds tighter needs to see the narrowed
-    /// envelope in the error, otherwise the message reads "out of
-    /// [-30000, 30000]" while the actual rejection was on the
-    /// [-10000, 10000] window they themselves set up.
-    ///
-    /// `unit` names the axis (`"W"` or `"VAr"`) so the message reads
-    /// right for both power types.
-    OutOfBounds {
-        value: f32,
-        unit: &'static str,
-        envelope: VecBounds,
-    },
-}
-
-impl fmt::Display for SetpointError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::OutOfBounds {
-                value,
-                unit,
-                envelope,
-            } => {
-                write!(f, "set-point {value} {unit} out of bounds {envelope}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for SetpointError {}
-
 /// Why an augmentation was not stored.
 #[derive(Debug)]
 pub enum AugmentError {

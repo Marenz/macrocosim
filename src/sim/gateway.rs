@@ -137,7 +137,6 @@ impl MicrogridGateway {
                         command_delay: settings.delay(axis),
                         ramp_rate_per_s: settings.ramp_rate(axis),
                         initial: c.initial_value(axis),
-                        unit: axis.unit(),
                     }),
                 );
             }
@@ -232,8 +231,12 @@ impl<'a> Gateway<'a> {
         };
         let now = self.site.now();
         let base = self.base_of(c.as_ref(), axis);
-        ax.check(value, &base, now)
-            .map_err(|e| GatewayError::OutOfEnvelope(e.to_string()))?;
+        ax.check(value, &base, now).map_err(|env| {
+            GatewayError::OutOfEnvelope(format!(
+                "set-point {value} {} out of bounds {env}",
+                axis.unit()
+            ))
+        })?;
         ax.accept(value);
         let deadline = st.lifetimes.arm(id, axis, now, lifetime);
         Ok(Applied { value, deadline })
