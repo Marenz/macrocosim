@@ -779,6 +779,80 @@ async fn drive_clear_sunlight_returns_to_weather_and_rejects_non_solar() {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        body["error"], "component 3 does not take clear_sunlight (not a solar inverter)",
+        "{body}"
+    );
+}
+
+/// Each drive field sent to a component of the wrong kind is a 400
+/// whose body names the component, the field and the kind it needs.
+/// TINY_TOPOLOGY's meter 2 takes the non-meter fields and battery 3
+/// the meter ones. `soc_pct` is pinned by
+/// `drive_soc_on_an_empty_charger_names_the_missing_ev`.
+#[tokio::test(flavor = "multi_thread")]
+async fn drive_rejects_each_field_on_the_wrong_component_kind() {
+    let s = TestServer::start(TINY_TOPOLOGY).await;
+    let client = reqwest::Client::new();
+    let cases = [
+        (
+            3,
+            serde_json::json!({"power_w": 1000.0}),
+            "component 3 does not take power_w (not a meter)",
+        ),
+        (
+            3,
+            serde_json::json!({"reactive_var": 500.0}),
+            "component 3 does not take reactive_var (not a meter)",
+        ),
+        (
+            3,
+            serde_json::json!({"power_factor": 0.9}),
+            "component 3 does not take power_factor (not a meter)",
+        ),
+        (
+            3,
+            serde_json::json!({"clear_power": true}),
+            "component 3 does not take clear_power (not a meter)",
+        ),
+        (
+            3,
+            serde_json::json!({"clear_reactive": true}),
+            "component 3 does not take clear_reactive (not a meter)",
+        ),
+        (
+            2,
+            serde_json::json!({"sunlight_pct": 40.0}),
+            "component 2 does not take sunlight_pct (not a solar inverter)",
+        ),
+        (
+            2,
+            serde_json::json!({"clear_sunlight": true}),
+            "component 2 does not take clear_sunlight (not a solar inverter)",
+        ),
+        (
+            2,
+            serde_json::json!({"steam_demand_kg_h": 40.0}),
+            "component 2 does not take steam_demand_kg_h (not a steam boiler)",
+        ),
+        (
+            2,
+            serde_json::json!({"pressure_bar": 9.0}),
+            "component 2 does not take pressure_bar (not a steam boiler)",
+        ),
+    ];
+    for (id, req, error) in cases {
+        let resp = client
+            .post(format!("{}/api/component/{id}/drive", s.ui_url))
+            .json(&req)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST, "{req}");
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], error, "{req}: {body}");
+    }
 }
 
 /// The steam boiler pool rides the loopback like the battery pool:
@@ -937,6 +1011,10 @@ async fn ev_route_reports_plug_state() {
 
     let not_charger = client.get(format!("{base}/ev/2")).send().await.unwrap();
     assert_eq!(not_charger.status(), 400);
+    assert_eq!(
+        not_charger.text().await.unwrap(),
+        "component 2 is not an EV charger"
+    );
     let missing = client.get(format!("{base}/ev/99")).send().await.unwrap();
     assert_eq!(missing.status(), 404);
 }

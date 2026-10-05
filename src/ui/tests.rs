@@ -2349,3 +2349,23 @@ async fn drive_clear_sunlight_inside_a_scenario_restores_on_stop() {
         "back to the constructed Manual 40, not left following: {after}"
     );
 }
+
+/// A steam boiler's inspector snapshot lists its demand and pressure
+/// knobs and its thermostat target.
+#[tokio::test]
+async fn component_snapshot_boiler_knobs_and_pressure_target() {
+    let cfg = config_with("(%make-steam-boiler :id 6 :target-bar 8.0)").await;
+    let (status, _) = call(cfg.clone(), post("/api/eval", "(set-boiler-demand 6 40)")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(cfg.clone(), post("/api/eval", "(set-boiler-pressure 6 9)")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = call(cfg, get("/api/component?id=6")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let knobs = v["knobs"].as_array().unwrap();
+    let names: Vec<&str> = knobs.iter().map(|k| k["knob"].as_str().unwrap()).collect();
+    assert_eq!(names, ["boiler-demand", "boiler-pressure"]);
+    assert_eq!(knobs[0]["value"], 40.0);
+    assert_eq!(knobs[1]["value"], 9.0);
+    assert_eq!(v["pressure_target_bar"], 8.0);
+}

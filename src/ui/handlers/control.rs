@@ -899,6 +899,67 @@ mod tests {
         );
     }
 
+    /// A charger whose car leaves between the drive's validation and
+    /// its write: `takes_soc_pct` still says yes, then `set_soc_pct`
+    /// finds no car. Stands in for an unplug racing the request,
+    /// which a real charger cannot be made to lose on cue.
+    struct CarLeavesMidRequest;
+
+    impl std::fmt::Display for CarLeavesMidRequest {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("car-leaves-mid-request")
+        }
+    }
+
+    impl crate::sim::component::SimulatedComponent for CarLeavesMidRequest {
+        fn id(&self) -> u64 {
+            6
+        }
+        fn category(&self) -> crate::sim::Category {
+            crate::sim::Category::EvCharger
+        }
+        fn name(&self) -> &str {
+            "car-leaves-mid-request"
+        }
+        fn stream_interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+        fn tick(&self, _: &MicrogridSite, _: chrono::DateTime<chrono::Utc>, _: Duration) {}
+        fn telemetry(&self, _: &MicrogridSite) -> crate::sim::Telemetry {
+            crate::sim::Telemetry::default()
+        }
+        fn takes_ev(&self) -> bool {
+            true
+        }
+        fn takes_soc_pct(&self) -> bool {
+            true
+        }
+        fn set_soc_pct(&self, _pct: f32) -> bool {
+            false
+        }
+        fn make_fn(&self) -> &'static str {
+            "%make-test-stub"
+        }
+        fn constructor_kwargs(&self) -> Vec<(&'static str, String)> {
+            Vec::new()
+        }
+    }
+
+    /// The one rejection the apply phase can still give: the car left
+    /// after validation passed, so the SoC write is a 409 naming the
+    /// charger.
+    #[test]
+    fn drive_soc_on_a_charger_whose_car_left_is_a_conflict() {
+        let site = MicrogridSite::new();
+        site.register(CarLeavesMidRequest);
+        let req: DriveRequest = serde_json::from_str(r#"{"soc_pct": 50.0}"#).unwrap();
+        let Err((status, Json(body))) = apply_drive(&site, 6, &req) else {
+            panic!("a SoC write the charger refused must not be a 200");
+        };
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body.error, "charger 6 has no EV plugged in");
+    }
+
     /// The typed drive route snapshots exactly like the Lisp
     /// setters do, so scenario teardown covers it too: a poke made
     /// through `POST /api/component/:id/drive` while a scenario runs
