@@ -52,8 +52,34 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::test_support::config_with;
+    use super::super::super::test_support::{assert_lenient_noop, config_with};
     use crate::sim::events::SiteEvent;
+
+    /// `set-reactive-pf-limit` on a component with no reactive
+    /// limits returns t, changes nothing, and still broadcasts.
+    #[test]
+    fn set_reactive_pf_limit_without_limits_is_a_lenient_noop() {
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 1500.0)");
+        assert_lenient_noop(
+            &cfg,
+            7,
+            "(set-reactive-pf-limit 7 0.9)",
+            Some("reactive-pf-limit"),
+        );
+    }
+
+    /// `set-reactive-apparent-va` on a component with no reactive
+    /// limits returns t, changes nothing, and still broadcasts.
+    #[test]
+    fn set_reactive_apparent_va_without_limits_is_a_lenient_noop() {
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 1500.0)");
+        assert_lenient_noop(
+            &cfg,
+            7,
+            "(set-reactive-apparent-va 7 3000.0)",
+            Some("reactive-apparent-va"),
+        );
+    }
 
     /// `(set-reactive-pf-limit id K)` broadcasts a `KnobChanged` with
     /// the clamped-active value; `k <= 0` clears the limit and the

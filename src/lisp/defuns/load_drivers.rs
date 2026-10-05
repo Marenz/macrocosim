@@ -613,7 +613,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::test_support::config_with;
+    use super::super::super::test_support::{assert_lenient_noop, config_with, err_line};
     use crate::sim::component::ReactiveReading;
     use crate::sim::events::SiteEvent;
 
@@ -837,8 +837,10 @@ mod tests {
         // Non-meter: the battery's default trait method returns
         // false, so the defun errors instead of silently no-opping.
         let (cfg2, _dir2) = config_with("(%make-battery :id 4)");
-        let err = cfg2.eval("(clear-meter-power 4)").unwrap_err();
-        assert!(err.to_string().contains("not a meter"), "{err}");
+        assert_eq!(
+            err_line(&cfg2, "(clear-meter-power 4)"),
+            "ERR InvalidArgument: clear-meter-power: component 4 is not a meter"
+        );
 
         // Unknown id errors too.
         assert!(cfg.eval("(clear-meter-power 99)").is_err());
@@ -866,8 +868,10 @@ mod tests {
         // Non-meter: same "not a meter" error branch as
         // clear-meter-power above.
         let (cfg2, _dir2) = config_with("(%make-battery :id 4)");
-        let err = cfg2.eval("(clear-meter-reactive 4)").unwrap_err();
-        assert!(err.to_string().contains("not a meter"), "{err}");
+        assert_eq!(
+            err_line(&cfg2, "(clear-meter-reactive 4)"),
+            "ERR InvalidArgument: clear-meter-reactive: component 4 is not a meter"
+        );
     }
 
     /// `(clear-meter-reactive id)` broadcasts on BOTH knob tokens: the
@@ -1118,8 +1122,11 @@ mod tests {
 
         // Non-solar: the default trait door returns false.
         let (cfg2, _dir2) = config_with("(%make-meter :id 7)");
-        let err = cfg2.eval("(clear-solar-sunlight 7)").unwrap_err();
-        assert!(err.contains("does not take a sunlight clear"), "{err}");
+        assert_eq!(
+            err_line(&cfg2, "(clear-solar-sunlight 7)"),
+            "ERR InvalidArgument: clear-solar-sunlight: component 7 does not take a \
+             sunlight clear"
+        );
 
         // Unknown id errors too.
         let err = cfg.eval("(clear-solar-sunlight 99)").unwrap_err();
@@ -1214,10 +1221,14 @@ mod tests {
     #[test]
     fn set_boiler_defuns_error_on_non_boiler() {
         let (cfg, _dir) = config_with("(%make-meter :id 7)");
-        let err = cfg.eval("(set-boiler-demand 7 40.0)").unwrap_err();
-        assert!(err.to_string().contains("not a steam boiler"), "{err}");
-        let err = cfg.eval("(set-boiler-pressure 7 9.0)").unwrap_err();
-        assert!(err.to_string().contains("not a steam boiler"), "{err}");
+        assert_eq!(
+            err_line(&cfg, "(set-boiler-demand 7 40.0)"),
+            "ERR InvalidArgument: set-boiler-demand: component 7 is not a steam boiler"
+        );
+        assert_eq!(
+            err_line(&cfg, "(set-boiler-pressure 7 9.0)"),
+            "ERR InvalidArgument: set-boiler-pressure: component 7 is not a steam boiler"
+        );
     }
 
     // ── scenario teardown: these setters/clears snapshot BEFORE they
@@ -1629,7 +1640,10 @@ mod tests {
         let (cfg, _dir) = config_with("(%make-ev-charger :id 7) (%make-meter :id 8)");
         let err = |src: &str| cfg.eval(src).unwrap_err().to_string();
         assert!(err("(plug-ev 99 'sedan)").contains("not found"));
-        assert!(err("(plug-ev 8 'sedan)").contains("not an EV charger"));
+        assert_eq!(
+            err_line(&cfg, "(plug-ev 8 'sedan)"),
+            "ERR InvalidArgument: plug-ev: component 8 is not an EV charger"
+        );
         assert!(err("(plug-ev 7 'unicorn)").contains("unknown preset"));
         assert!(err("(plug-ev 7 'sedan :phases 5)").contains("phases"));
         let soc_err = err("(plug-ev 7 'sedan :soc 120)");
@@ -1649,7 +1663,10 @@ mod tests {
             "unplugging an empty charger is a no-op, not an error"
         );
         cfg.eval("(plug-ev 7 'sedan)").unwrap();
-        assert!(err("(plug-ev 7 'van)").contains("already plugged"));
+        assert_eq!(
+            err_line(&cfg, "(plug-ev 7 'van)"),
+            "ERR InvalidArgument: plug-ev: component 7: an EV is already plugged in"
+        );
         assert!(
             cfg.eval("(set-battery-soc 8 50)").is_ok(),
             "non-chargers stay lenient"
@@ -1687,11 +1704,9 @@ mod tests {
     #[test]
     fn set_battery_soc_on_a_charger_needs_a_car() {
         let (cfg, _dir) = config_with("(%make-ev-charger :id 7)");
-        assert!(
-            cfg.eval("(set-battery-soc 7 50)")
-                .unwrap_err()
-                .to_string()
-                .contains("no EV")
+        assert_eq!(
+            err_line(&cfg, "(set-battery-soc 7 50)"),
+            "ERR InvalidArgument: set-battery-soc: charger 7 has no EV plugged in"
         );
         cfg.eval("(plug-ev 7 'sedan)").unwrap();
         cfg.eval("(set-battery-soc 7 50)").unwrap();
@@ -1777,6 +1792,98 @@ mod tests {
             )),
             "teardown restored a plug knob the scenario never displaced; saw: {seen:?}"
         );
+    }
+
+    /// `unplug-ev` on a component that is not a charger is an error
+    /// naming the component, not a quiet `nil`.
+    #[test]
+    fn unplug_ev_errors_on_a_non_charger() {
+        let (cfg, _dir) = config_with("(%make-meter :id 8)");
+        assert_eq!(
+            err_line(&cfg, "(unplug-ev 8)"),
+            "ERR InvalidArgument: unplug-ev: component 8 is not an EV charger"
+        );
+    }
+
+    /// `ev-info` answers `nil` both for a component that takes no car
+    /// and for a charger that never had one.
+    #[test]
+    fn ev_info_is_nil_without_a_car() {
+        let (cfg, _dir) = config_with("(%make-ev-charger :id 7) (%make-battery :id 4)");
+        assert_eq!(cfg.eval("(ev-info 7)").unwrap(), "nil");
+        assert_eq!(cfg.eval("(ev-info 4)").unwrap(), "nil");
+    }
+
+    // ── lenient setters: on a component of the wrong kind each one
+    // returns t, changes nothing, and still broadcasts its knob. ─────
+
+    /// `set-meter-power` on a battery, numeric and lambda.
+    #[test]
+    fn set_meter_power_on_a_non_meter_is_a_lenient_noop() {
+        let (cfg, _dir) = config_with("(%make-battery :id 4)");
+        assert_lenient_noop(&cfg, 4, "(set-meter-power 4 5000.0)", Some("meter-power"));
+        assert_lenient_noop(
+            &cfg,
+            4,
+            "(set-meter-power 4 (lambda () 42.0))",
+            Some("meter-power"),
+        );
+    }
+
+    /// `set-meter-reactive-power` on a battery, numeric and lambda.
+    #[test]
+    fn set_meter_reactive_power_on_a_non_meter_is_a_lenient_noop() {
+        let (cfg, _dir) = config_with("(%make-battery :id 4)");
+        assert_lenient_noop(
+            &cfg,
+            4,
+            "(set-meter-reactive-power 4 500.0)",
+            Some("meter-reactive-power"),
+        );
+        assert_lenient_noop(
+            &cfg,
+            4,
+            "(set-meter-reactive-power 4 (lambda () 42.0))",
+            Some("meter-reactive-power"),
+        );
+    }
+
+    /// `set-meter-power-factor` on a battery.
+    #[test]
+    fn set_meter_power_factor_on_a_non_meter_is_a_lenient_noop() {
+        let (cfg, _dir) = config_with("(%make-battery :id 4)");
+        assert_lenient_noop(
+            &cfg,
+            4,
+            "(set-meter-power-factor 4 0.8 t)",
+            Some("meter-power-factor"),
+        );
+    }
+
+    /// `set-solar-sunlight` on a meter, numeric and lambda.
+    #[test]
+    fn set_solar_sunlight_on_a_non_solar_is_a_lenient_noop() {
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 1500.0)");
+        assert_lenient_noop(
+            &cfg,
+            7,
+            "(set-solar-sunlight 7 40.0)",
+            Some("solar-sunlight"),
+        );
+        assert_lenient_noop(
+            &cfg,
+            7,
+            "(set-solar-sunlight 7 (lambda () 40.0))",
+            Some("solar-sunlight"),
+        );
+    }
+
+    /// `set-battery-soc` on a component that is neither a battery nor
+    /// a charger. The defun broadcasts no knob, so none is checked.
+    #[test]
+    fn set_battery_soc_on_a_non_battery_is_a_lenient_noop() {
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 1500.0)");
+        assert_lenient_noop(&cfg, 7, "(set-battery-soc 7 50)", None);
     }
 
     /// `(ev-presets)` prints the whole catalog, one plist per car.

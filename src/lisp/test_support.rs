@@ -58,3 +58,58 @@ pub(super) fn wrap_test_body(body: &str) -> String {
 pub(super) fn next_unique() -> u64 {
     UNIQ.fetch_add(1, Ordering::Relaxed)
 }
+
+/// The message line of a Lisp error: tulisp appends the trace
+/// (`<eval_string>:1.1-…: at …`) on the lines after it, and those
+/// positions are not part of the message a door produces.
+pub(super) fn err_line(cfg: &Config, src: &str) -> String {
+    let err = cfg
+        .eval(src)
+        .expect_err(&format!("{src} should have errored"));
+    err.lines().next().unwrap_or_default().to_string()
+}
+
+/// What a lenient setter must leave alone on a component of the
+/// wrong kind, read through methods every component has: its
+/// constructor kwargs, whether it holds a dynamic source, its power
+/// and reactive aggregates, and its telemetry. The telemetry leaves
+/// out the grid frequency, which moves on its own between reads.
+fn fingerprint(cfg: &Config, id: u64) -> String {
+    let site = cfg.site();
+    let c = site.get(id).expect("component registered");
+    format!(
+        "{:?} {} {} {} {:?}",
+        c.constructor_kwargs(),
+        c.has_unrenderable_source(),
+        c.aggregate_power_w(&site),
+        c.aggregate_reactive_var(&site),
+        crate::sim::Telemetry {
+            frequency_hz: None,
+            ..c.telemetry(&site)
+        },
+    )
+}
+
+/// Run a lenient setter against component `id` of the wrong kind:
+/// it returns `t`, leaves the component as it was, and (when `knob`
+/// is given) still broadcasts that `KnobChanged`.
+pub(super) fn assert_lenient_noop(cfg: &Config, id: u64, src: &str, knob: Option<&str>) {
+    let before = fingerprint(cfg, id);
+    let mut rx = cfg.site().subscribe_events();
+    assert_eq!(cfg.eval(src).as_deref(), Ok("t"), "{src}");
+    assert_eq!(fingerprint(cfg, id), before, "{src} changed component {id}");
+    if let Some(knob) = knob {
+        let mut seen = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            seen.push(ev);
+        }
+        assert!(
+            seen.iter().any(|ev| matches!(
+                ev,
+                crate::sim::events::SiteEvent::KnobChanged { id: i, knob: k, .. }
+                    if *i == id && *k == knob
+            )),
+            "{src}: no {knob} KnobChanged for {id}; saw: {seen:?}"
+        );
+    }
+}
