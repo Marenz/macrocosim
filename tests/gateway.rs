@@ -6,6 +6,16 @@
 
 use std::time::Duration;
 
+mod common;
+
+use common::TestServer;
+use macrocosim::proto::common::metrics::{Bounds, Metric};
+use macrocosim::proto::microgrid::microgrid_client::MicrogridClient;
+use macrocosim::proto::microgrid::{
+    AugmentElectricalComponentBoundsRequest, PowerType,
+    ReceiveElectricalComponentTelemetryStreamRequest, SetElectricalComponentPowerRequest,
+};
+
 use macrocosim::lisp::Config;
 use macrocosim::timeout_tracker::SetpointAxis;
 
@@ -349,4 +359,181 @@ fn a_standing_q_command_follows_a_narrowing_apparent_power_limit() {
     cfg.sim_run(Duration::from_secs(4), TICK);
     let q = num(&cfg, "(component-reactive-power 3)");
     assert!((q - 8_000.0).abs() < 1.0, "back to the command, got {q}");
+}
+
+/// The upper edge of the first `metric` sample from `id`'s stream
+/// that carries bounds.
+async fn streamed_upper(
+    c: &mut MicrogridClient<tonic::transport::Channel>,
+    id: u64,
+    metric: Metric,
+) -> f32 {
+    let mut stream = c
+        .receive_electrical_component_telemetry_stream(
+            ReceiveElectricalComponentTelemetryStreamRequest {
+                electrical_component_id: id,
+                filter: None,
+            },
+        )
+        .await
+        .expect("subscribe")
+        .into_inner();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Ok(Some(msg)) = stream.message().await {
+            if let Some(t) = msg.telemetry.as_ref()
+                && let Some(s) = t
+                    .metric_samples
+                    .iter()
+                    .find(|s| s.metric == metric as i32 && !s.bounds.is_empty())
+            {
+                return s.bounds.last().and_then(|b| b.upper);
+            }
+        }
+        None
+    })
+    .await
+    .expect("telemetry stream timed out")
+    .expect("a sample carrying bounds")
+}
+
+const AGREEMENT_TOPOLOGY: &str = r#"
+(%make-grid-connection-point :id 1
+  :successors (list (%make-meter :id 2
+    :successors (list
+      (%make-battery-inverter :id 4 :rated-lower -10000.0 :rated-upper 10000.0
+        :successors (list (%make-battery :id 3 :initial-soc 87.5 :soc-upper 90.0
+                                         :soc-protect-margin 5.0
+                                         :rated-lower -10000.0 :rated-upper 10000.0)))
+      (%make-steam-boiler :id 6 :demand 100.0)))))
+"#;
+
+/// gRPC telemetry, `site.bounds_of`, Lisp `component-bound-upper`,
+/// the history ring and the scenario bounds CSV report the same upper
+/// edge for a throttled battery, an augmented inverter and a boiler.
+#[tokio::test(flavor = "multi_thread")]
+async fn bounds_reads_agree_across_every_consumer() {
+    let s = TestServer::start(AGREEMENT_TOPOLOGY).await;
+    let mut c = MicrogridClient::connect(s.grpc_url.clone()).await.unwrap();
+    c.augment_electrical_component_bounds(AugmentElectricalComponentBoundsRequest {
+        electrical_component_id: 4,
+        target_metric: Metric::AcPowerActive as i32,
+        bounds: vec![Bounds {
+            lower: Some(-3000.0),
+            upper: Some(3000.0),
+        }],
+        request_lifetime: Some(600),
+    })
+    .await
+    .expect("augment ok");
+
+    let csv_dir = s.config_path().parent().unwrap().join("csv");
+    s.config
+        .eval_silent(&format!("(scenario-record-csv \"{}\")", csv_dir.display()))
+        .unwrap();
+    let site = s.config.site();
+    let now = chrono::Utc::now();
+    site.record_history_snapshot(now);
+    s.config.eval_silent("(scenario-stop-csv)").unwrap();
+
+    for (id, metric) in [
+        (3, Metric::DcPower),
+        (4, Metric::AcPowerActive),
+        (6, Metric::AcPowerActive),
+    ] {
+        let gateway = site
+            .bounds_of(id, SetpointAxis::Active)
+            .unwrap()
+            .0
+            .last()
+            .unwrap()
+            .upper
+            .unwrap();
+        let grpc = streamed_upper(&mut c, id, metric).await;
+        let lisp = num(&s.config, &format!("(component-bound-upper {id})")) as f32;
+        let history = site
+            .history_window(
+                id,
+                macrocosim::sim::history::Metric::ActivePowerUpperBoundW,
+                now - chrono::Duration::seconds(1),
+            )
+            .unwrap()
+            .last()
+            .unwrap()
+            .value;
+        let csv = std::fs::read_to_string(csv_dir.join(format!("{id}-bounds.csv"))).unwrap();
+        let csv: f32 = csv
+            .lines()
+            .last()
+            .unwrap()
+            .split(',')
+            .nth(2)
+            .unwrap()
+            .parse()
+            .unwrap();
+        for (what, v) in [
+            ("grpc", grpc),
+            ("lisp", lisp),
+            ("history", history),
+            ("csv", csv),
+        ] {
+            assert!(
+                (v - gateway).abs() < 1e-2,
+                "component {id}: {what} {v} vs gateway {gateway}"
+            );
+        }
+    }
+    let battery = site.bounds_of(3, SetpointAxis::Active).unwrap().0[0]
+        .upper
+        .unwrap();
+    assert!(
+        battery > 0.0 && battery < 10_000.0,
+        "the battery is throttled: {battery}"
+    );
+    assert_eq!(
+        site.bounds_of(4, SetpointAxis::Active).unwrap().0[0].upper,
+        Some(3000.0)
+    );
+    let boiler = site.bounds_of(6, SetpointAxis::Active).unwrap().0[0]
+        .upper
+        .unwrap();
+    assert!(
+        (boiler - 62_700.0).abs() < 1.0,
+        "the boiler advertises its need: {boiler}"
+    );
+}
+
+/// `valid_until` on a SetPower response is the gateway's deadline.
+#[tokio::test(flavor = "multi_thread")]
+async fn valid_until_is_the_gateways_deadline() {
+    let s = TestServer::start(INVERTER_AND_BATTERY).await;
+    let mut c = MicrogridClient::connect(s.grpc_url.clone()).await.unwrap();
+    let mut stream = c
+        .set_electrical_component_power(SetElectricalComponentPowerRequest {
+            electrical_component_id: 3,
+            power: 1000.0,
+            power_type: PowerType::Active as i32,
+            request_lifetime: Some(30),
+        })
+        .await
+        .expect("set-power ok")
+        .into_inner();
+    let ts = stream
+        .message()
+        .await
+        .unwrap()
+        .unwrap()
+        .valid_until_time
+        .expect("valid_until");
+    let valid_until = chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap();
+    let left = s
+        .config
+        .site()
+        .gateway()
+        .remaining_lifetime(3, SetpointAxis::Active)
+        .expect("a live lifetime");
+    let gateway_deadline = chrono::Utc::now() + chrono::Duration::from_std(left).unwrap();
+    assert!(
+        (valid_until - gateway_deadline).num_milliseconds().abs() < 1000,
+        "{valid_until} vs {gateway_deadline}"
+    );
 }
