@@ -9,6 +9,7 @@
 
 import { jumpToTopology, mgPath, notify } from "./app.js";
 import { formulaToHtml, formulaToText, parseFormula } from "./formula-ast.js";
+import { errorText } from "./http.js";
 import { readSelectedMg } from "./routing.js";
 import { isPanelOpen, makeSidePanelToggle } from "./side-panel.js";
 import { topology } from "./topology.js";
@@ -315,11 +316,10 @@ export async function refreshFormula() {
   let data;
   try {
     const res = await fetch(`${mgPath("formula")}?${params}`);
-    // The server's rejections (unknown microgrid, unknown metric) are
-    // plain-text bodies, not the JSON envelope — parsing one as JSON
-    // would bury the server's message under a syntax error.
+    // The server's rejections (unknown microgrid, unknown metric)
+    // carry no `ok` envelope, only the shared `error` body.
     if (!res.ok) {
-      const text = await res.text();
+      const text = await errorText(res);
       if (stale(seq)) return;
       showFormulaError(`${res.status}: ${text}`);
       return;

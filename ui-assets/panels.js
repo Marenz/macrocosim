@@ -4,6 +4,7 @@
 
 import { escapeHtml, mutate, notify, selectMicrogrid } from "./app.js";
 import { refreshPaletteLock } from "./editor.js";
+import { errorText } from "./http.js";
 import { publishMgFlags, readSelectedMg, reconcileSelection, renderReplMgChip } from "./routing.js";
 
 // Lowest id `/api/microgrids/create` allocates when none is asked
@@ -142,21 +143,17 @@ export const microgridsPanel = (() => {
       await refresh();
       return true;
     }
-    // The collision 409's body is JSON served as plain text, so it
-    // has to be parsed by hand; anything else (a lisp error, a
-    // missing file) is already a human-readable message.
-    const text = await res.text();
+    // A collision 409 carries `collision_id`, `managed` and
+    // `suggested_id` beside `error`; any other failure (a lisp
+    // error, a missing file) is just its message.
     if (res.status === 409) {
-      let info = null;
-      try {
-        info = JSON.parse(text);
-      } catch (_) {}
+      const info = await res.clone().json().catch(() => null);
       if (info && info.collision_id != null) {
         renderCollision(path, info);
         return false;
       }
     }
-    notify(`Load failed: ${text || `HTTP ${res.status}`}`);
+    notify(`Load failed: ${await errorText(res)}`);
     return false;
   }
 
@@ -221,7 +218,7 @@ export const microgridsPanel = (() => {
 
     async function fetchListing(dir) {
       const res = await fetch(`/api/scripts?dir=${encodeURIComponent(dir)}`);
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await errorText(res));
       return await res.json();
     }
 
@@ -946,7 +943,11 @@ export const scenariosPanel = (() => {
     updateActiveChip();
   }
 
-  const getJson = (path) => fetch(path).then((r) => r.json());
+  const getJson = async (path) => {
+    const r = await fetch(path);
+    if (!r.ok) throw new Error(await errorText(r));
+    return r.json();
+  };
   const settled = (r, fallback) => (r.status === "fulfilled" ? r.value : fallback);
 
   async function refresh() {

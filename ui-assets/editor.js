@@ -5,6 +5,7 @@
 
 import { escapeHtml, notify } from "./app.js";
 import { evalQuoted } from "./eval.js";
+import { errorText } from "./http.js";
 import { OPERATIONAL_MODES, showComponent } from "./inspect.js";
 import { makeFnFor, pasteSource } from "./paste-forms.js";
 import { READ_ONLY_TITLE, readSelectedMg, structureEditable } from "./routing.js";
@@ -54,7 +55,7 @@ export const undoMgr = (() => {
     if (!res.ok) {
       // 409 is "nothing left on that stack" or "unmanaged file" —
       // the server's own wording says which, so pass it through.
-      notify(`${cap(direction)} failed: ${(await res.text()) || `HTTP ${res.status}`}`);
+      notify(`${cap(direction)} failed: ${await errorText(res)}`);
     }
   }
   const cap = (s) => s[0].toUpperCase() + s.slice(1);

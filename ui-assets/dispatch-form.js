@@ -15,7 +15,8 @@ import { escapeHtml, mutate, notify } from "./app.js";
 import { ACCEPTS_SETPOINTS } from "./inspect.js";
 
 // The server's duration_s / recurrence interval are u32 — validate
-// here so the user gets a readable message instead of a serde 422.
+// here so the user gets a readable message instead of the server's
+// JSON deserialization error.
 const U32_MAX = 4294967295;
 
 export const dispatchForm = (() => {

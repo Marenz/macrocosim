@@ -8,6 +8,7 @@
 import { escapeHtml, inspectEl } from "./app.js";
 import { requireUplot } from "./chart-lib.js";
 import { evalQuoted, jsToLispString } from "./eval.js";
+import { errorText } from "./http.js";
 import { deadBandW, formatScaled } from "./live.js";
 import { metricsStore } from "./metrics-store.js";
 import { powerColor, reactiveColor } from "./pill.js";
@@ -1564,6 +1565,7 @@ async function renderSetpoints(id, container) {
   container.appendChild(wrap);
   try {
     const res = await fetch(`${mgPath("setpoints")}?id=${id}&window_s=600`);
+    if (!res.ok) throw new Error(await errorText(res));
     const data = await res.json();
     // Always create the list element, even when empty —
     // appendSetpointEvent appends to it on incoming WS events. A

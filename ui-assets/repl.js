@@ -5,6 +5,7 @@
 
 import { dispatchesPanel, escapeHtml, notify, setStatus } from "./app.js";
 import { pulseBar } from "./chrome.js";
+import { errorText } from "./http.js";
 import { inspectorLive, liveCharts } from "./inspect.js";
 import { metricsStore } from "./metrics-store.js";
 import {
@@ -170,7 +171,7 @@ export function setupRepl() {
     if (!res.ok) {
       // 400 carries the parse diagnostic (unbalanced parens etc.) —
       // a silent no-op Tab gives the user nothing to act on.
-      notify(await res.text());
+      notify(await errorText(res));
       return;
     }
     let formatted = await res.text();

@@ -4,6 +4,7 @@
 
 import { escapeHtml, mutate, notify } from "./app.js";
 import { evalQuoted } from "./eval.js";
+import { errorText } from "./http.js";
 import { currentMgEntry, readSelectedMg } from "./routing.js";
 import { makeSidePanelToggle } from "./side-panel.js";
 
@@ -223,6 +224,7 @@ async function renderDefaults(contentEl) {
   let data;
   try {
     const res = await fetch("/api/defaults");
+    if (!res.ok) throw new Error(await errorText(res));
     data = await res.json();
   } catch (err) {
     notify(`Defaults unavailable: ${err.message}`);

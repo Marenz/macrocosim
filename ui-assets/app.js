@@ -28,6 +28,7 @@ import {
   refreshFormula,
   setupFormulaToggle,
 } from "./formula-panel.js";
+import { errorText } from "./http.js";
 import { setupInspectorChips, showComponent } from "./inspect.js";
 import { metricsTopologyRefresh, setupMetricsPanel } from "./metrics-panel.js";
 import { microgridsPanel, scenariosPanel } from "./panels.js";
@@ -199,10 +200,7 @@ export async function mutate(method, path, body) {
     opts.body = JSON.stringify(body);
   }
   const res = await fetch(path, opts);
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(txt || `HTTP ${res.status}`);
-  }
+  if (!res.ok) throw new Error(await errorText(res));
   return res;
 }
 
