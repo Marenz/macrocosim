@@ -222,10 +222,11 @@ UI").
   the component.** The chain is gateway delay → gateway ramp → device
   delay → output. Each step the gateway targets the armed command
   (else the component's `idle_value`), clamps it to validation
-  envelope ∩ `physical_band` ∩ (battery inverter, P) its window share,
-  ramps, and never leaves the ramp outside the physical band or the
-  share — a narrowing is followed at once, a widening is climbed at
-  the ramp rate. The validation envelope is the rated band (P) or the
+  envelope ∩ `physical_band`, narrows that toward 0 by (battery
+  inverter, P) its window share without crossing 0, ramps, and never
+  leaves the ramp outside the physical band or the share — a narrowing
+  is followed at once, a widening is climbed at the ramp rate. The
+  validation envelope is the rated band (P) or the
   `ReactiveCapability` at the last measured P (Q) ∩ live
   augmentations; `:reactive-pf-limit` sets `k` in `|Q| ≤ k × |P|` — a
   ratio of apparent quantities, not true power factor. The device

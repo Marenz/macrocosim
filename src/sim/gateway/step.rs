@@ -119,7 +119,9 @@ impl Gateway<'_> {
     /// what the ramp aims for before the share, or the ramp target
     /// while the axis holds. A side where both are 0 or on the other
     /// sign pushes nothing; an axis with no healthy DC child pushes
-    /// nothing.
+    /// nothing. An axis the share then parks at 0 still pushes its
+    /// clamped target, so its neighbours' shares can leave part of
+    /// the room unused, never more than the room.
     fn window_pushes(
         &self,
         st: &GatewayState,
@@ -878,5 +880,55 @@ mod tests {
             bat.aggregate_power_w(&site).abs() < 1.0,
             "a full pack takes nothing"
         );
+    }
+
+    /// A window share that closes the charge band of a two-band
+    /// augmentation parks the charge command at 0: it never turns it
+    /// into a discharge on the augmentation's other band.
+    #[test]
+    fn a_share_below_a_gap_parks_at_zero_not_across() {
+        use crate::proto::common::metrics::Bounds;
+        let site = MicrogridSite::new();
+        site.register(tapering_battery(1, 50.0));
+        site.register(instant_inverter(2));
+        site.register(instant_inverter(3));
+        site.connect(2, 1);
+        site.connect(3, 1);
+        let gw = site.gateway();
+        let two_bands = VecBounds::new(vec![
+            Bounds {
+                lower: Some(-500.0),
+                upper: Some(-300.0),
+            },
+            Bounds {
+                lower: Some(2_000.0),
+                upper: Some(10_000.0),
+            },
+        ]);
+        gw.augment(
+            2,
+            site.run_generation(),
+            Active,
+            two_bands,
+            Duration::from_secs(600),
+        )
+        .unwrap();
+        gw.command(2, Active, 2_400.0).unwrap();
+        gw.command(3, Active, 2_500.0).unwrap();
+        site.tick_n(5, DT);
+        assert!(site.get(1).unwrap().set_soc_pct(89.0));
+        let mut outs = Vec::new();
+        for _ in 0..20 {
+            site.tick_n(1, DT);
+            let room = charge_room(&site, 1);
+            assert!(
+                room < 2_000.0,
+                "the test needs the share below the gap, got {room}"
+            );
+            outs.push(site.get(2).unwrap().aggregate_power_w(&site));
+        }
+        for a in &outs {
+            assert!(*a >= 0.0, "inverter 2 crossed to discharge: {outs:?}");
+        }
     }
 }

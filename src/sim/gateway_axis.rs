@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
+use crate::proto::common::metrics::Bounds;
 use crate::sim::{
     bounds::{ComponentBounds, VecBounds},
     ramp::{CommandDelay, Ramp},
@@ -160,12 +161,14 @@ impl GatewayAxis {
         }
     }
 
-    /// Steps 2-4 of a tick: clamp `target` to the tracking envelope
-    /// (validation ∩ physical ∩ share; 0 is never pulled to an edge
-    /// and an empty envelope parks at 0), ramp toward it, then hold
-    /// the ramp's own value inside the physical band and the share —
-    /// a narrowing is followed at once, a widening is climbed at the
-    /// ramp rate. Returns the command to hand to the component.
+    /// Steps 2-4 of a tick: clamp `target` to validation ∩ physical
+    /// (0 is never pulled to an edge and an empty envelope parks at
+    /// 0), narrow that toward 0 by the share on its own side (parking
+    /// at 0, never crossing to the other sign), ramp toward it, then
+    /// hold the ramp's own value inside the physical band and the
+    /// share — a narrowing is followed at once, a widening is climbed
+    /// at the ramp rate. Returns the command to hand to the
+    /// component.
     pub fn advance(
         &mut self,
         target: Option<f32>,
@@ -174,11 +177,25 @@ impl GatewayAxis {
         ctx: &AdvanceCtx<'_>,
     ) -> f32 {
         if let Some(v) = target {
-            let mut env = self.envelope_with_physical(ctx.base, ctx.physical, now);
+            let env = self.envelope_with_physical(ctx.base, ctx.physical, now);
+            let mut aim = env.clamp_or_park(v);
             if let Some(share) = ctx.share {
-                env = env.intersect(share);
+                // The share only narrows the aim toward 0 on its own
+                // side; with that side closed it parks at 0 rather
+                // than crossing to the other sign. The hold below
+                // uses the whole share, which always spans 0, so a
+                // reversing output still ramps through 0.
+                let (lower, upper) = if aim > 0.0 {
+                    (Some(0.0), None)
+                } else {
+                    (None, Some(0.0))
+                };
+                aim = env
+                    .intersect(share)
+                    .intersect(&VecBounds::new(vec![Bounds { lower, upper }]))
+                    .clamp_or_park(aim);
             }
-            self.ramp.set_target(env.clamp_or_park(v));
+            self.ramp.set_target(aim);
         }
         let mut actual = self.ramp.advance(dt);
         for band in [ctx.physical, ctx.share].into_iter().flatten() {
@@ -234,7 +251,6 @@ impl GatewayAxis {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::common::metrics::Bounds;
     use crate::sim::reactive::ReactiveCapability;
 
     fn axis() -> GatewayAxis {
@@ -688,6 +704,46 @@ mod tests {
         );
         assert_eq!(with_share(10_000.0), 2_500.0, "widening climbs at 1 kW/s");
         assert_eq!(ax.armed(), Some(5_000.0), "the command is kept");
+    }
+
+    /// A share that binds only the other side leaves an aim pulled
+    /// across 0 by the client's own bounds where it is; one that
+    /// closes the aim's side parks it at 0.
+    #[test]
+    fn the_share_never_moves_the_aim_across_zero() {
+        let rated = VecBounds::single(-10_000.0, 10_000.0);
+        let t0 = Utc::now();
+        let dt = Duration::from_secs(1);
+        let gap = VecBounds::new(vec![
+            Bounds {
+                lower: Some(-50.0),
+                upper: Some(-40.0),
+            },
+            Bounds {
+                lower: Some(5_000.0),
+                upper: Some(6_000.0),
+            },
+        ]);
+        let step_with = |command: f32, lower: Option<f32>, upper: Option<f32>| {
+            let mut ax = ramped(f32::INFINITY, Duration::ZERO);
+            ax.try_augment(&rated, None, t0, gap.clone(), Duration::from_secs(60))
+                .unwrap();
+            ax.accept(command);
+            let share = VecBounds::new(vec![Bounds { lower, upper }]);
+            let ctx = AdvanceCtx {
+                base: &rated,
+                physical: None,
+                share: Some(&share),
+            };
+            step(&mut ax, t0, dt, None, &ctx)
+        };
+        assert_eq!(
+            step_with(100.0, Some(-3_000.0), None),
+            -40.0,
+            "discharge only"
+        );
+        assert_eq!(step_with(5_500.0, None, Some(1_600.0)), 0.0, "charge short");
+        assert_eq!(step_with(-45.0, Some(-10.0), None), 0.0, "discharge short");
     }
 
     /// A trip snaps to 0 and clears the command unless told to keep
