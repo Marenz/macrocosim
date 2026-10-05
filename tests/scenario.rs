@@ -279,6 +279,8 @@ async fn http_scenarios_stop_endpoint_restores_a_driven_knob() {
             .site()
             .get(2)
             .unwrap()
+            .meter_drive()
+            .unwrap()
             .meter_power_reading()
             .unwrap()
             .value,
@@ -301,6 +303,8 @@ async fn http_scenarios_stop_endpoint_restores_a_driven_knob() {
         s.config
             .site()
             .get(2)
+            .unwrap()
+            .meter_drive()
             .unwrap()
             .meter_power_reading()
             .is_none(),

@@ -388,13 +388,19 @@ impl MicrogridSite {
     ) {
         match kind {
             KnobKind::MeterPower => {
-                let (value, expr) = match component.meter_power_reading() {
+                let (value, expr) = match component
+                    .meter_drive()
+                    .and_then(|m| m.meter_power_reading())
+                {
                     Some(r) => (Some(r.value), r.expr),
                     None => (None, None),
                 };
                 self.note_knob_changed(id, "meter-power", value, expr, None);
             }
-            KnobKind::MeterReactive => match component.meter_reactive_reading() {
+            KnobKind::MeterReactive => match component
+                .meter_drive()
+                .and_then(|m| m.meter_reactive_reading())
+            {
                 Some(ReactiveReading::Var(r)) => {
                     self.note_knob_changed(id, "meter-reactive-power", Some(r.value), r.expr, None);
                     self.note_knob_changed(id, "meter-power-factor", None, None, None);
@@ -605,11 +611,21 @@ mod tests {
 
         w.scenario_start("s".into(), now);
         // The scenario drives the meter WITHOUT ever snapshotting it.
-        w.get(1).unwrap().set_active_power_override(5000.0);
+        w.get(1)
+            .unwrap()
+            .meter_drive()
+            .unwrap()
+            .set_active_power_override(5000.0);
         w.scenario_stop(now, None);
 
         assert_eq!(
-            w.get(1).unwrap().meter_power_reading().unwrap().value,
+            w.get(1)
+                .unwrap()
+                .meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
             5000.0,
             "nothing was ever snapshotted this run, so stop must not touch the live value"
         );
@@ -627,13 +643,27 @@ mod tests {
 
         w.scenario_start("s2".into(), now);
         w.scenario_snapshot_knob(2, KnobKind::MeterPower); // captures 1200.0
-        w.get(2).unwrap().set_active_power_override(3000.0);
+        w.get(2)
+            .unwrap()
+            .meter_drive()
+            .unwrap()
+            .set_active_power_override(3000.0);
         w.scenario_snapshot_knob(2, KnobKind::MeterPower); // no-op: already captured
-        w.get(2).unwrap().set_active_power_override(7000.0);
+        w.get(2)
+            .unwrap()
+            .meter_drive()
+            .unwrap()
+            .set_active_power_override(7000.0);
 
         w.scenario_stop(now, None);
         assert_eq!(
-            w.get(2).unwrap().meter_power_reading().unwrap().value,
+            w.get(2)
+                .unwrap()
+                .meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
             1200.0,
             "restore must land on the FIRST snapshot, not an intermediate drive"
         );
@@ -650,10 +680,20 @@ mod tests {
 
         w.scenario_start("s3".into(), now);
         w.scenario_snapshot_knob(3, KnobKind::MeterPower);
-        w.get(3).unwrap().set_active_power_override(4000.0);
+        w.get(3)
+            .unwrap()
+            .meter_drive()
+            .unwrap()
+            .set_active_power_override(4000.0);
         w.scenario_stop(now, None);
         assert_eq!(
-            w.get(3).unwrap().meter_power_reading().unwrap().value,
+            w.get(3)
+                .unwrap()
+                .meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
             1500.0
         );
 
@@ -685,7 +725,13 @@ mod tests {
         w.scenario_stop(now, None);
 
         assert_eq!(
-            w.get(4).unwrap().meter_power_reading().unwrap().value,
+            w.get(4)
+                .unwrap()
+                .meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
             555.0,
             "the removed component's stale baseline must not restore onto the fresh one"
         );
@@ -701,7 +747,11 @@ mod tests {
 
         w.scenario_start("s5".into(), now);
         w.scenario_snapshot_knob(5, KnobKind::MeterPower);
-        w.get(5).unwrap().set_active_power_override(999.0);
+        w.get(5)
+            .unwrap()
+            .meter_drive()
+            .unwrap()
+            .set_active_power_override(999.0);
         w.reset();
 
         w.register(meter_with_power(5, 777.0));
@@ -710,7 +760,13 @@ mod tests {
         w.scenario_stop(now, None);
 
         assert_eq!(
-            w.get(5).unwrap().meter_power_reading().unwrap().value,
+            w.get(5)
+                .unwrap()
+                .meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
             777.0,
             "a pre-reset baseline must not resurrect after reset()"
         );
@@ -737,8 +793,16 @@ mod tests {
         w.scenario_start("s7".into(), now);
         w.scenario_snapshot_knob(6, KnobKind::MeterPower);
         w.scenario_snapshot_knob(6, KnobKind::MeterReactive);
-        w.get(6).unwrap().set_active_power_override(1_000.0);
-        w.get(6).unwrap().set_power_factor(0.8, true);
+        w.get(6)
+            .unwrap()
+            .meter_drive()
+            .unwrap()
+            .set_active_power_override(1_000.0);
+        w.get(6)
+            .unwrap()
+            .meter_drive()
+            .unwrap()
+            .set_power_factor(0.8, true);
 
         let mut rx = w.subscribe_events();
         w.scenario_stop(now, None);

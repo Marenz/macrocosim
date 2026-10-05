@@ -1914,6 +1914,8 @@ mod tests {
 
         let m = cfg.site().get(2).unwrap();
         let reading = m
+            .meter_drive()
+            .unwrap()
             .meter_power_reading()
             .expect("meter still has a source — the constructed :power");
         assert_eq!(
@@ -2359,6 +2361,8 @@ mod tests {
             cfg.site()
                 .get(2)
                 .unwrap()
+                .meter_drive()
+                .unwrap()
                 .meter_power_reading()
                 .unwrap()
                 .value
@@ -2465,7 +2469,14 @@ mod tests {
             .expect("scenario runs");
         assert_eq!(steps, 5);
 
-        let reading = cfg.site().get(2).unwrap().meter_power_reading().unwrap();
+        let reading = cfg
+            .site()
+            .get(2)
+            .unwrap()
+            .meter_drive()
+            .unwrap()
+            .meter_power_reading()
+            .unwrap();
         assert_eq!(
             reading.expr.as_deref(),
             Some("load-w"),

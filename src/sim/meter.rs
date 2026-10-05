@@ -6,7 +6,7 @@ use tulisp::TulispContext;
 
 use crate::sim::{
     Category, MicrogridSite, SimulatedComponent, Telemetry,
-    component::{KnobKind, KnobSnapshot, ReactiveReading, ScalarReading},
+    component::{KnobKind, KnobSnapshot, MeterDrive, ReactiveReading, ScalarReading},
     dynamic_scalar::DynamicScalar,
 };
 
@@ -266,81 +266,8 @@ impl SimulatedComponent for Meter {
         self.aggregate_reactive(site)
     }
 
-    fn set_active_power_override(&self, p: f32) -> bool {
-        self.set_fixed_power(p);
-        true
-    }
-
-    fn takes_active_power_override(&self) -> bool {
-        true
-    }
-
-    fn set_active_power_source(&self, scalar: DynamicScalar) {
-        *self.power_source.write() = Some(scalar);
-    }
-
-    fn clear_active_power_source(&self) -> bool {
-        // Hold both write guards together, acquired in the same order
-        // `has_unrenderable_source` reads them (constructed before
-        // source) — two separate statement-scoped acquisitions here
-        // would open a window where a concurrent save could observe
-        // `power_source` already cleared but `constructed_power` not
-        // yet, tearing "cleared means cleared"; matching the read
-        // order also keeps this ABBA-safe against that read pair.
-        let mut constructed = self.constructed_power.write();
-        let mut source = self.power_source.write();
-        *constructed = None;
-        *source = None;
-        true
-    }
-
-    fn set_reactive_power_override(&self, vars: f32) -> bool {
-        self.set_fixed_reactive_power(vars);
-        true
-    }
-
-    fn takes_reactive_power_override(&self) -> bool {
-        true
-    }
-
-    fn set_reactive_power_source(&self, scalar: DynamicScalar) {
-        *self.reactive_source.write() = Some(ReactiveSource::Var(scalar));
-    }
-
-    fn set_power_factor(&self, pf: f32, leading: bool) -> bool {
-        self.set_power_factor_source(pf, leading);
-        true
-    }
-
-    fn clear_reactive_power_source(&self) -> bool {
-        // Same fix as `clear_active_power_source`: both guards held
-        // together, acquired constructed-then-source to match
-        // `has_unrenderable_source`'s read order.
-        let mut constructed = self.constructed_reactive.write();
-        let mut source = self.reactive_source.write();
-        *constructed = None;
-        *source = None;
-        true
-    }
-
-    fn meter_power_reading(&self) -> Option<ScalarReading> {
-        self.power_source.read().as_ref().map(|s| ScalarReading {
-            value: s.get(),
-            expr: s.source_text(),
-        })
-    }
-
-    fn meter_reactive_reading(&self) -> Option<ReactiveReading> {
-        self.reactive_source.read().as_ref().map(|r| match r {
-            ReactiveSource::Var(s) => ReactiveReading::Var(ScalarReading {
-                value: s.get(),
-                expr: s.source_text(),
-            }),
-            ReactiveSource::PowerFactor { pf, leading } => ReactiveReading::PowerFactor {
-                pf: *pf,
-                leading: *leading,
-            },
-        })
+    fn meter_drive(&self) -> Option<&dyn MeterDrive> {
+        Some(self)
     }
 
     fn is_hidden(&self) -> bool {
@@ -454,6 +381,72 @@ impl SimulatedComponent for Meter {
             ));
         }
         kw
+    }
+}
+
+impl MeterDrive for Meter {
+    fn set_active_power_override(&self, p: f32) {
+        self.set_fixed_power(p);
+    }
+
+    fn set_active_power_source(&self, scalar: DynamicScalar) {
+        *self.power_source.write() = Some(scalar);
+    }
+
+    fn clear_active_power_source(&self) {
+        // Hold both write guards together, acquired in the same order
+        // `has_unrenderable_source` reads them (constructed before
+        // source) — two separate statement-scoped acquisitions here
+        // would open a window where a concurrent save could observe
+        // `power_source` already cleared but `constructed_power` not
+        // yet, tearing "cleared means cleared"; matching the read
+        // order also keeps this ABBA-safe against that read pair.
+        let mut constructed = self.constructed_power.write();
+        let mut source = self.power_source.write();
+        *constructed = None;
+        *source = None;
+    }
+
+    fn set_reactive_power_override(&self, vars: f32) {
+        self.set_fixed_reactive_power(vars);
+    }
+
+    fn set_reactive_power_source(&self, scalar: DynamicScalar) {
+        *self.reactive_source.write() = Some(ReactiveSource::Var(scalar));
+    }
+
+    fn set_power_factor(&self, pf: f32, leading: bool) {
+        self.set_power_factor_source(pf, leading);
+    }
+
+    fn clear_reactive_power_source(&self) {
+        // As in `clear_active_power_source`: both guards held
+        // together, acquired constructed-then-source to match
+        // `has_unrenderable_source`'s read order.
+        let mut constructed = self.constructed_reactive.write();
+        let mut source = self.reactive_source.write();
+        *constructed = None;
+        *source = None;
+    }
+
+    fn meter_power_reading(&self) -> Option<ScalarReading> {
+        self.power_source.read().as_ref().map(|s| ScalarReading {
+            value: s.get(),
+            expr: s.source_text(),
+        })
+    }
+
+    fn meter_reactive_reading(&self) -> Option<ReactiveReading> {
+        self.reactive_source.read().as_ref().map(|r| match r {
+            ReactiveSource::Var(s) => ReactiveReading::Var(ScalarReading {
+                value: s.get(),
+                expr: s.source_text(),
+            }),
+            ReactiveSource::PowerFactor { pf, leading } => ReactiveReading::PowerFactor {
+                pf: *pf,
+                leading: *leading,
+            },
+        })
     }
 }
 
@@ -713,7 +706,7 @@ mod tests {
 
         // set-meter-power collapses the source to a fresh constant
         // even if it had been dynamic.
-        m.set_active_power_override(4100.0);
+        m.meter_drive().unwrap().set_active_power_override(4100.0);
         assert!((m.aggregate_power_w(&w) - 4100.0).abs() < 1e-3);
     }
 
@@ -873,21 +866,21 @@ mod tests {
         assert!((m.aggregate_reactive_var(&w) - 6_000.0).abs() < 1.0);
 
         // Leading flips the sign.
-        assert!(m.set_power_factor(0.8, true));
+        m.meter_drive().unwrap().set_power_factor(0.8, true);
         assert!((m.aggregate_reactive_var(&w) - -6_000.0).abs() < 1.0);
 
         // Moving the P override moves Q on the next read — the PF
         // source has no cached value of its own.
-        assert!(m.set_active_power_override(4_000.0));
+        m.meter_drive().unwrap().set_active_power_override(4_000.0);
         assert!((m.aggregate_reactive_var(&w) - -3_000.0).abs() < 1.0);
 
         // Signed P: an exporting meter keeps a lagging Q on the
         // export's own sign, so the UI's sign-pair rule (same signs
         // = lagging) labels it as configured.
-        assert!(m.set_power_factor(0.8, false));
-        assert!(m.set_active_power_override(-8_000.0));
+        m.meter_drive().unwrap().set_power_factor(0.8, false);
+        m.meter_drive().unwrap().set_active_power_override(-8_000.0);
         assert!((m.aggregate_reactive_var(&w) - -6_000.0).abs() < 1.0);
-        assert!(m.set_power_factor(0.8, true));
+        m.meter_drive().unwrap().set_power_factor(0.8, true);
         assert!((m.aggregate_reactive_var(&w) - 6_000.0).abs() < 1.0);
     }
 
@@ -955,9 +948,9 @@ mod tests {
         // Overridden: reads the constant, not the child sum.
         assert!((m.aggregate_power_w(&w) - 9_000.0).abs() < 1e-3);
 
-        assert!(m.clear_active_power_source());
+        m.meter_drive().unwrap().clear_active_power_source();
         assert!((m.aggregate_power_w(&w) - 3_000.0).abs() < 1e-3);
-        assert!(m.meter_power_reading().is_none());
+        assert!(m.meter_drive().unwrap().meter_power_reading().is_none());
     }
 
     /// `clear_reactive_power_source` clears a `Var` reactive override
@@ -985,9 +978,9 @@ mod tests {
         let m = w.get(2).unwrap();
 
         assert!((m.aggregate_reactive_var(&w) - 750.0).abs() < 1e-3);
-        assert!(m.clear_reactive_power_source());
+        m.meter_drive().unwrap().clear_reactive_power_source();
         assert!((m.aggregate_reactive_var(&w) - 1_100.0).abs() < 1e-3);
-        assert!(m.meter_reactive_reading().is_none());
+        assert!(m.meter_drive().unwrap().meter_reactive_reading().is_none());
     }
 
     /// Same as above but for a `PowerFactor` reactive source — the
@@ -1019,9 +1012,9 @@ mod tests {
         let m = w.get(2).unwrap();
 
         assert!((m.aggregate_reactive_var(&w) - 6_000.0).abs() < 1.0);
-        assert!(m.clear_reactive_power_source());
+        m.meter_drive().unwrap().clear_reactive_power_source();
         assert!((m.aggregate_reactive_var(&w) - 2_200.0).abs() < 1e-3);
-        assert!(m.meter_reactive_reading().is_none());
+        assert!(m.meter_drive().unwrap().meter_reactive_reading().is_none());
     }
 
     /// A meter CONSTRUCTED with `:power` then cleared emits no
@@ -1047,7 +1040,7 @@ mod tests {
                 .join(" ")
         };
         assert!(kw(&m).contains(":power 1875.0"));
-        assert!(m.clear_active_power_source());
+        m.clear_active_power_source();
         assert!(!kw(&m).contains(":power"), "{}", kw(&m));
         assert!(!m.has_unrenderable_source());
     }
@@ -1072,17 +1065,15 @@ mod tests {
                 .join(" ")
         };
         assert!(kw(&m).contains(":reactive-power 500.0"));
-        assert!(m.clear_reactive_power_source());
+        m.clear_reactive_power_source();
         assert!(!kw(&m).contains(":reactive-power"), "{}", kw(&m));
         assert!(!m.has_unrenderable_source());
     }
 
-    /// Clearing a never-overridden meter is a no-op that still
-    /// returns `true` (a meter always "supports" clearing, even with
-    /// nothing in the slot) — distinct from the `false` a non-meter
-    /// component's default trait method returns.
+    /// Clearing a never-overridden meter is a no-op: it goes on
+    /// measuring its children.
     #[test]
-    fn clear_on_never_overridden_meter_is_a_noop_true() {
+    fn clear_on_never_overridden_meter_is_a_noop() {
         let w = MicrogridSite::new();
         let child = std::sync::Arc::new(FixedFlow {
             id: 100,
@@ -1095,8 +1086,8 @@ mod tests {
         w.connect(2, 100);
         let m = w.get(2).unwrap();
 
-        assert!(m.clear_active_power_source());
-        assert!(m.clear_reactive_power_source());
+        m.meter_drive().unwrap().clear_active_power_source();
+        m.meter_drive().unwrap().clear_reactive_power_source();
         assert!((m.aggregate_power_w(&w) - 500.0).abs() < 1e-3);
         assert!((m.aggregate_reactive_var(&w) - 50.0).abs() < 1e-3);
     }
@@ -1189,7 +1180,7 @@ mod tests {
         );
         let snap = m.snapshot_knob(KnobKind::MeterReactive).unwrap();
 
-        assert!(m.set_power_factor(0.8, true));
+        m.set_power_factor(0.8, true);
         match m.meter_reactive_reading().unwrap() {
             ReactiveReading::PowerFactor { .. } => {}
             ReactiveReading::Var(_) => panic!("expected PowerFactor after the scenario override"),

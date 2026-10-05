@@ -196,7 +196,11 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
     // Validate every field first, apply after (same contract as
     // apply_status): a request with one inapplicable field changes
     // nothing. An inapplicable stimulus is a 400, never a silent no-op.
-    if req.power_w.is_some() && !component.takes_active_power_override() {
+    // The meter drive is looked up once: the checks below reject a
+    // meter field on a non-meter, and the apply phase drives through
+    // this same reference.
+    let meter = component.meter_drive();
+    if req.power_w.is_some() && meter.is_none() {
         return Err(reject(
             StatusCode::BAD_REQUEST,
             format!("component {id} does not take power_w (not a meter)"),
@@ -220,16 +224,16 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
             },
         ));
     }
-    // reactive_var and power_factor are both Q stimuli, gated by the
-    // same predicate as set-meter-reactive-power / set-meter-power-factor
-    // in Lisp: whether the component models a reactive-power override.
-    if req.reactive_var.is_some() && !component.takes_reactive_power_override() {
+    // reactive_var and power_factor are both Q stimuli of the meter
+    // drive, the group set-meter-reactive-power /
+    // set-meter-power-factor drive in Lisp.
+    if req.reactive_var.is_some() && meter.is_none() {
         return Err(reject(
             StatusCode::BAD_REQUEST,
             format!("component {id} does not take reactive_var (not a meter)"),
         ));
     }
-    if req.power_factor.is_some() && !component.takes_reactive_power_override() {
+    if req.power_factor.is_some() && meter.is_none() {
         return Err(reject(
             StatusCode::BAD_REQUEST,
             format!("component {id} does not take power_factor (not a meter)"),
@@ -267,37 +271,16 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
             format!("component {id} does not take pressure_bar (not a steam boiler)"),
         ));
     }
-    // The clears are gated in TWO layers, deliberately.
-    //
-    // Layer 1, here: the cheap `takes_*_power_override` predicates —
-    // pure reads, no side effects, run with every other validation
-    // BEFORE the apply phase begins. This is what keeps the
-    // "reject ⇒ nothing applied" contract whole for a request carrying
-    // BOTH clears: the non-meter case is bounced before the first
-    // clear can mutate anything, so a failing second clear can't leave
-    // a successful first one applied and broadcast.
-    //
-    // Layer 2, in the apply phase: each door's own return value is
-    // still checked. Applicability genuinely IS that return value
-    // (mirroring the Lisp defun shape), and the predicates above are a
-    // different question — a future component with
-    // `takes_active_power_override` true but no clear support would
-    // pass layer 1 and must not slip through as a
-    // 200-that-did-nothing. The two layers can't drift into a silent
-    // no-op between them: whichever one is wrong, the request still
-    // 4xxs.
-    //
-    // Also pure validation: each clear is mutually exclusive with the
-    // value it would immediately undo — clearing and setting the same
-    // axis in one request is ambiguous, not a defined "set then clear"
-    // ordering.
-    if req.clear_power && !component.takes_active_power_override() {
+    // Each clear is mutually exclusive with the value it would
+    // immediately undo — clearing and setting the same axis in one
+    // request is ambiguous, not a defined "set then clear" ordering.
+    if req.clear_power && meter.is_none() {
         return Err(reject(
             StatusCode::BAD_REQUEST,
             format!("component {id} does not take clear_power (not a meter)"),
         ));
     }
-    if req.clear_reactive && !component.takes_reactive_power_override() {
+    if req.clear_reactive && meter.is_none() {
         return Err(reject(
             StatusCode::BAD_REQUEST,
             format!("component {id} does not take clear_reactive (not a meter)"),
@@ -358,10 +341,10 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
             ));
         }
     }
-    // `set_power_factor` deliberately does no range validation of its
+    // `MeterDrive::set_power_factor` does no range validation of its
     // own — this door and `set-meter-power-factor` in Lisp are the
-    // only places that enforce it, before the value ever reaches the
-    // trait door.
+    // only places that enforce it, before the value reaches the
+    // meter.
     if let Some(pf) = req.power_factor
         && !(pf > 0.0 && pf <= 1.0)
     {
@@ -370,18 +353,6 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
             format!("power_factor must be in (0.0, 1.0], got {pf}"),
         ));
     }
-    // clear_power / clear_reactive go first in the apply phase, ahead
-    // of every infallible setter below: they are the only steps here
-    // that can still reject (layer 2 of the scheme documented in the
-    // validation phase — the doors' own return values, which mirror
-    // clear-meter-power / clear-meter-reactive in Lisp). Going first
-    // means a rejection from either leaves every setter below unrun,
-    // and the layer-1 pre-gates above mean a two-clear request has
-    // already been bounced before reaching here if the component
-    // takes neither — so the only way a clear_reactive door rejects
-    // after clear_power mutated is a component whose predicates and
-    // doors genuinely disagree, i.e. a bug in that component, not a
-    // reachable client request.
     // Every mutation below is preceded by a `scenario_snapshot_knob`
     // for the knob it touches — the same first-snapshot-wins capture
     // the Lisp setters in `src/lisp/defuns/load_drivers.rs` take, with
@@ -392,24 +363,18 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
     // actually bites — a first-touch poke here can no longer be
     // mistaken for the pre-scenario baseline by a LATER scenario
     // drive of the same knob.
-    if req.clear_power {
+    if req.clear_power
+        && let Some(m) = meter
+    {
         site.scenario_snapshot_knob(id, KnobKind::MeterPower);
-        if !component.clear_active_power_source() {
-            return Err(reject(
-                StatusCode::BAD_REQUEST,
-                format!("component {id} does not take clear_power (not a meter)"),
-            ));
-        }
+        m.clear_active_power_source();
         site.note_knob_changed(id, "meter-power", None, None, None);
     }
-    if req.clear_reactive {
+    if req.clear_reactive
+        && let Some(m) = meter
+    {
         site.scenario_snapshot_knob(id, KnobKind::MeterReactive);
-        if !component.clear_reactive_power_source() {
-            return Err(reject(
-                StatusCode::BAD_REQUEST,
-                format!("component {id} does not take clear_reactive (not a meter)"),
-            ));
-        }
+        m.clear_reactive_power_source();
         // Two tokens, one slot: the inspector's power-factor input is
         // a knob of its own ("meter-power-factor"), separate from
         // "meter-reactive-power" — a PowerFactor-shaped clear must
@@ -442,13 +407,12 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
     // Lisp defuns (src/lisp/defuns/load_drivers.rs), for the same four
     // tokens — `soc_pct` isn't part of the knob vocabulary the
     // inspector reads back, so set_soc_pct gets no broadcast.
-    if let Some(watts) = req.power_w {
+    if let Some(watts) = req.power_w
+        && let Some(m) = meter
+    {
         site.scenario_snapshot_knob(id, KnobKind::MeterPower);
-        let applied = component.set_active_power_override(watts as f32);
-        debug_assert!(applied, "takes_active_power_override disagrees with setter");
-        if applied {
-            site.note_knob_changed(id, "meter-power", Some(watts as f32), None, None);
-        }
+        m.set_active_power_override(watts as f32);
+        site.note_knob_changed(id, "meter-power", Some(watts as f32), None, None);
     }
     if let Some(pct) = req.sunlight_pct {
         site.scenario_snapshot_knob(id, KnobKind::Sunlight);
@@ -477,34 +441,26 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
             ));
         }
     }
-    if let Some(vars) = req.reactive_var {
+    if let Some(vars) = req.reactive_var
+        && let Some(m) = meter
+    {
         site.scenario_snapshot_knob(id, KnobKind::MeterReactive);
-        let applied = component.set_reactive_power_override(vars as f32);
-        debug_assert!(
-            applied,
-            "takes_reactive_power_override disagrees with setter"
-        );
-        if applied {
-            site.note_knob_changed(id, "meter-reactive-power", Some(vars as f32), None, None);
-        }
+        m.set_reactive_power_override(vars as f32);
+        site.note_knob_changed(id, "meter-reactive-power", Some(vars as f32), None, None);
     }
-    if let Some(pf) = req.power_factor {
+    if let Some(pf) = req.power_factor
+        && let Some(m) = meter
+    {
         site.scenario_snapshot_knob(id, KnobKind::MeterReactive);
         let leading = req.leading.unwrap_or(false);
-        let applied = component.set_power_factor(pf as f32, leading);
-        debug_assert!(
-            applied,
-            "takes_reactive_power_override disagrees with setter"
+        m.set_power_factor(pf as f32, leading);
+        site.note_knob_changed(
+            id,
+            "meter-power-factor",
+            Some(pf as f32),
+            None,
+            Some(leading),
         );
-        if applied {
-            site.note_knob_changed(
-                id,
-                "meter-power-factor",
-                Some(pf as f32),
-                None,
-                Some(leading),
-            );
-        }
     }
     if let Some(kg_h) = req.steam_demand_kg_h {
         site.scenario_snapshot_knob(id, KnobKind::BoilerDemand);
@@ -742,11 +698,11 @@ mod tests {
         let req: DriveRequest = serde_json::from_str(r#"{"power_w": 5000.0}"#).unwrap();
         assert!(apply_drive(&site, 5, &req).is_ok());
         let meter = site.get(5).unwrap();
-        assert!(meter.meter_power_reading().is_some());
+        assert!(meter.meter_drive().unwrap().meter_power_reading().is_some());
 
         let req: DriveRequest = serde_json::from_str(r#"{"clear_power": true}"#).unwrap();
         assert!(apply_drive(&site, 5, &req).is_ok());
-        assert!(meter.meter_power_reading().is_none());
+        assert!(meter.meter_drive().unwrap().meter_power_reading().is_none());
     }
 
     /// `clear_power` and `power_w` in the same request is a 4xx
@@ -778,12 +734,10 @@ mod tests {
         assert!(apply_drive(&site, 4, &req).is_err());
     }
 
-    /// Pins clear-doors-go-first ordering: on a solar inverter (not a
-    /// meter, so `clear_active_power_source` returns false) a request
-    /// combining `sunlight_pct` with `clear_power` must reject AND
-    /// leave `sunlight_pct` untouched — the clear check runs before
-    /// the sunlight setter, so a wrongly-ordered apply phase would
-    /// otherwise let the setter run before the rejection.
+    /// On a solar inverter (no meter drive) a request combining
+    /// `sunlight_pct` with `clear_power` must reject AND leave
+    /// `sunlight_pct` untouched: the meter check runs in the
+    /// validation pass, before any setter.
     #[test]
     fn drive_clears_go_first_reject_leaves_other_fields_untouched() {
         use crate::sim::inverter::solar_inverter::{SolarInverter, SolarInverterConfig};
@@ -814,11 +768,23 @@ mod tests {
         let req: DriveRequest = serde_json::from_str(r#"{"reactive_var": 500.0}"#).unwrap();
         assert!(apply_drive(&site, 5, &req).is_ok());
         let meter = site.get(5).unwrap();
-        assert!(meter.meter_reactive_reading().is_some());
+        assert!(
+            meter
+                .meter_drive()
+                .unwrap()
+                .meter_reactive_reading()
+                .is_some()
+        );
 
         let req: DriveRequest = serde_json::from_str(r#"{"clear_reactive": true}"#).unwrap();
         assert!(apply_drive(&site, 5, &req).is_ok());
-        assert!(meter.meter_reactive_reading().is_none());
+        assert!(
+            meter
+                .meter_drive()
+                .unwrap()
+                .meter_reactive_reading()
+                .is_none()
+        );
     }
 
     /// `clear_reactive` together with `reactive_var` or `power_factor`
@@ -838,11 +804,7 @@ mod tests {
     }
 
     /// `clear_reactive` on a battery (not a meter) is a 4xx rejection —
-    /// the Q twin of `drive_rejects_clear_power_on_non_meter`. Also
-    /// pins item 2 of the follow-up review: the applicability check IS
-    /// the door's own return value now (no separate takes_* pre-check
-    /// to drift out of sync with a future component that has
-    /// `takes_reactive_power_override` but no clear support).
+    /// the Q twin of `drive_rejects_clear_power_on_non_meter`.
     #[test]
     fn drive_rejects_clear_reactive_on_non_meter() {
         let site = MicrogridSite::new();
@@ -982,16 +944,37 @@ mod tests {
         ));
         let now = chrono::Utc::now();
         let meter = site.get(5).unwrap();
-        assert_eq!(meter.meter_power_reading().unwrap().value, 1234.0);
+        assert_eq!(
+            meter
+                .meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
+            1234.0
+        );
 
         site.scenario_start("drive-poke".into(), now);
         let req: DriveRequest = serde_json::from_str(r#"{"power_w": 7777.0}"#).unwrap();
         assert!(apply_drive(&site, 5, &req).is_ok());
-        assert_eq!(meter.meter_power_reading().unwrap().value, 7777.0);
+        assert_eq!(
+            meter
+                .meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
+            7777.0
+        );
 
         site.scenario_stop(now, None);
         assert_eq!(
-            meter.meter_power_reading().unwrap().value,
+            meter
+                .meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
             1234.0,
             "a drive-route poke during a scenario must be restored by its stop"
         );

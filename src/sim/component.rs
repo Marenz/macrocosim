@@ -12,9 +12,11 @@ use crate::sim::{
 };
 
 mod controllable;
+mod knobs;
 mod reactive_limits;
 
 pub use controllable::{Controllable, GatewaySettings};
+pub use knobs::MeterDrive;
 pub use reactive_limits::ReactiveLimits;
 
 /// High-level kind of a component, mirroring the proto category enum but
@@ -363,12 +365,13 @@ pub enum KnobSnapshot {
 ///   - **Identity**: id, category, name, subtype, is_hidden.
 ///   - **Lifecycle**: stream_interval, stream_jitter_pct, tick, telemetry.
 ///   - **Capability groups**: controllable ([`Controllable`]),
-///     reactive_limits ([`ReactiveLimits`]). Each
-///     accessor answers `Some` on the components that have the group.
+///     reactive_limits ([`ReactiveLimits`]), meter_drive
+///     ([`MeterDrive`]). Each accessor answers `Some` on the
+///     components that have the group.
 ///   - **Hardware facts the gateway reads**: soc_window, soc_pct. The
 ///     Microgrid API rules themselves live in `sim::gateway`, never
 ///     here.
-///   - **Stimuli**: set_active_power_override, set_soc_pct, plug_ev,
+///   - **Stimuli**: set_soc_pct, plug_ev,
 ///     …
 ///   - **Bounds**: rated_active_bounds, rated_fuse_current.
 ///   - **Aggregation** (parent → child): aggregate_power_w,
@@ -471,6 +474,11 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         None
     }
 
+    /// A meter's driven sources, or `None`.
+    fn meter_drive(&self) -> Option<&dyn MeterDrive> {
+        None
+    }
+
     // ── hardware facts the gateway reads ─────────────────────────────
 
     /// A battery's usable SoC window (`:soc-lower`, `:soc-upper`,
@@ -484,23 +492,6 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         None
     }
 
-    /// Override the active-power value a meter publishes with a
-    /// constant. Used by `(set-meter-power id W)` when called with a
-    /// numeric argument. Returns whether the component supports the
-    /// stimulus (the typed control API rejects a `false`); the default
-    /// is an unsupported no-op.
-    fn set_active_power_override(&self, _p: f32) -> bool {
-        false
-    }
-
-    /// Whether [`Self::set_active_power_override`] applies to this
-    /// component. The typed control API checks every field of a drive
-    /// request with these predicates before applying any of them, so a
-    /// rejected request changes nothing.
-    fn takes_active_power_override(&self) -> bool {
-        false
-    }
-
     /// Teleport a battery's state of charge to `pct` (clamped to
     /// 0..=100). Lets a test arrange a precondition (a nearly-empty or
     /// nearly-full pool) without simulating hours of charging. Returns
@@ -510,9 +501,10 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         false
     }
 
-    /// Whether [`Self::set_soc_pct`] applies to this component. See
-    /// [`Self::takes_active_power_override`] for why the predicates
-    /// exist.
+    /// Whether [`Self::set_soc_pct`] applies to this component. The
+    /// typed control API checks every field of a drive request with
+    /// these predicates before applying any of them, so a rejected
+    /// request changes nothing.
     fn takes_soc_pct(&self) -> bool {
         false
     }
@@ -550,72 +542,6 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         false
     }
 
-    /// Replace the meter's `:power` source with a Lisp expression
-    /// that the scheduler's `refresh_inputs` pass re-resolves each
-    /// tick. Used by `(set-meter-power id (lambda () …))` and by
-    /// the UI when a user types a Lisp form into the `:power` input.
-    /// Default no-op for non-meter components.
-    fn set_active_power_source(&self, _scalar: DynamicScalar) {}
-
-    /// Drop the meter's active-power override, returning it to
-    /// measuring its children's aggregate — the one-way trip
-    /// `set_active_power_override` / `set_active_power_source` never
-    /// had a way back from. Also drops the construction-time
-    /// `:power` kwarg for this axis so a save/reload agrees with the
-    /// now-measuring live state instead of resurrecting the cleared
-    /// override. Returns whether the component supports the
-    /// stimulus (a meter always does, even with nothing to clear);
-    /// the default is an unsupported no-op.
-    fn clear_active_power_source(&self) -> bool {
-        false
-    }
-
-    /// Override the reactive-power value a meter publishes with a
-    /// constant. The Q twin of [`Self::set_active_power_override`].
-    /// Returns whether the component supports the stimulus; the
-    /// default is an unsupported no-op.
-    fn set_reactive_power_override(&self, _vars: f32) -> bool {
-        false
-    }
-
-    /// Whether [`Self::set_reactive_power_override`] applies to this
-    /// component. See [`Self::takes_active_power_override`] for why
-    /// the predicates exist.
-    fn takes_reactive_power_override(&self) -> bool {
-        false
-    }
-
-    /// Replace the meter's reactive-power source with a Lisp
-    /// expression re-resolved each tick. The Q twin of
-    /// [`Self::set_active_power_source`]. Default no-op for
-    /// non-meter components.
-    fn set_reactive_power_source(&self, _scalar: DynamicScalar) {}
-
-    /// Replace the meter's reactive-power source with a power-factor
-    /// derivation that tracks the meter's own live active power.
-    /// Returns whether the component supports the stimulus; the
-    /// default is an unsupported no-op.
-    ///
-    /// This trait door does NOT validate `pf`: every caller must
-    /// enforce `pf ∈ (0.0, 1.0]` itself before calling (both
-    /// `set-meter-power-factor` in Lisp and the HTTP drive op already
-    /// do), because an out-of-range factor lands silently otherwise.
-    fn set_power_factor(&self, _pf: f32, _leading: bool) -> bool {
-        false
-    }
-
-    /// Drop the meter's reactive-power override — whichever of
-    /// `Var` / `PowerFactor` is currently set — returning it to
-    /// summing its children's Q. The Q twin of
-    /// `clear_active_power_source`: same "clear means cleared" rule,
-    /// dropping the construction-time `:reactive-power` /
-    /// `:power-factor` kwarg for this axis too. Returns whether the
-    /// component supports the stimulus; the default is an
-    /// unsupported no-op.
-    fn clear_reactive_power_source(&self) -> bool {
-        false
-    }
-
     /// Update the live cloud-cover percentage on a solar inverter.
     /// Used by `(set-solar-sunlight id PCT)` with a numeric
     /// argument. Default no-op for non-solar components.
@@ -627,14 +553,14 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     }
 
     /// Whether [`Self::set_sunlight_pct`] applies to this component.
-    /// See [`Self::takes_active_power_override`] for why the
-    /// predicates exist.
+    /// See [`Self::takes_soc_pct`] for why the predicates exist.
     fn takes_sunlight_pct(&self) -> bool {
         false
     }
 
     /// Replace the solar inverter's `:sunlight%` source with a Lisp
-    /// expression. PV analogue of [`Self::set_active_power_source`];
+    /// expression. PV analogue of
+    /// [`MeterDrive::set_active_power_source`];
     /// used by `(set-solar-sunlight id (lambda () …))`. Default
     /// no-op for non-solar components.
     fn set_sunlight_source(&self, _scalar: DynamicScalar) {}
@@ -642,7 +568,7 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// Drop whatever was driving the solar inverter's `:sunlight%` —
     /// a constant poke or a Lisp expression — and return it to
     /// following the site's weather. The PV analogue of
-    /// [`Self::clear_active_power_source`]: the one-way trip
+    /// [`MeterDrive::clear_active_power_source`]: the one-way trip
     /// `set_sunlight_pct` / `set_sunlight_source` otherwise has no
     /// way back. Returns whether the component supports the stimulus
     /// (a solar inverter always does, even with nothing to clear);
@@ -681,11 +607,11 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
 
     /// Write a previously captured [`KnobSnapshot`] straight back
     /// into the component's slot(s). Mechanical, unlike
-    /// [`Self::clear_active_power_source`] /
-    /// [`Self::clear_reactive_power_source`] — those are user-intent
-    /// verbs that also drop the construction-time kwarg, which would
-    /// permanently erase a `:power` a scenario merely overrode for
-    /// its own duration.
+    /// [`MeterDrive::clear_active_power_source`] /
+    /// [`MeterDrive::clear_reactive_power_source`] — those are
+    /// user-intent verbs that also drop the construction-time kwarg,
+    /// which would permanently erase a `:power` a scenario merely
+    /// overrode for its own duration.
     ///
     /// `snap`'s variant names the knob on its own — there is one per
     /// [`KnobKind`], so a boiler-demand snapshot handed to a solar
@@ -711,25 +637,6 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     }
 
     // ── knob read-back (inspector snapshot) ──────────────────────────
-
-    /// The meter's active-power source knob, as currently configured
-    /// — a live value plus, for a dynamic (lambda / symbol) source,
-    /// the printed Lisp expression driving it (`None` for a plain
-    /// constant). Distinct from `ReactiveLimits::reactive_capability`'s PF-limit /
-    /// kVA-cap read-back: this is the `:power` input side, not the Q
-    /// envelope. `None` for components with no active-power source
-    /// knob at all (only `Meter` has one).
-    fn meter_power_reading(&self) -> Option<ScalarReading> {
-        None
-    }
-
-    /// The meter's reactive-power source knob — either a direct VAr
-    /// value (mirrors `meter_power_reading`'s shape) or a
-    /// power-factor derivation from the meter's own live P. `None`
-    /// for components with no reactive source knob configured.
-    fn meter_reactive_reading(&self) -> Option<ReactiveReading> {
-        None
-    }
 
     /// The PV inverter's cloud-cover knob — always present once a
     /// solar inverter exists (it defaults to a constant), so `None`
@@ -878,6 +785,7 @@ mod tests {
     const GROUPS: &[(&str, Has)] = &[
         ("controllable", |c| c.controllable().is_some()),
         ("reactive_limits", |c| c.reactive_limits().is_some()),
+        ("meter_drive", |c| c.meter_drive().is_some()),
     ];
 
     /// The names of the groups `c` has, in `GROUPS` order.
@@ -906,7 +814,10 @@ mod tests {
         let sec = Duration::from_secs(1);
         let rows: Vec<(Box<dyn SimulatedComponent>, &[&str])> = vec![
             (Box::new(Grid::new(1, 0, None, 0.0)), &[]),
-            (Box::new(Meter::new(2, sec, None, None, 0.0, false)), &[]),
+            (
+                Box::new(Meter::new(2, sec, None, None, 0.0, false)),
+                &["meter_drive"],
+            ),
             (Box::new(Marker::new(3, Category::Chp, 0.0)), &[]),
             (Box::new(Battery::new(4, sec, Default::default())), &[]),
             (

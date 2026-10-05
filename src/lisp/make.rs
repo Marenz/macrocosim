@@ -1520,7 +1520,7 @@ mod tests {
 
         // External setter wins; refresh becomes a no-op on the
         // collapsed constant.
-        m.set_active_power_override(7777.0);
+        m.meter_drive().unwrap().set_active_power_override(7777.0);
         m.refresh_inputs(&mut ctx);
         assert!((m.aggregate_power_w(&site) - 7777.0).abs() < 1e-3);
     }

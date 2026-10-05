@@ -57,9 +57,11 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
             w.scenario_snapshot_knob(id as u64, KnobKind::MeterPower);
             if value.numberp() {
                 let watts = f64::try_from(&value)?;
-                // Lisp keeps the historic lenient behavior: the bool is
-                // only enforced by the typed control API.
-                let _ = c.set_active_power_override(watts as f32);
+                // Lenient: a non-meter is left unchanged, and the
+                // snapshot and broadcast happen all the same.
+                if let Some(m) = c.meter_drive() {
+                    m.set_active_power_override(watts as f32);
+                }
                 w.note_knob_changed(id as u64, "meter-power", Some(watts as f32), None, None);
             } else if let Some(scalar) =
                 crate::sim::dynamic_scalar::DynamicScalar::from_lisp(&value, 0.0)
@@ -69,7 +71,9 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                 // the scalar moves into the component.
                 let printed = value.to_string();
                 let resolved_now = scalar.get();
-                c.set_active_power_source(scalar);
+                if let Some(m) = c.meter_drive() {
+                    m.set_active_power_source(scalar);
+                }
                 w.note_knob_changed(
                     id as u64,
                     "meter-power",
@@ -88,7 +92,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
 
     // Drive a meter's `:reactive-power` slot from Lisp. The Q twin of
     // set-meter-power above — same number / lambda / symbol dispatch,
-    // same lenient-bool convention (the typed control API is the
+    // equally lenient on a non-meter (the typed control API is the
     // strict door).
     let r = router.clone();
     ctx.defun(
@@ -103,9 +107,9 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
             w.scenario_snapshot_knob(id as u64, KnobKind::MeterReactive);
             if value.numberp() {
                 let vars = f64::try_from(&value)?;
-                // Lisp keeps the historic lenient behavior: the bool is
-                // only enforced by the typed control API.
-                let _ = c.set_reactive_power_override(vars as f32);
+                if let Some(m) = c.meter_drive() {
+                    m.set_reactive_power_override(vars as f32);
+                }
                 w.note_knob_changed(
                     id as u64,
                     "meter-reactive-power",
@@ -121,7 +125,9 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                 // component — same pattern as set-meter-power above.
                 let printed = value.to_string();
                 let resolved_now = scalar.get();
-                c.set_reactive_power_source(scalar);
+                if let Some(m) = c.meter_drive() {
+                    m.set_reactive_power_source(scalar);
+                }
                 w.note_knob_changed(
                     id as u64,
                     "meter-reactive-power",
@@ -139,9 +145,8 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     );
 
     // Drop a meter's active-power override, returning it to measuring
-    // its children — the one-way trip set-meter-power never had a way
-    // back from. Gated on the trait door itself: `false` means "not a
-    // meter" (a meter always returns true, even with nothing set).
+    // its children — the way back from set-meter-power. Strict: a
+    // component without a meter drive is an error.
     let r = router.clone();
     ctx.defun("clear-meter-power", move |id: i64| -> Result<bool, Error> {
         let w = r.site();
@@ -151,11 +156,12 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
             )));
         };
         w.scenario_snapshot_knob(id as u64, KnobKind::MeterPower);
-        if !c.clear_active_power_source() {
+        let Some(m) = c.meter_drive() else {
             return Err(Error::invalid_argument(format!(
                 "clear-meter-power: component {id} is not a meter"
             )));
-        }
+        };
+        m.clear_active_power_source();
         w.note_knob_changed(id as u64, "meter-power", None, None, None);
         Ok(true)
     });
@@ -174,11 +180,12 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                 )));
             };
             w.scenario_snapshot_knob(id as u64, KnobKind::MeterReactive);
-            if !c.clear_reactive_power_source() {
+            let Some(m) = c.meter_drive() else {
                 return Err(Error::invalid_argument(format!(
                     "clear-meter-reactive: component {id} is not a meter"
                 )));
-            }
+            };
+            m.clear_reactive_power_source();
             // Two tokens, one slot: the inspector's power-factor input
             // is a knob of its own ("meter-power-factor"), separate
             // from "meter-reactive-power" — a PowerFactor-shaped clear
@@ -191,9 +198,9 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     );
 
     // Hold a meter's reactive power at a power factor that tracks its
-    // own live active power. PF is deliberately validated HERE (and
-    // again by the typed control API) rather than in the trait door:
-    // `set_power_factor` does no range checking of its own, so this
+    // own live active power. PF is validated here and again by the
+    // typed control API, not in the meter:
+    // `MeterDrive::set_power_factor` does no range checking, so this
     // defun and the drive op are the only doors that enforce
     // `0.0 < pf <= 1.0` before the value reaches the meter.
     let r = router.clone();
@@ -212,10 +219,12 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                 )));
             };
             w.scenario_snapshot_knob(id as u64, KnobKind::MeterReactive);
-            // Lisp keeps the historic lenient behavior: a non-meter is a
-            // no-op here, only the typed control API rejects it.
+            // Lenient: a non-meter is left unchanged; only the typed
+            // control API rejects it.
             let leading = leading.unwrap_or(false);
-            let _ = c.set_power_factor(pf as f32, leading);
+            if let Some(m) = c.meter_drive() {
+                m.set_power_factor(pf as f32, leading);
+            }
             w.note_knob_changed(
                 id as u64,
                 "meter-power-factor",
@@ -828,14 +837,13 @@ mod tests {
         cfg.eval("(set-meter-power 7 5000.0)").unwrap();
         let site = cfg.site();
         let m = site.get(7).unwrap();
-        assert!(m.meter_power_reading().is_some());
+        assert!(m.meter_drive().unwrap().meter_power_reading().is_some());
 
         cfg.eval("(clear-meter-power 7)").unwrap();
-        assert!(m.meter_power_reading().is_none());
+        assert!(m.meter_drive().unwrap().meter_power_reading().is_none());
         assert_eq!(m.aggregate_power_w(&site), 0.0);
 
-        // Non-meter: the battery's default trait method returns
-        // false, so the defun errors instead of silently no-opping.
+        // Non-meter: no meter drive, so the clear errors.
         let (cfg2, _dir2) = config_with("(%make-battery :id 4)");
         assert_eq!(
             err_line(&cfg2, "(clear-meter-power 4)"),
@@ -856,10 +864,10 @@ mod tests {
         cfg.eval("(set-meter-reactive-power 7 500.0)").unwrap();
         let site = cfg.site();
         let m = site.get(7).unwrap();
-        assert!(m.meter_reactive_reading().is_some());
+        assert!(m.meter_drive().unwrap().meter_reactive_reading().is_some());
 
         cfg.eval("(clear-meter-reactive 7)").unwrap();
-        assert!(m.meter_reactive_reading().is_none());
+        assert!(m.meter_drive().unwrap().meter_reactive_reading().is_none());
         assert_eq!(m.aggregate_reactive_var(&site), 0.0);
 
         let err = cfg.eval("(clear-meter-reactive 99)").unwrap_err();
@@ -1044,13 +1052,23 @@ mod tests {
         cfg.eval("(set-meter-power 7 1500)").unwrap();
         let site = cfg.site();
         let c = site.get(7).unwrap();
-        let r = c.meter_power_reading().expect("reading");
+        let r = c
+            .meter_drive()
+            .unwrap()
+            .meter_power_reading()
+            .expect("reading");
         assert_eq!(r.value, 1500.0);
         assert_eq!(r.expr, None);
 
         cfg.eval("(set-meter-power 7 (lambda () 25))").unwrap();
         cfg.refresh_once();
-        let r = site.get(7).unwrap().meter_power_reading().expect("reading");
+        let r = site
+            .get(7)
+            .unwrap()
+            .meter_drive()
+            .unwrap()
+            .meter_power_reading()
+            .expect("reading");
         assert_eq!(r.value, 25.0);
         // An unquoted lambda evaluates to a compiled function before
         // `DynamicScalar::from_lisp` ever sees it, so it routes
@@ -1072,7 +1090,13 @@ mod tests {
         cfg.eval("(set-meter-power 7 1000)").unwrap();
         cfg.eval("(set-meter-power-factor 7 0.9 t)").unwrap();
         let site = cfg.site();
-        match site.get(7).unwrap().meter_reactive_reading() {
+        match site
+            .get(7)
+            .unwrap()
+            .meter_drive()
+            .unwrap()
+            .meter_reactive_reading()
+        {
             Some(ReactiveReading::PowerFactor { pf, leading }) => {
                 assert!((pf - 0.9).abs() < 1e-6);
                 assert!(leading);
@@ -1339,15 +1363,18 @@ mod tests {
     fn scenario_stop_restores_meter_with_no_baseline_to_measuring() {
         let (cfg, _dir) = config_with("(%make-meter :id 7)");
         let m = cfg.site().get(7).unwrap();
-        assert!(m.meter_power_reading().is_none(), "starts measuring");
+        assert!(
+            m.meter_drive().unwrap().meter_power_reading().is_none(),
+            "starts measuring"
+        );
 
         cfg.eval("(scenario-start \"m-measuring\")").unwrap();
         cfg.eval("(set-meter-power 7 5000.0)").unwrap();
-        assert!(m.meter_power_reading().is_some());
+        assert!(m.meter_drive().unwrap().meter_power_reading().is_some());
 
         cfg.eval("(scenario-stop)").unwrap();
         assert!(
-            m.meter_power_reading().is_none(),
+            m.meter_drive().unwrap().meter_power_reading().is_none(),
             "meter must return to measuring, not stay at the scenario's driven value"
         );
     }
@@ -1362,15 +1389,36 @@ mod tests {
     fn scenario_stop_restores_constructed_meter_power_and_kwarg() {
         let (cfg, _dir) = config_with("(%make-meter :id 7 :power 5000.0)");
         let m = cfg.site().get(7).unwrap();
-        assert_eq!(m.meter_power_reading().unwrap().value, 5000.0);
+        assert_eq!(
+            m.meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
+            5000.0
+        );
 
         cfg.eval("(scenario-start \"m-constructed\")").unwrap();
         cfg.eval("(set-meter-power 7 (lambda () 42.0))").unwrap();
         cfg.refresh_once();
-        assert_eq!(m.meter_power_reading().unwrap().value, 42.0);
+        assert_eq!(
+            m.meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
+            42.0
+        );
 
         cfg.eval("(scenario-stop)").unwrap();
-        assert_eq!(m.meter_power_reading().unwrap().value, 5000.0);
+        assert_eq!(
+            m.meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
+            5000.0
+        );
         assert!(!m.has_unrenderable_source());
         let kw = m
             .constructor_kwargs()
@@ -1390,20 +1438,20 @@ mod tests {
         let (cfg, _dir) = config_with("(%make-meter :id 7 :power 8000.0)");
         cfg.eval("(set-meter-reactive-power 7 500.0)").unwrap();
         let m = cfg.site().get(7).unwrap();
-        match m.meter_reactive_reading().unwrap() {
+        match m.meter_drive().unwrap().meter_reactive_reading().unwrap() {
             ReactiveReading::Var(r) => assert_eq!(r.value, 500.0),
             ReactiveReading::PowerFactor { .. } => panic!("expected baseline Var"),
         }
 
         cfg.eval("(scenario-start \"pf\")").unwrap();
         cfg.eval("(set-meter-power-factor 7 0.8 t)").unwrap();
-        match m.meter_reactive_reading().unwrap() {
+        match m.meter_drive().unwrap().meter_reactive_reading().unwrap() {
             ReactiveReading::PowerFactor { .. } => {}
             ReactiveReading::Var(_) => panic!("expected PowerFactor after the scenario drive"),
         }
 
         cfg.eval("(scenario-stop)").unwrap();
-        match m.meter_reactive_reading().unwrap() {
+        match m.meter_drive().unwrap().meter_reactive_reading().unwrap() {
             ReactiveReading::Var(r) => assert_eq!(r.value, 500.0),
             ReactiveReading::PowerFactor { .. } => panic!("expected Var restored"),
         }
@@ -1424,11 +1472,22 @@ mod tests {
         cfg.eval("(scenario-start \"first-wins\")").unwrap();
         cfg.eval("(set-meter-power 7 3000.0)").unwrap(); // captures the 1200.0 baseline
         cfg.eval("(set-meter-power 7 7000.0)").unwrap(); // a second direct drive — no-op on the baseline
-        assert_eq!(m.meter_power_reading().unwrap().value, 7000.0);
+        assert_eq!(
+            m.meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
+            7000.0
+        );
 
         cfg.eval("(scenario-stop)").unwrap();
         assert_eq!(
-            m.meter_power_reading().unwrap().value,
+            m.meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
             1200.0,
             "restore must land on the FIRST pre-scenario value, not an intermediate drive"
         );
@@ -1446,17 +1505,35 @@ mod tests {
         cfg.eval("(scenario-start \"idempotent\")").unwrap();
         cfg.eval("(set-meter-power 7 4000.0)").unwrap();
         cfg.eval("(scenario-stop)").unwrap();
-        assert_eq!(m.meter_power_reading().unwrap().value, 1500.0);
+        assert_eq!(
+            m.meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
+            1500.0
+        );
 
         // A manual poke after stop: nothing tracks it anymore, so it
         // just sticks.
         cfg.eval("(set-meter-power 7 9999.0)").unwrap();
-        assert_eq!(m.meter_power_reading().unwrap().value, 9999.0);
+        assert_eq!(
+            m.meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
+            9999.0
+        );
 
         // A second stop must not disturb it.
         cfg.eval("(scenario-stop)").unwrap();
         assert_eq!(
-            m.meter_power_reading().unwrap().value,
+            m.meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
             9999.0,
             "second stop must be a no-op — it must not resurrect a pre-scenario value \
              over a later manual poke"
@@ -1490,7 +1567,7 @@ mod tests {
         cfg.eval("(scenario-start \"clear-p\")").unwrap();
         cfg.eval("(clear-meter-power 7)").unwrap();
         assert!(
-            m.meter_power_reading().is_none(),
+            m.meter_drive().unwrap().meter_power_reading().is_none(),
             "the clear must really clear while the scenario runs"
         );
         assert!(
@@ -1500,7 +1577,14 @@ mod tests {
         );
 
         cfg.eval("(scenario-stop)").unwrap();
-        assert_eq!(m.meter_power_reading().unwrap().value, 5000.0);
+        assert_eq!(
+            m.meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
+            5000.0
+        );
         assert!(
             kwargs().contains(":power 5000"),
             "the constructed kwarg must come back, not just the live source: {}",
@@ -1529,11 +1613,11 @@ mod tests {
 
         cfg.eval("(scenario-start \"clear-q\")").unwrap();
         cfg.eval("(clear-meter-reactive 7)").unwrap();
-        assert!(m.meter_reactive_reading().is_none());
+        assert!(m.meter_drive().unwrap().meter_reactive_reading().is_none());
         assert!(!kwargs().contains(":reactive-power"), "{}", kwargs());
 
         cfg.eval("(scenario-stop)").unwrap();
-        match m.meter_reactive_reading().unwrap() {
+        match m.meter_drive().unwrap().meter_reactive_reading().unwrap() {
             ReactiveReading::Var(r) => assert_eq!(r.value, 500.0),
             ReactiveReading::PowerFactor { .. } => panic!("expected the constructed Var back"),
         }
@@ -1569,11 +1653,11 @@ mod tests {
 
         cfg.eval("(scenario-start \"clear-pf\")").unwrap();
         cfg.eval("(clear-meter-reactive 7)").unwrap();
-        assert!(m.meter_reactive_reading().is_none());
+        assert!(m.meter_drive().unwrap().meter_reactive_reading().is_none());
         assert!(!kwargs().contains(":power-factor"), "{}", kwargs());
 
         cfg.eval("(scenario-stop)").unwrap();
-        match m.meter_reactive_reading().unwrap() {
+        match m.meter_drive().unwrap().meter_reactive_reading().unwrap() {
             ReactiveReading::PowerFactor { pf, leading } => {
                 assert_eq!(pf, 0.8);
                 assert!(leading, "the leading flag is part of the constructed pair");

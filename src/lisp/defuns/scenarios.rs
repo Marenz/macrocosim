@@ -1123,13 +1123,24 @@ mod tests {
 
         cfg.eval("(scenario-start \"a\")").unwrap();
         cfg.eval("(set-meter-power 7 9000.0)").unwrap();
-        assert_eq!(m.meter_power_reading().unwrap().value, 9000.0);
+        assert_eq!(
+            m.meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
+            9000.0
+        );
 
         // B starts with A still running, and with no (scenario-stop)
         // of our own in between.
         cfg.eval("(scenario-start \"b\")").unwrap();
         assert_eq!(
-            m.meter_power_reading().unwrap().value,
+            m.meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
             1234.0,
             "starting B must restore A's pre-scenario :power, not strand it"
         );
@@ -1142,7 +1153,14 @@ mod tests {
 
         // B drove nothing, so its own stop leaves A's restored value.
         cfg.eval("(scenario-stop)").unwrap();
-        assert_eq!(m.meter_power_reading().unwrap().value, 1234.0);
+        assert_eq!(
+            m.meter_drive()
+                .unwrap()
+                .meter_power_reading()
+                .unwrap()
+                .value,
+            1234.0
+        );
     }
 
     /// `(define-scenario)` parses the unified model into the registry:

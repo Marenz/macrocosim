@@ -128,10 +128,10 @@ fn knobs_for(c: &dyn crate::sim::SimulatedComponent) -> Vec<KnobState> {
     let mut knobs = Vec::new();
     match c.category() {
         Category::Meter => {
-            if let Some(r) = c.meter_power_reading() {
+            if let Some(r) = c.meter_drive().and_then(|m| m.meter_power_reading()) {
                 knobs.push(scalar_knob("meter-power", r));
             }
-            match c.meter_reactive_reading() {
+            match c.meter_drive().and_then(|m| m.meter_reactive_reading()) {
                 Some(ReactiveReading::Var(r)) => knobs.push(scalar_knob("meter-reactive-power", r)),
                 Some(ReactiveReading::PowerFactor { pf, leading }) => {
                     knobs.push(knob("meter-power-factor", Some(pf), None, Some(leading)));
