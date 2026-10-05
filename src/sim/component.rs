@@ -464,7 +464,7 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         self.telemetry(site).active_power_w
     }
 
-    // ── capability groups ────────────────────────────────────────────
+    // ── capabilities ───────────────────────────────────────────────
 
     /// The gateway-driven side of this component: `Some` when it
     /// takes a command on at least one axis. The gateway owns axes
@@ -642,12 +642,12 @@ mod tests {
     };
     use crate::timeout_tracker::SetpointAxis;
 
-    /// Whether a component answers `Some` from one group accessor.
+    /// Whether a component answers `Some` from one capability
+    /// accessor.
     type Has = fn(&dyn SimulatedComponent) -> bool;
 
-    /// Every capability-group accessor on `SimulatedComponent`, by
-    /// group name.
-    const GROUPS: &[(&str, Has)] = &[
+    /// Every capability accessor on `SimulatedComponent`, by name.
+    const CAPABILITIES: &[(&str, Has)] = &[
         ("controllable", |c| c.controllable().is_some()),
         ("reactive_limits", |c| c.reactive_limits().is_some()),
         ("meter_drive", |c| c.meter_drive().is_some()),
@@ -657,9 +657,10 @@ mod tests {
         ("dc_storage", |c| c.dc_storage().is_some()),
     ];
 
-    /// The names of the groups `c` has, in `GROUPS` order.
-    fn groups_of(c: &dyn SimulatedComponent) -> Vec<&'static str> {
-        GROUPS
+    /// The names of the capabilities `c` has, in `CAPABILITIES`
+    /// order.
+    fn capabilities_of(c: &dyn SimulatedComponent) -> Vec<&'static str> {
+        CAPABILITIES
             .iter()
             .filter(|(_, has)| has(c))
             .map(|(name, _)| *name)
@@ -676,8 +677,8 @@ mod tests {
     }
 
     /// Each component answers `Some` from the accessors of exactly
-    /// the groups it implements. A row lists its groups in `GROUPS`
-    /// order.
+    /// the capabilities it implements. A row lists them in
+    /// `CAPABILITIES` order.
     #[test]
     fn capability_table() {
         let sec = Duration::from_secs(1);
@@ -712,7 +713,7 @@ mod tests {
             (Box::new(Pq::new()), &["controllable", "reactive_limits"]),
         ];
         for (c, want) in &rows {
-            assert_eq!(groups_of(c.as_ref()), *want, "{c}");
+            assert_eq!(capabilities_of(c.as_ref()), *want, "{c}");
             assert_reactive_axis_has_limits(c.as_ref());
         }
     }

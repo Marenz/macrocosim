@@ -867,7 +867,7 @@ mod tests {
     /// `(clear-meter-reactive id)` clears whichever reactive state is
     /// set — a `Var` override here — restoring the children sum. The
     /// same defun also clears a `PowerFactor` state (one slot, both
-    /// shapes route through the same trait door).
+    /// shapes go through the same `MeterDrive` method).
     #[test]
     fn clear_meter_reactive_restores_measuring() {
         let (cfg, _dir) = config_with("(%make-meter :id 7)");
@@ -1029,8 +1029,9 @@ mod tests {
         cfg.eval("(set-meter-power-factor 7 0.8 t)").unwrap();
         assert!((m.aggregate_reactive_var(&cfg.site()) - -6_000.0).abs() < 1.0);
 
-        // Out of (0.0, 1.0] errors, naming the range, and never reaches
-        // the trait door (set_power_factor does no validation itself).
+        // Out of (0.0, 1.0] errors, naming the range, and never
+        // reaches `MeterDrive::set_power_factor` (which does no
+        // validation itself).
         let err = cfg.eval("(set-meter-power-factor 7 1.5)").unwrap_err();
         assert!(err.to_string().contains("(0.0, 1.0]"), "{err}");
         let err = cfg.eval("(set-meter-power-factor 7 0.0)").unwrap_err();

@@ -756,7 +756,7 @@ mod tests {
     /// `sunlight_pct` untouched: the meter check runs in the
     /// validation pass, before any setter.
     #[test]
-    fn drive_clears_go_first_reject_leaves_other_fields_untouched() {
+    fn drive_clear_power_on_a_non_meter_leaves_other_fields_untouched() {
         use crate::sim::inverter::solar_inverter::{SolarInverter, SolarInverterConfig};
 
         let site = MicrogridSite::new();
