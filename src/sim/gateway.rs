@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    AugmentError, MicrogridSite, SetpointError, SimulatedComponent,
+    AugmentError, MicrogridSite, SimulatedComponent,
     bounds::VecBounds,
     gateway_axis::{GatewayAxis, GatewayAxisConfig},
 };
@@ -65,15 +65,6 @@ pub enum GatewayError {
     OutOfEnvelope(String),
     /// The site was reset between the lookup and the command.
     SiteReset,
-}
-
-impl GatewayError {
-    fn from_setpoint(id: u64, axis: SetpointAxis, e: SetpointError) -> Self {
-        match e {
-            SetpointError::Unsupported => Self::NoAxis { id, axis },
-            e @ SetpointError::OutOfBounds { .. } => Self::OutOfEnvelope(e.to_string()),
-        }
-    }
 }
 
 impl fmt::Display for GatewayError {
@@ -236,24 +227,17 @@ impl<'a> Gateway<'a> {
             }
             Mode::Clamp => clamp_into(value, self.setpoint_envelope_locked(&st, id, axis)),
         };
+        let Some(ax) = st.axes.get(&(id, axis)) else {
+            return Err(GatewayError::NoAxis { id, axis });
+        };
         let now = self.site.now();
-        if let Some(ax) = st.axes.get(&(id, axis)) {
-            let base = self.base_of(c.as_ref(), axis);
-            ax.check(value, &base, now)
-                .map_err(|e| GatewayError::from_setpoint(id, axis, e))?;
-            let deadline = st.lifetimes.actuate_and_arm(id, axis, now, lifetime, || {
-                ax.accept(value);
-                Ok::<(), GatewayError>(())
-            })?;
-            return Ok(Applied { value, deadline });
-        }
-        let deadline = st
-            .lifetimes
-            .actuate_and_arm(id, axis, now, lifetime, || match axis {
-                SetpointAxis::Active => c.set_active_setpoint(value),
-                SetpointAxis::Reactive => c.set_reactive_setpoint(value),
-            })
-            .map_err(|e| GatewayError::from_setpoint(id, axis, e))?;
+        let base = self.base_of(c.as_ref(), axis);
+        ax.check(value, &base, now)
+            .map_err(|e| GatewayError::OutOfEnvelope(e.to_string()))?;
+        let deadline = st.lifetimes.actuate_and_arm(id, axis, now, lifetime, || {
+            ax.accept(value);
+            Ok::<(), GatewayError>(())
+        })?;
         Ok(Applied { value, deadline })
     }
 
@@ -273,23 +257,22 @@ impl<'a> Gateway<'a> {
             return Err(AugmentError::SiteReset);
         }
         let c = self.site.get(id).ok_or(AugmentError::NotFound(id))?;
+        bounds
+            .check_augmentation_shape()
+            .map_err(AugmentError::Malformed)?;
         let now = self.site.now();
-        match st.axes.get_mut(&(id, axis)) {
-            Some(ax) => {
-                bounds
-                    .check_augmentation_shape()
-                    .map_err(AugmentError::Malformed)?;
-                let base = self.base_of(c.as_ref(), axis);
-                let physical = if c.augment_checks_physical_band(axis) {
-                    c.physical_band(axis, self.site.physics_tick())
-                } else {
-                    None
-                };
-                ax.try_augment(&base, physical.as_ref(), now, bounds, lifetime)
-                    .map_err(AugmentError::Disjoint)?;
-            }
-            None => c.try_augment_bounds(axis, now, bounds, lifetime)?,
-        }
+        let base = self.base_of(c.as_ref(), axis);
+        let physical = if c.augment_checks_physical_band(axis) {
+            c.physical_band(axis, self.site.physics_tick())
+        } else {
+            None
+        };
+        let ax = st
+            .axes
+            .get_mut(&(id, axis))
+            .ok_or(AugmentError::Unsupported)?;
+        ax.try_augment(&base, physical.as_ref(), now, bounds, lifetime)
+            .map_err(AugmentError::Disjoint)?;
         Ok(deadline_after(now, lifetime))
     }
 
@@ -297,12 +280,8 @@ impl<'a> Gateway<'a> {
     pub fn reset(&self, id: u64, axis: SetpointAxis) {
         let st = self.gw.state.lock();
         st.lifetimes.remove(id, axis);
-        let Some(c) = self.site.get(id) else {
-            return;
-        };
-        match st.axes.get(&(id, axis)) {
-            Some(ax) => ax.reset(c.park_value(axis)),
-            None => c.reset_setpoint_axis(axis),
+        if let (Some(ax), Some(c)) = (st.axes.get(&(id, axis)), self.site.get(id)) {
+            ax.reset(c.park_value(axis));
         }
     }
 
@@ -313,25 +292,14 @@ impl<'a> Gateway<'a> {
         st.lifetimes.remaining(id, axis, self.site.now())
     }
 
-    /// Expire every lifetime at or before `now` and reset its axis.
-    pub(crate) fn expire(&self, now: DateTime<Utc>) {
-        let st = self.gw.state.lock();
-        let expired = self.expire_locked(&st, now);
-        drop(st);
-        log_expired(&expired);
-    }
-
-    /// Expire every lifetime at or before `now`: an owned axis ramps to
-    /// its park value, a façade one is reset through the component.
-    /// Returns what expired, for logging once the lock is released.
+    /// Expire every lifetime at or before `now`: its axis ramps to
+    /// the component's park value. Returns what expired, for logging
+    /// once the lock is released.
     fn expire_locked(&self, st: &GatewayState, now: DateTime<Utc>) -> Vec<(u64, SetpointAxis)> {
         let mut expired = Vec::new();
         st.lifetimes.reset_expired_with(now, |id, axis| {
-            if let Some(c) = self.site.get(id) {
-                match st.axes.get(&(id, axis)) {
-                    Some(ax) => ax.reset(c.park_value(axis)),
-                    None => c.reset_setpoint_axis(axis),
-                }
+            if let (Some(ax), Some(c)) = (st.axes.get(&(id, axis)), self.site.get(id)) {
+                ax.reset(c.park_value(axis));
             }
             expired.push((id, axis));
         });
@@ -354,8 +322,8 @@ impl<'a> Gateway<'a> {
         self.setpoint_envelope_locked(&st, id, axis)
     }
 
-    /// The summed bounds of `id`'s children on `axis`, each divided by
-    /// its parent count; `None` when no child reports any.
+    /// The summed bounds of `id`'s children on `axis`, each divided
+    /// by its parent count; `None` when no child reports any.
     pub fn child_envelope(&self, id: u64, axis: SetpointAxis) -> Option<VecBounds> {
         let st = self.gw.state.lock();
         self.child_envelope_locked(&st, id, axis)
@@ -364,14 +332,9 @@ impl<'a> Gateway<'a> {
     /// True while a live augmentation narrows `id`'s `axis`.
     pub fn augmented(&self, id: u64, axis: SetpointAxis) -> bool {
         let st = self.gw.state.lock();
-        let now = self.site.now();
-        match st.axes.get(&(id, axis)) {
-            Some(ax) => ax.augmented(now),
-            None => self
-                .site
-                .get(id)
-                .is_some_and(|c| c.augmentation_active(axis, now)),
-        }
+        st.axes
+            .get(&(id, axis))
+            .is_some_and(|ax| ax.augmented(self.site.now()))
     }
 
     fn bounds_of_locked(
@@ -402,8 +365,10 @@ impl<'a> Gateway<'a> {
             return Some(w.bounds());
         }
         match axis {
-            SetpointAxis::Active => c.effective_active_bounds(),
-            SetpointAxis::Reactive => c.reactive_bounds(),
+            SetpointAxis::Active => c
+                .rated_active_bounds()
+                .map(|(lo, hi)| VecBounds::single(lo, hi)),
+            SetpointAxis::Reactive => None,
         }
     }
 
@@ -480,19 +445,6 @@ impl<'a> Gateway<'a> {
         Ok(())
     }
 
-    /// Actuate `f` and arm a lifetime for it under the gateway lock.
-    pub(crate) fn arm<E>(
-        &self,
-        id: u64,
-        axis: SetpointAxis,
-        lifetime: Duration,
-        f: impl FnOnce() -> Result<(), E>,
-    ) -> Result<DateTime<Utc>, E> {
-        let st = self.gw.state.lock();
-        st.lifetimes
-            .actuate_and_arm(id, axis, self.site.now(), lifetime, f)
-    }
-
     /// `set_power` with the current generation, a one-hour lifetime
     /// and `Mode::Reject`.
     #[cfg(test)]
@@ -533,7 +485,7 @@ fn clamp_into(value: f32, envelope: Option<VecBounds>) -> f32 {
 mod tests {
     use std::sync::Arc;
 
-    use super::test_stubs::{Cmd, Hw, put, sim_site};
+    use super::test_stubs::{Hw, put, sim_site};
     use super::*;
     use crate::sim::{component::GatewaySettings, sim_clock::headless_base};
 
@@ -544,7 +496,7 @@ mod tests {
     #[test]
     fn a_command_returns_its_deadline_on_the_site_clock() {
         let (site, clock) = sim_site();
-        put(&site, Cmd::new(1));
+        put(&site, Arc::new(Hw::new(1)));
         let applied = site
             .gateway()
             .set_active_power(
@@ -572,10 +524,10 @@ mod tests {
     #[test]
     fn a_request_looked_up_before_a_reset_is_refused() {
         let site = MicrogridSite::new();
-        put(&site, Cmd::new(1));
+        put(&site, Arc::new(Hw::new(1)));
         let generation = site.run_generation();
         site.reset();
-        let fresh = put(&site, Cmd::new(1));
+        let fresh = put(&site, Arc::new(Hw::new(1)));
         let err = site
             .gateway()
             .set_active_power(1, generation, 500.0, HOUR, Mode::Reject)
@@ -594,7 +546,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(aug, AugmentError::SiteReset));
         assert_eq!(
-            *fresh.last.lock(),
+            fresh.last(),
             None,
             "the new run's component was never driven"
         );
@@ -604,7 +556,7 @@ mod tests {
     #[test]
     fn refusals_follow_the_error_table() {
         let site = MicrogridSite::new();
-        put(&site, Cmd::new(1));
+        put(&site, Arc::new(Hw::new(1)));
         site.register(crate::sim::Meter::new(
             5,
             Duration::from_secs(1),
@@ -654,60 +606,16 @@ mod tests {
     #[test]
     fn clamp_mode_pulls_into_the_envelope() {
         let site = MicrogridSite::new();
-        let cmd = put(&site, Cmd::new(1));
+        put(&site, Arc::new(Hw::new(1)));
         let gw = site.gateway();
         let applied = gw
             .set_active_power(1, site.run_generation(), 5_000.0, HOUR, Mode::Clamp)
             .unwrap();
         assert_eq!(applied.value, 1_000.0);
-        assert_eq!(*cmd.last.lock(), Some(1_000.0));
         let applied = gw
             .set_active_power(1, site.run_generation(), 0.0, HOUR, Mode::Clamp)
             .unwrap();
         assert_eq!(applied.value, 0.0);
-    }
-
-    /// The physics step expires lifetimes at its `now`, on sim time:
-    /// short of the deadline nothing resets, at it the axis does.
-    #[test]
-    fn step_expires_lifetimes_on_sim_time() {
-        let (site, clock) = sim_site();
-        let cmd = put(&site, Cmd::new(1));
-        site.gateway()
-            .set_active_power(
-                1,
-                site.run_generation(),
-                500.0,
-                Duration::from_secs(10),
-                Mode::Reject,
-            )
-            .unwrap();
-        clock.advance(Duration::from_secs(9));
-        site.tick_once(site.now(), Duration::from_millis(100));
-        assert!(cmd.resets.lock().is_empty());
-        clock.advance(Duration::from_secs(1));
-        site.tick_once(site.now(), Duration::from_millis(100));
-        assert_eq!(*cmd.resets.lock(), vec![SetpointAxis::Active]);
-        assert_eq!(
-            site.gateway().remaining_lifetime(1, SetpointAxis::Active),
-            None
-        );
-    }
-
-    /// An explicit reset clears the lifetime and resets the axis.
-    #[test]
-    fn reset_clears_the_lifetime_and_the_axis() {
-        let site = MicrogridSite::new();
-        let cmd = put(&site, Cmd::new(1));
-        site.gateway()
-            .command(1, SetpointAxis::Active, 500.0)
-            .unwrap();
-        site.gateway().reset(1, SetpointAxis::Active);
-        assert_eq!(
-            site.gateway().remaining_lifetime(1, SetpointAxis::Active),
-            None
-        );
-        assert_eq!(*cmd.resets.lock(), vec![SetpointAxis::Active]);
     }
 
     /// An accepted augmentation reports its deadline on the site
@@ -715,7 +623,7 @@ mod tests {
     #[test]
     fn augment_returns_its_deadline() {
         let (site, _clock) = sim_site();
-        put(&site, Cmd::new(1));
+        put(&site, Arc::new(Hw::new(1)));
         let deadline = site
             .gateway()
             .augment(
@@ -733,7 +641,7 @@ mod tests {
     /// command on the very next tick: the command crosses each delay
     /// once.
     #[test]
-    fn facade_command_reaches_the_output_in_one_tick() {
+    fn a_command_reaches_the_output_in_one_tick() {
         use crate::sim::{
             Battery, BatteryInverter, battery::BatteryConfig,
             inverter::battery_inverter::BatteryInverterConfig,
@@ -884,13 +792,15 @@ mod tests {
         .unwrap();
         gw.command(2, SetpointAxis::Active, 4_800.0).unwrap();
         site.tick_n(3, Duration::from_millis(100));
-        // 5 kVA at 4.8 kW leaves ±1.4 kVAr, disjoint from [3000, 3900].
+        // 5 kVA at 4.8 kW leaves ±1.4 kVAr, disjoint from [3000,
+        // 3900].
         let band = gw.bounds_of(2, q).unwrap();
         assert_eq!(band.to_string(), "[0, 0]");
         assert_eq!(band.0.len(), 1, "a present zero band, not an absent one");
     }
 
-    /// The children gate names the combined envelope; `Clamp` uses it.
+    /// The children gate names the combined envelope; `Clamp` uses
+    /// it.
     #[test]
     fn the_children_gate_names_the_combined_envelope() {
         let site = inverter_over_battery(1_000.0);
@@ -1181,5 +1091,97 @@ mod tests {
             Some(30_000.0)
         );
         assert!(site.bounds_of(1, SetpointAxis::Reactive).is_none());
+    }
+
+    /// A lifetime does not outlive the run, the component, or the
+    /// id's previous occupant.
+    #[test]
+    fn lifetimes_do_not_survive_reset_removal_or_reregistration() {
+        let arm = |site: &MicrogridSite, id: u64| {
+            site.gateway()
+                .command(id, SetpointAxis::Active, 500.0)
+                .unwrap();
+            assert!(
+                site.gateway()
+                    .remaining_lifetime(id, SetpointAxis::Active)
+                    .is_some()
+            );
+        };
+        let site = MicrogridSite::new();
+        put(&site, Arc::new(Hw::new(1)));
+        arm(&site, 1);
+        site.reset();
+        assert_eq!(
+            site.gateway().remaining_lifetime(1, SetpointAxis::Active),
+            None
+        );
+
+        let site = MicrogridSite::new();
+        put(&site, Arc::new(Hw::new(1)));
+        put(&site, Arc::new(Hw::new(2)));
+        arm(&site, 1);
+        arm(&site, 2);
+        assert!(site.remove_component(1));
+        assert_eq!(
+            site.gateway().remaining_lifetime(1, SetpointAxis::Active),
+            None
+        );
+        assert!(
+            site.gateway()
+                .remaining_lifetime(2, SetpointAxis::Active)
+                .is_some()
+        );
+
+        let site = MicrogridSite::new();
+        put(&site, Arc::new(Hw::new(1)));
+        arm(&site, 1);
+        put(&site, Arc::new(Hw::new(1)));
+        assert_eq!(
+            site.gateway().remaining_lifetime(1, SetpointAxis::Active),
+            None
+        );
+    }
+
+    /// A component with no axis answers NoAxis / Unsupported, and has
+    /// no bounds beyond its rating.
+    #[test]
+    fn a_component_without_an_axis_takes_no_command() {
+        let site = MicrogridSite::new();
+        site.register(crate::sim::Grid::new(
+            9,
+            100,
+            Some((-5_000.0, 5_000.0)),
+            0.0,
+        ));
+        let gw = site.gateway();
+        assert!(matches!(
+            gw.command(9, SetpointAxis::Active, 10.0),
+            Err(GatewayError::NoAxis { id: 9, .. })
+        ));
+        assert!(matches!(
+            gw.augment(
+                9,
+                site.run_generation(),
+                SetpointAxis::Active,
+                VecBounds::single(-1.0, 1.0),
+                HOUR
+            ),
+            Err(AugmentError::Unsupported)
+        ));
+        assert!(matches!(
+            gw.augment(
+                9,
+                site.run_generation(),
+                SetpointAxis::Active,
+                VecBounds::single(1.0, -1.0),
+                HOUR
+            ),
+            Err(AugmentError::Malformed(_))
+        ));
+        assert_eq!(
+            gw.bounds_of(9, SetpointAxis::Active).unwrap().to_string(),
+            "[-5000, 5000]"
+        );
+        assert!(gw.bounds_of(9, SetpointAxis::Reactive).is_none());
     }
 }

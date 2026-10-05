@@ -2058,7 +2058,7 @@ async fn component_snapshot_404s_unknown_ids() {
 /// unset `reactive-apparent-va` cap still gets an entry with
 /// `value: null` so the client renders the input. `envelope.reactive`
 /// needs a downstream component reporting a Q band to populate (see
-/// `MicrogridSite::aggregate_child_reactive_bounds`) — a battery
+/// `Gateway::child_envelope`) — a battery
 /// inverter wired as a (topologically nonsensical, but type-legal)
 /// child gives it one without dragging in a whole battery rig.
 #[tokio::test]
@@ -2101,13 +2101,10 @@ async fn component_snapshot_inverter_knobs_and_reactive_envelope() {
 /// A battery inverter's own reactive capability must populate
 /// `envelope.reactive` even when its only child is a battery, which
 /// (correctly) exposes no Q bounds of its own — `reactive_bounds()`
-/// terminates at the inverter. Before the fix,
-/// `reactive_setpoint_envelope` short-circuited on the childless-
-/// bounds `?` and returned `None` without ever consulting the
-/// inverter's own band, so the WS-fed graduation the inspector was
-/// already drawing got clobbered to null on every snapshot re-fetch
-/// (every accepted setpoint) — the once-a-second flicker this test
-/// guards against.
+/// terminates at the inverter. The setpoint envelope falls back to
+/// the inverter's own band when no child reports one, so the WS-fed
+/// graduation the inspector draws is not clobbered to null on every
+/// snapshot re-fetch (every accepted setpoint).
 #[tokio::test]
 async fn component_snapshot_reactive_envelope_falls_back_to_own_bounds() {
     let cfg = config_with(

@@ -449,48 +449,6 @@ impl MicrogridSite {
         self.inner.scenario.write().record_grid_reactive(value, ts);
     }
 
-    // ─── Setpoint timeouts ────────────────────────────────────────────
-    //
-    // Each accepted setpoint atomically actuates and schedules a
-    // deadline on its own power axis via `actuate_and_arm`; on expiry
-    // the physics tick (`Gateway::step`) and the Config loop
-    // (`reset_expired_setpoints`) atomically drain and reset each
-    // (id, axis) pair — the other axis's command keeps running. The
-    // deadlines live in the gateway; these methods delegate to it.
-
-    /// Actuate `f` (the setpoint write on `id`'s `axis`) and, only if
-    /// it succeeds, arm a deadline for it at `now + lifetime` on this
-    /// site's clock — both under the gateway lock. Returns the
-    /// deadline. Replaces any previously-scheduled deadline for that
-    /// (id, axis). Lock order: gateway → components map → component
-    /// locks; `f` must not call back into `self.get` or the gateway.
-    pub fn actuate_and_arm<E>(
-        &self,
-        id: u64,
-        axis: crate::timeout_tracker::SetpointAxis,
-        lifetime: Duration,
-        f: impl FnOnce() -> Result<(), E>,
-    ) -> Result<DateTime<Utc>, E> {
-        self.gateway().arm(id, axis, lifetime, f)
-    }
-
-    /// Atomically drain every deadline at or before this site's `now`
-    /// and reset its axis. The `log::info!` per expired pair fires
-    /// after the gateway lock is released.
-    pub fn reset_expired_setpoints(&self) {
-        self.gateway().expire(self.now());
-    }
-
-    /// Time left on this site's clock before `id`'s `axis` setpoint
-    /// expires — `None` when untracked or already due.
-    pub fn setpoint_remaining(
-        &self,
-        id: u64,
-        axis: crate::timeout_tracker::SetpointAxis,
-    ) -> Option<Duration> {
-        self.gateway().remaining_lifetime(id, axis)
-    }
-
     // ─── Version counter + event broadcast bus ────────────────────────
     //
     // Every accepted /api/eval bumps `version`, which fires a
@@ -736,8 +694,8 @@ impl MicrogridSite {
     }
 
     /// Every edge from `parent`, hidden or not. Used by aggregation
-    /// paths (meter / inverter / `aggregate_child_bounds`) that need
-    /// to walk the *physical* graph; the visible-only filter in
+    /// paths (meter / inverter / the gateway's child envelope) that
+    /// need to walk the *physical* graph; the visible-only filter in
     /// [`Self::connections`] is for the user-facing surface.
     /// `connect` and `disconnect` flow through the same
     /// underlying vec, so anything wired up post-make from the UI /
@@ -818,7 +776,7 @@ impl MicrogridSite {
             .count()
     }
 
-    /// Shared walk behind the two `aggregate_*_bounds` twins: sum
+    /// The walk behind the gateway's child envelope: sum
     /// `bounds_of`'s envelope over `parent`'s direct children,
     /// dividing a shared child's envelope by its parent count —
     /// the same parallel-paths share the meter walk applies to
@@ -848,118 +806,6 @@ impl MicrogridSite {
         } else {
             Some(VecBounds::sum_single(bounds))
         }
-    }
-
-    /// Sum the `effective_active_bounds()` of every direct child of
-    /// `parent`, with the parallel-paths share division of
-    /// [`Self::sum_child_bounds`]. Returns `None` when `parent` has
-    /// no children that expose bounds.
-    ///
-    /// The microgrid API gateway uses this to gate setpoints against
-    /// the downstream physical envelope — a real inverter has no data
-    /// link to its battery's BMS limits, but the gateway sees both
-    /// telemetry streams and intersects them on the client's behalf.
-    pub fn aggregate_child_bounds(&self, parent: u64) -> Option<crate::sim::bounds::VecBounds> {
-        self.sum_child_bounds(parent, |c| c.effective_active_bounds())
-    }
-
-    /// The active-power envelope a setpoint for `id` must fall within:
-    /// the component's own effective AC bounds intersected with the
-    /// summed DC bounds of its children. `None` when the component has
-    /// no children exposing bounds — then only its own bounds apply
-    /// (enforced by the component's `set_active_setpoint`).
-    ///
-    /// Both setpoint entry points gate against this so a command outside
-    /// the intersection is rejected, not silently saturated by the
-    /// battery: the gRPC `SetElectricalComponentPower` gateway
-    /// ([`crate::server`]) and the `(set-active-power)` DSL
-    /// (`lisp::defuns::setpoints`).
-    pub fn active_setpoint_envelope(&self, id: u64) -> Option<crate::sim::bounds::VecBounds> {
-        let child_env = self.aggregate_child_bounds(id)?;
-        // A component with children bounds but no own bounds gates
-        // on the children alone — intersecting with the empty
-        // default would reject EVERY setpoint with a nonsense
-        // "exceeds combined envelope []" message.
-        match self.get(id)?.effective_active_bounds() {
-            Some(own) => Some(own.intersect(&child_env)),
-            None => Some(child_env),
-        }
-    }
-
-    /// Sum the `reactive_bounds()` of every direct child of `parent`
-    /// — the reactive twin of [`Self::aggregate_child_bounds`], on
-    /// the same [`Self::sum_child_bounds`] walk. Returns `None` when
-    /// `parent` has no children that expose reactive bounds.
-    ///
-    /// In today's topologies that is always the answer: the only
-    /// components reporting Q bounds are inverters, and an inverter's
-    /// children are batteries, which carry no reactive axis at all
-    /// (reactive power terminates at the inverter). The mirror exists
-    /// so the gateway has the same shape on both axes, and it starts
-    /// gating for real the moment a child type does report a Q
-    /// envelope.
-    pub fn aggregate_child_reactive_bounds(
-        &self,
-        parent: u64,
-    ) -> Option<crate::sim::bounds::VecBounds> {
-        self.sum_child_bounds(parent, |c| c.reactive_bounds())
-    }
-
-    /// The reactive-power envelope a setpoint for `id` must fall
-    /// within: the component's own Q band intersected with the summed
-    /// Q bands of its children. `None` when no child exposes reactive
-    /// bounds — then only the component's own band applies (enforced
-    /// by the component's `set_reactive_setpoint`). See
-    /// [`Self::aggregate_child_reactive_bounds`] for why `None` is the
-    /// normal answer today.
-    ///
-    /// Both reactive setpoint entry points gate against this, mirroring
-    /// [`Self::active_setpoint_envelope`]: the gRPC
-    /// `SetElectricalComponentPower` gateway ([`crate::server`]) and
-    /// the `(set-reactive-power)` DSL (`lisp::defuns::setpoints`).
-    pub fn reactive_setpoint_envelope(&self, id: u64) -> Option<crate::sim::bounds::VecBounds> {
-        let child_env = self.aggregate_child_reactive_bounds(id)?;
-        // Same carve-out as the active side: a component with
-        // children bounds but no Q band of its own gates on the
-        // children alone rather than intersecting with an empty
-        // default, which would reject every setpoint.
-        match self.get(id)?.reactive_bounds() {
-            Some(own) => Some(own.intersect(&child_env)),
-            None => Some(child_env),
-        }
-    }
-
-    /// The gateway gate for one setpoint, shared by the gRPC SetPower
-    /// route and both DSL set-*-power reject arms: 0 (the fail-safe
-    /// park) always passes, whatever the envelope; any other value
-    /// must sit inside the axis's combined envelope when one exists
-    /// (own bounds ∩ children's — `None` means no bounded children,
-    /// so only component-level validation applies). `Err` carries the
-    /// message every caller surfaces, so the wording can't drift
-    /// between surfaces.
-    pub fn gate_setpoint(
-        &self,
-        id: u64,
-        axis: crate::timeout_tracker::SetpointAxis,
-        value: f32,
-    ) -> Result<(), String> {
-        use crate::timeout_tracker::SetpointAxis;
-        if value == 0.0 {
-            return Ok(());
-        }
-        let envelope = match axis {
-            SetpointAxis::Active => self.active_setpoint_envelope(id),
-            SetpointAxis::Reactive => self.reactive_setpoint_envelope(id),
-        };
-        if let Some(envelope) = envelope
-            && !envelope.contains(value)
-        {
-            return Err(format!(
-                "set-point {value} {} exceeds combined envelope {envelope}",
-                axis.unit()
-            ));
-        }
-        Ok(())
     }
 
     /// Wipe every registered component. Called from `(reset-state)` in
@@ -2013,103 +1859,6 @@ mod tests {
         assert_eq!(edges, vec![(1, 3)]);
         // Removing a missing id is a no-op that returns false.
         assert!(!w.remove_component(99));
-    }
-
-    /// A setpoint deadline must not outlive the run, the component, or
-    /// the id's previous occupant: `reset`, `remove_component` and a
-    /// re-`register` of the same id each purge it. Without this a
-    /// pre-reset deadline fires afterwards and resets an axis the NEW
-    /// run's client commanded (or never commanded at all).
-    #[test]
-    fn stale_setpoint_deadlines_do_not_survive_reset_or_removal() {
-        use crate::timeout_tracker::SetpointAxis;
-
-        let arm = |w: &MicrogridSite, id: u64| {
-            for axis in [SetpointAxis::Active, SetpointAxis::Reactive] {
-                w.actuate_and_arm(id, axis, Duration::from_secs(3600), || Ok::<(), ()>(()))
-                    .unwrap();
-            }
-            assert!(w.setpoint_remaining(id, SetpointAxis::Active).is_some());
-            assert!(w.setpoint_remaining(id, SetpointAxis::Reactive).is_some());
-        };
-        let assert_clear = |w: &MicrogridSite, id: u64, what: &str| {
-            assert_eq!(
-                w.setpoint_remaining(id, SetpointAxis::Active),
-                None,
-                "{what} must purge the active deadline"
-            );
-            assert_eq!(
-                w.setpoint_remaining(id, SetpointAxis::Reactive),
-                None,
-                "{what} must purge the reactive deadline"
-            );
-        };
-
-        // 1. reset() wipes every armed deadline.
-        let w = MicrogridSite::new();
-        w.register(Stub::new(1));
-        arm(&w, 1);
-        w.reset();
-        assert_clear(&w, 1, "reset");
-
-        // 2. remove_component drops that id's deadlines only.
-        let w = MicrogridSite::new();
-        w.register(Stub::new(1));
-        w.register(Stub::new(2));
-        arm(&w, 1);
-        arm(&w, 2);
-        assert!(w.remove_component(1));
-        assert_clear(&w, 1, "remove_component");
-        assert!(
-            w.setpoint_remaining(2, SetpointAxis::Active).is_some(),
-            "another component's deadline must survive a removal"
-        );
-
-        // 3. Re-registering an id scrubs whatever a raced removal left
-        //    behind — the fresh component was never commanded.
-        let w = MicrogridSite::new();
-        w.register(Stub::new(1));
-        arm(&w, 1);
-        w.register(Stub::new(1));
-        assert_clear(&w, 1, "register_arc");
-    }
-
-    /// Request lifetimes are stamped and judged on the site's own
-    /// clock: a sim clock that has not moved never expires a
-    /// deadline, however much wall time passes, and one that has
-    /// moved past it does.
-    #[test]
-    fn site_clock_stamps_and_expires_request_lifetimes() {
-        use crate::sim::sim_clock::{NowSource, headless_base};
-        use crate::timeout_tracker::SetpointAxis;
-
-        let clock = Arc::new(tulisp_async::ManualClock::new());
-        let w = MicrogridSite::new();
-        w.set_now_source(NowSource::sim(headless_base(), clock.clone()));
-        w.register(Stub::new(1));
-
-        let deadline = w
-            .actuate_and_arm(1, SetpointAxis::Active, Duration::from_secs(10), || {
-                Ok::<(), ()>(())
-            })
-            .unwrap();
-        assert_eq!(deadline, headless_base() + chrono::Duration::seconds(10));
-        assert_eq!(
-            w.setpoint_remaining(1, SetpointAxis::Active),
-            Some(Duration::from_secs(10))
-        );
-
-        clock.advance(Duration::from_secs(9));
-        w.reset_expired_setpoints();
-        assert_eq!(
-            w.setpoint_remaining(1, SetpointAxis::Active),
-            Some(Duration::from_secs(1)),
-            "sim time short of the deadline expires nothing"
-        );
-
-        clock.advance(Duration::from_secs(1));
-        w.reset_expired_setpoints();
-        assert_eq!(w.setpoint_remaining(1, SetpointAxis::Active), None);
     }
 
     #[test]

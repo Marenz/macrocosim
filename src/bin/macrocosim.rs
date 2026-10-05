@@ -245,8 +245,8 @@ async fn main() {
     // process is limping with a dead surface, so main notices the
     // FIRST exit and shuts the whole binary down instead of serving
     // degraded. A microgrid's gRPC server reports through its runtime
-    // status instead. (The lisp refresh + timeout loops live inside
-    // Config and stay fire-and-forget for now.)
+    // status instead. (The lisp refresh loop lives inside Config and
+    // stays fire-and-forget for now.)
     let mut tasks: tokio::task::JoinSet<&'static str> = tokio::task::JoinSet::new();
     log::info!("Macrocosim UI listening on http://{ui_addr}");
     tasks.spawn(async move {

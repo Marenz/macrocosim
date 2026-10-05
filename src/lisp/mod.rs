@@ -6,8 +6,8 @@
 //! lives in `MicrogridSite`, the lisp interpreter is just the configuration
 //! frontend. Behaviour is fanned out across child modules:
 //!
-//! - `boot` — `Config::new`, the long-lived loops (lisp refresh,
-//!   request-timeout sweep), the tags-table pass, hot-reload + watch.
+//! - `boot` — `Config::new`, the long-lived lisp refresh loop, the
+//!   tags-table pass, hot-reload + watch.
 //! - `overrides` — `eval` and the file regeneration it triggers.
 //! - `snapshots` — `save_snapshot_for` / `load_snapshot_for` against
 //!   a microgrid's own file.

@@ -1,7 +1,6 @@
-//! `Config` bootstrap and lifecycle: build the interpreter, eval
-//! the config file, spawn the long-lived loops (Lisp refresh + the
-//! request-timeout sweep + scenario auto-advance), and the hot-
-//! reload + tags-pass entry points.
+//! `Config` bootstrap and lifecycle: build the interpreter, eval the
+//! config file, spawn the long-lived loops (Lisp refresh + scenario
+//! auto-advance), and the hot-reload + tags-pass entry points.
 //!
 //! Everything in this file is an `impl Config { ... }` (or a free
 //! helper Config relies on) so that the heavy bootstrap logic
@@ -168,10 +167,10 @@ impl Config {
     /// Build a *headless* `Config` for deterministic, faster-than-real-
     /// time scenario runs. Timers and scenario time run on a hand-
     /// advanced [`ManualClock`](tulisp_async::ManualClock) (returned
-    /// alongside), and the background loops (physics, lisp refresh, the
-    /// request-timeout sweep, scenario auto-advance, the frequency
-    /// driver) are NOT spawned — the caller steps the simulation itself
-    /// via [`Config::sim_step`]. Used for CI scenario assertions.
+    /// alongside), and the background loops (physics, lisp refresh,
+    /// scenario auto-advance, the frequency driver) are NOT spawned —
+    /// the caller steps the simulation itself via
+    /// [`Config::sim_step`]. Used for CI scenario assertions.
     pub fn new_headless(filename: &str) -> Result<(Self, Arc<tulisp_async::ManualClock>), String> {
         let scripts = vec![filename.to_string()];
         let state_dir = script_parent_dir(filename);
@@ -222,8 +221,8 @@ impl Config {
         // both attach to this slot.
         let grid_frequency = crate::sim::frequency::new_shared();
         site.set_grid_frequency(grid_frequency.clone());
-        // The wall-clock background loops (frequency driver, timeout
-        // sweep, lisp refresh) are spawned only after the config
+        // The wall-clock background loops (frequency driver, lisp
+        // refresh) are spawned only after the config
         // evals successfully, below — a failed `Config::new` must
         // not leave orphan loops ticking. A headless run never
         // spawns them: it drives every tick itself, and the loops
@@ -420,14 +419,6 @@ impl Config {
         // Arcs alive) with no handle to stop them.
         if !headless {
             crate::sim::frequency::spawn_driver(grid_frequency.clone());
-            // One-per-process loop that walks every registered
-            // MicrogridSite's TimeoutTracker and calls reset_setpoint
-            // on each elapsed entry. Both gRPC's
-            // SetElectricalComponentPower and the Lisp
-            // `(set-active-power …)` / `(set-reactive-power …)` defuns
-            // add to the tracker; this loop is what makes their
-            // request-lifetime semantics visible.
-            Self::start_timeout_loop(microgrids.clone());
         }
 
         // Lisp refresh loop. One tokio task at 100 ms cadence holds
@@ -931,42 +922,6 @@ impl Config {
                 // `spawn_physics` task ticks lock-free against the
                 // atomics last published by `refresh_inputs`.
                 refresh_pass(&registry, &ctx, &timer_handle);
-            }
-        });
-    }
-
-    fn start_timeout_loop(registry: crate::sim::microgrids::SharedMicrogrids) {
-        tokio::spawn(async move {
-            // `interval` + `Skip` keeps the cadence on the nominal
-            // 100 ms grid even when one iteration overruns (a Lisp
-            // reset_setpoint that grabs the interpreter lock against
-            // a long /api/eval can take real time). The previous
-            // `sleep(100ms)` drifted upward under load — each
-            // iteration's clock started AFTER the work finished.
-            //
-            // `interval_at` rather than `interval` so the *first*
-            // tick lands at +100 ms instead of immediately. Tests
-            // that arm a deadline + then synchronously check its
-            // effect (e.g. via `reset_expired_setpoints` or
-            // `setpoint_remaining`) rely on the BG task not racing
-            // them at t=0.
-            let start = tokio::time::Instant::now() + Duration::from_millis(100);
-            let mut tick = tokio::time::interval_at(start, Duration::from_millis(100));
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                tick.tick().await;
-                // Snapshot the per-mg sites under the lock, then drain
-                // outside the lock so a slow component callback can't
-                // hold registry-wide reads.
-                let sites: Vec<MicrogridSite> =
-                    registry.lock().values().map(|e| e.site.clone()).collect();
-                for site in sites {
-                    // Atomic drain+reset: `reset_expired_setpoints`
-                    // holds the tracker's lock across both, so a
-                    // renewal that lands mid-sweep can't be wiped by a
-                    // reset armed for the stale deadline it replaced.
-                    site.reset_expired_setpoints();
-                }
             }
         });
     }
