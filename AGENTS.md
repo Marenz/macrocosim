@@ -17,13 +17,22 @@ is wiring the topology + animating the environment.
   - `microgrids.rs` — enterprise registry + per-mg routing
   - `dispatch.rs` — enterprise dispatch store (per-`microgrid_id`, id
     allocator, lifecycle broadcast); backs the dispatch gRPC + UI
-  - `bounds.rs` — `VecBounds`, `ComponentBounds` (rated + TTL
-    augmentations, `validate_active_setpoint` 0-W-park gate)
+  - `bounds.rs` — `VecBounds`, `ComponentBounds` (the list of TTL
+    augmentations a `GatewayAxis` holds)
   - `ramp.rs` — `CommandDelay` + `Ramp`
+  - `gateway.rs` (+ `gateway/{step,window}.rs`) — `MicrogridGateway`,
+    one per microgrid, held by `MicrogridSite`: every Microgrid API
+    rule (setpoint validation, request lifetimes, augmentations, the
+    gateway delay and ramp, the SoC window and its share). Reached
+    through `site.gateway()`; `site.bounds_of` / `site.telemetry_of`
+    are the one bounds read every consumer reports
+  - `gateway_axis.rs` — `GatewayAxis`, the API half of one power axis
+  - `device_axis.rs` — `DeviceAxis`, the hardware half: a FIFO device
+    delay and the physical clamp
   - `decay.rs` — `bounded_exp_decay` + `soc_protected_bounds`, plus
-    the SoC lifecycle helpers: `SocProtect` is the battery's alone
-    now, while `sanitize_soc_pct` and `integrate_soc_pct` are shared
-    with the connected car
+    the SoC lifecycle helpers: `SocProtect` is the gateway's SoC
+    window, while `sanitize_soc_pct` and `integrate_soc_pct` are
+    shared by the battery and the connected car
   - `battery.rs`, `meter.rs`, `grid.rs`, `ev_charger.rs`,
     `inverter/{battery,solar}_inverter.rs`, `steam_boiler.rs`
   - `ev_presets.rs` — the connected car: preset catalog, per-plug
@@ -112,7 +121,8 @@ is wiring the topology + animating the environment.
   (store-and-serve dispatch API; CRUD + stream over `sim::dispatch`)
 - `src/proto.rs` + `src/proto_conv.rs` — proto include + `Telemetry` →
   `MetricSample`s
-- `src/timeout_tracker.rs` — request lifetime → `reset_setpoint` expiry
+- `src/timeout_tracker.rs` — request-lifetime deadlines on the site
+  clock, owned by the gateway and expired on the physics tick
 - `src/bin/macrocosim.rs` — headless server
 - `src/bin/macroctl.rs` — clap-based client CLI
 - `sim/common.lisp` — Lisp helpers (`every`, `cancel-timers`,
@@ -196,48 +206,57 @@ UI").
   component's tick / ramp / SoC is in Rust. Lisp's only verbs are
   `(make-*)` to build the graph and `(every …)` / `(run-with-timer …)` to
   perturb grid state or flip runtime knobs over time.
-- **Inverter and battery couple only through the DC bus.** A real inverter
-  and battery share an electrical bus, not data. `Battery::set_dc_power`
-  clamps to its own SoC-derated bounds and keeps the ratio of accepted to
-  pushed power; the inverter publishes its own push scaled by each child's
-  `dc_accept_ratio` (zero when tripped or when no healthy child took the
-  push), so a clipping battery shows on the inverter and the meters above
-  it, and several inverters on one bus share the clip in proportion. The
-  API gateway (server.rs) intersects bounds for setpoint validation —
-  components never read each other's bounds. Reactive power (Q) terminates
-  at the inverter on the DC-bus path — a real DC bus carries no Q, so
-  `Battery::dc_power_w` is pure signed active power with no apparent-power
-  blend, and only the inverter's own AC-side `PowerAxis` models Q with a
-  rated band and augmentations. (A meter's reactive source — below — is a
-  separate, simpler VAr/PF value, not a `PowerAxis`.)
-- **`PowerAxis` (`src/sim/axis.rs`) is the one control path shared by
-  active and reactive power.** Both inverters and the EV charger put P
-  on a `PowerAxis` (rated band + TTL augmentations, command-delay, ramp);
-  both inverters put Q on a second `PowerAxis` whose static shape comes
-  from a `ReactiveCapability` (PF cap, kVA cap, both, or neither)
-  evaluated at the OTHER axis's live P instead of a rated pair of its
-  own. Both axes re-clamp their armed target to the live envelope every
-  tick, so a narrowing bound (a tightening augmentation on any of
-  them) actually slews the output down rather than waiting for the
-  next command. A component's per-tick dynamic band (the PV sun
-  limit, the boiler's heat need) is a physical limit instead: the
-  output is held inside it every tick, so a narrowing band cuts the
-  output at once, while a widening one is still climbed at the ramp
-  rate. A battery inverter still clips a narrowing SoC band
-  by scaling the published value (`dc_accept_ratio`), not by
-  re-clamping the armed target — todo.org d5b keeps that question
-  open. The EV charger's axis produces the *limit* it offers the
-  plugged car, not the draw — the car decides what it takes within
-  that (`src/sim/ev_presets.rs`), and the API sees only the charger.
-  `:reactive-pf-limit`
-  sets `k` in `|Q| ≤ k × |P|` — a ratio of apparent quantities, not
-  true power factor (cos φ). A meter's own
-  reactive source is the real thing: mutually-exclusive `:reactive-power`
-  (a VAr constant, lambda, or symbol) or `:power-factor` + `:leading`
-  (true cos φ in `(0, 1]`, deriving `Q = P·tan(acos(pf))` off the
-  meter's own live P, negated when leading). Like `:power`, a fixed
-  numeric reactive source freezes into the persisted managed file; a
-  lambda or symbol source doesn't, and leaves the meter unrenderable.
+- **One gateway per microgrid holds every Microgrid API rule.** The
+  gRPC service and the Lisp setpoint / augmentation commands talk to
+  `site.gateway()`; the components are plain hardware with one command
+  input per power axis (`set_command`). The gateway validates (0 is
+  always accepted; NaN never), arms request lifetimes and stamps
+  augmentations on the site clock, expires both on the physics tick
+  (`gateway.step` runs in `tick_once` before the components), and
+  refuses a command whose site was reset since its lookup ("site was
+  reset"). The protocol layer — fault gates, over-bound fault
+  injection, the setpoint journal, lifetime windows — stays in
+  `server.rs`. Lock order: gateway → registry read guards → component
+  locks; the gateway lock is never held across an `.await`.
+- **An axis is a `GatewayAxis` in the gateway plus a `DeviceAxis` in
+  the component.** The chain is gateway delay → gateway ramp → device
+  delay → output. Each step the gateway targets the armed command
+  (else the component's `idle_value`), clamps it to validation
+  envelope ∩ `physical_band` ∩ (battery inverter, P) its window share,
+  ramps, and never leaves the ramp outside the physical band or the
+  share — a narrowing is followed at once, a widening is climbed at
+  the ramp rate. The validation envelope is the rated band (P) or the
+  `ReactiveCapability` at the last measured P (Q) ∩ live
+  augmentations; `:reactive-pf-limit` sets `k` in `|Q| ≤ k × |P|` — a
+  ratio of apparent quantities, not true power factor. The device
+  output is the delayed command clamped to the rated band and the
+  current physical band, so a direct `set_command` is capped too. A
+  health trip snaps both to 0, empties the delay line, and clears the
+  command unless `keeps_command_through_fault` (PV active, a charger
+  with `:resume-on-recovery`). The EV charger's axis produces the
+  *limit* it offers the plugged car, not the draw.
+- **The battery is hardware from 0 % to 100 %; the SoC window is the
+  gateway's.** The battery's `tick` clamps the summed inverter pushes
+  to the rated band, refusing charge at 100 % and discharge at 0 %.
+  The gateway throttles each battery's bounds from its SoC
+  (`:soc-lower`, `:soc-upper`, `:soc-protect-margin`, taper base 1.2,
+  floor 0.3) and, each step, shares the room between the inverters
+  pushing into it in proportion to their pushes (same sign only), so a
+  running setpoint tapers and holds inside the window within one
+  device delay. Inverters still publish their push scaled by each
+  child's `dc_accept_ratio`, which stays 1 inside the window; without
+  the gateway a battery charges to 100 %. Every inverter pushing into
+  a battery gets the same ratio, so inverters on one bus share a clip
+  in proportion to their pushes. An inverter publishes 0 (P and Q)
+  when it is tripped or when no healthy child took its push. Reactive
+  power terminates at the inverter: a DC bus carries no Q. A meter's
+  own reactive source is the real thing: mutually-exclusive
+  `:reactive-power` (a VAr constant, lambda, or symbol) or
+  `:power-factor` + `:leading` (true cos φ in `(0, 1]`, deriving `Q =
+  P·tan(acos(pf))` off the meter's own live P, negated when leading).
+  Like `:power`, a fixed numeric reactive source freezes into the
+  persisted managed file; a lambda or symbol source doesn't, and
+  leaves the meter unrenderable.
 - **Single physics tick, registration order = tick order.** `MicrogridSite::spawn_physics`
   runs one `tokio::time::interval` at `physics_tick_ms` and calls `tick()` on
   every component in registration order. Children register first because Lisp
@@ -362,7 +381,13 @@ so construction + validation stay identical.
 
 ## Adding a component type
 
-1. New file under `src/sim/` implementing `SimulatedComponent`.
+1. New file under `src/sim/` implementing `SimulatedComponent`. A
+   controllable component answers the hardware facts the gateway reads
+   (`has_axis`, `set_command`, `physical_band`, `idle_value`,
+   `park_value`, `initial_value`, `keeps_command_through_fault`,
+   `advertises_physical_band`, `augment_checks_physical_band`,
+   `gateway_settings`) and keeps one `DeviceAxis` per axis; the
+   gateway supplies validation, lifetimes, augmentations and the ramp.
 2. Add to `src/sim/mod.rs` re-exports.
 3. Add a `%make-foo` defun in `src/lisp/make.rs` with `AsPlist!`-derived
    args, calling `site.register(...)`. Note the leading `%` —
@@ -489,19 +514,24 @@ Macrocosim is used to test apps whose job is to push
 `AugmentElectricalComponentBounds` and watch `power_bounds` react (a
 GCP active-power limiter is the motivating case).
 
-- **Both battery and solar inverters curtail to their effective
-  (rated ∩ augmentation) bounds every tick.** `CommandDelay::poll`
-  returns the armed setpoint on every tick, and `tick()` re-clamps it
-  to the live envelope — so an external app narrowing a bound actually
-  slews the inverter down at `ramp_rate`, and it recovers when the
-  augmentation relaxes (tests: `late_augmentation_re_clamps_an_armed_setpoint`;
-  `solar_inverter::tick`). Curtail-to-bounds already exists — don't
-  reimplement it. A controller commands a setpoint **once**; it need
-  not re-send, since the armed value persists and keeps curtailing.
-- `set_active_setpoint` **hard-errors** a command outside the live
-  (augmentation-narrowed) envelope — faithful to the real API gateway
-  gating out-of-envelope setpoints. An EMS wanting "max within the cap"
-  reads the bounds and commands within them.
+- **Every gateway-owned axis curtails to its effective (rated ∩
+  augmentation) bounds every step.** The gateway re-clamps the
+  standing command to the live envelope on each physics tick, so an
+  external app narrowing a bound slews the output down at the ramp
+  rate, and it recovers when the augmentation relaxes (tests:
+  `late_augmentation_re_clamps_an_armed_setpoint`;
+  `armed_target_follows_a_tightening_envelope_and_restores`). A
+  controller commands a setpoint **once**; it need not re-send.
+- The gateway **hard-errors** a command outside the live
+  (augmentation-narrowed) setpoint envelope, faithful to the real API
+  gateway. A component with children is judged by its reported bounds
+  ∩ the children's. A childless one is judged by its validation
+  envelope (the rated band, or the reactive capability at the live P,
+  ∩ augmentations); a physical band such as the boiler's heat need is
+  left out, so a command above it is accepted and held to the need. An
+  EMS wanting "max within the cap" reads the bounds and commands
+  within them, or uses Lisp `CLAMP`, which clamps into the reported
+  bounds, physical band included.
 - An inverter set to `:health 'error` (or `'standby`) **trips offline
   to zero output** *and* is dropped from the healthy `power_bounds`
   aggregate. A battery inverter clears its setpoint and awaits
@@ -510,15 +540,19 @@ GCP active-power limiter is the motivating case).
   `:resume-on-recovery t` makes it keep its armed command through the
   fault and ramp back to it on recovery instead; a steam boiler trips
   like the battery inverter too, while its gas burner keeps holding
-  pressure at target. A setpoint TTL expiring on any of them retargets
-  the active ramp instead of snapping it: with a `:ramp-rate` the P
-  output moves back to idle at that rate (a PV inverter's idle is its
-  sunlight floor), without one it still gets there in one tick. The
-  inverters' Q axes ramp at `:reactive-ramp-rate`, 2000 VAr/s unless
-  set. A charger's car survives a trip; by default charging
-  resumes with the next command, and with `:resume-on-recovery t`
-  it ramps back on its own.
-- Only a component with a power axis on the requested side stores an
+  pressure at target. A request lifetime expiring on any of them
+  (granularity: the physics tick, on the site clock — sim time when
+  headless) retargets the ramp instead of snapping it: with a
+  `:ramp-rate` the P output moves back to idle at that rate (a PV
+  inverter's idle is its sunlight floor), without one it still gets
+  there in one tick. The inverters' Q axes ramp at
+  `:reactive-ramp-rate`, 2000 VAr/s unless set. A charger's car
+  survives a trip; by default charging resumes with the next command,
+  and with `:resume-on-recovery t` it ramps back on its own. Every
+  command reaches the output after the gateway delay plus a device
+  delay (`:device-delay-ms`, 100 ms unless set); a command still in
+  the device's delay line is dropped by a trip, never replayed.
+- Only a component with a gateway axis on the requested side stores an
   augmentation — both inverters on P and Q, the EV charger and the
   steam boiler on P. Every other component or axis (grid, meter,
   battery; the charger's and boiler's Q) answers `UNIMPLEMENTED`, as

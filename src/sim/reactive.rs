@@ -1,8 +1,10 @@
 //! Inverter reactive-power capability envelope: the shape a Q axis is
 //! allowed to sit in (PF-limit, kVA-limit, or both). Pure data; cheap
-//! to copy. The gateway drives Q through its delay and ramp
-//! (`crate::sim::gateway_axis::GatewayAxis`), and each inverter's
-//! `DeviceAxis` holds the output inside this envelope at the live P.
+//! to copy. The gateway validates Q against this envelope at the live
+//! P (`ReactiveCapability::q_band_at`, read through `site.bounds_of`)
+//! and drives it through its delay and ramp
+//! (`crate::sim::gateway_axis::GatewayAxis`). Each inverter's
+//! `DeviceAxis` holds the output inside the same envelope.
 //!
 //! Real inverters limit Q via two composable constraints:
 //!

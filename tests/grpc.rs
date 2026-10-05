@@ -729,7 +729,7 @@ async fn a_component_with_only_an_active_axis_refuses_reactive_augmentation() {
 /// the component still accepts a setpoint inside the first band. The
 /// gRPC-level twin of
 /// `try_augment_rejects_a_band_disjoint_with_live_augmentations` in
-/// axis.rs.
+/// gateway_axis.rs.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_second_disjoint_augmentation_is_rejected_and_the_first_stays_live() {
     let s = TestServer::start(TINY_TOPOLOGY).await;

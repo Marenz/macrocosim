@@ -2058,9 +2058,9 @@ async fn component_snapshot_404s_unknown_ids() {
 /// unset `reactive-apparent-va` cap still gets an entry with
 /// `value: null` so the client renders the input. `envelope.reactive`
 /// needs a downstream component reporting a Q band to populate (see
-/// `Gateway::child_envelope`) — a battery
-/// inverter wired as a (topologically nonsensical, but type-legal)
-/// child gives it one without dragging in a whole battery rig.
+/// `Gateway::child_envelope`) — a battery inverter wired as a
+/// (topologically nonsensical, but type-legal) child gives it one
+/// without dragging in a whole battery rig.
 #[tokio::test]
 async fn component_snapshot_inverter_knobs_and_reactive_envelope() {
     let cfg = config_with(

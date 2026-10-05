@@ -821,14 +821,16 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     }
 
     /// The Q axis's capability shape (PF cap, kVA cap, both, or
-    /// neither) — the data behind `reactive_bounds()`'s live sample.
+    /// neither) — the data behind the gateway's live Q envelope
+    /// (`site.bounds_of`, via `ReactiveCapability::q_band_at`).
     /// `None` for components with no Q axis at all. "Static" relative
-    /// to `reactive_bounds()` means P-independent, not fixed forever:
-    /// the caps this returns are the CURRENT runtime-set PF/kVA limits
-    /// (mutable via `set-reactive-pf-limit` / `set-reactive-apparent-va`),
-    /// not a construction-time nameplate. `make_component_proto` uses
-    /// this (via `ReactiveCapability::hull`) to advertise the reactive
-    /// config bound instead of a live-P sample.
+    /// to that envelope means P-independent, not fixed forever: the
+    /// caps this returns are the CURRENT runtime-set PF/kVA limits
+    /// (mutable via `set-reactive-pf-limit` /
+    /// `set-reactive-apparent-va`), not a construction-time
+    /// nameplate. `make_component_proto` uses this (via
+    /// `ReactiveCapability::hull`) to advertise the reactive config
+    /// bound instead of a live-P sample.
     fn reactive_capability(&self) -> Option<crate::sim::reactive::ReactiveCapability> {
         None
     }

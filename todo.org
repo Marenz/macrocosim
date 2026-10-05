@@ -1376,6 +1376,15 @@ clock (~1 Wh/s at the 3.6 kW setpoint) — a ~2 s scheduler stall
 pushes past 12. Decision: widen the tolerance, or add a fixture flag
 that skips background physics for manually-ticked tests.
 
+*** TODO [#C] ui-e2e weather-cloud check fails near midnight UTC :testing:ui:
+=tools/ui-smoke/live-topology.mjs= (~1737) widens the daylight window
+to 00:00–23:59 and then expects a deep cloud to drop the site-%
+readout by more than 1 point. Clear sky follows a sine over that
+window, so near midnight UTC the readout is already close to 0 and
+cannot drop that far, and the check fails. Fix: pin the sim time to
+midday for this check, or assert the drop relative to the clear-sky
+value.
+
 *** DONE [#C] wheel workflow path filter omits python/src/**   :packaging:ci:
 :LOGBOOK:
 - State "DONE"       from "TODO"       [2026-09-03 Do 12:47]
@@ -1562,6 +1571,14 @@ envelope at =Utc::now()= (no site clock on a gRPC/UI thread) while
 scenario running on a scaled or frozen clock can see an augmentation
 expire in one and not the other. Worth fixing once, for both axes,
 alongside whatever this entry settles on.
+
+Update (2026-10-04): resolved by the per-microgrid gateway. The
+gateway now re-clamps a battery inverter's running command every step
+to its share of the battery's SoC-throttled room, so the output
+narrows as the window closes and climbs back at the ramp rate as it
+reopens; the battery itself only clips at 0 % and 100 %. The
+wall-clock / tick-clock asymmetry is gone too: lifetimes,
+augmentations and every bounds read run on the site clock.
 
 ** d6. Persist-gate follow-ups (origin gating, form splitting) :design:lisp:
 
@@ -2274,8 +2291,9 @@ the post-eval site only when the whole form succeeded and reload it
 otherwise.
 
 * Review backlog — 2026-09-29
-** TODO Headless runs judge bounds augmentations on two clocks :rust:scenarios:
+** DONE Headless runs judge bounds augmentations on two clocks :rust:scenarios:
 :LOGBOOK:
+- State "DONE"       from "TODO"       [2026-10-05 Mo 01:32]
 - State "TODO"       from              [2026-09-29 Di 14:58]
 :END:
 
@@ -2295,3 +2313,5 @@ mismatch to validation and reporting. Fix: one clock for every reader.
 Thread the site's =now= through =effective_static=, the =accept= call
 sites, =gate_setpoint= and =reactive_bounds_raw=; stamp Lisp
 augmentations with it; drive setpoint expiry from =sim_step=.
+
+Fixed 2026-10-04 by the per-microgrid gateway: see the d5b update.

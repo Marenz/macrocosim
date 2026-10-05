@@ -222,11 +222,11 @@ impl Config {
         let grid_frequency = crate::sim::frequency::new_shared();
         site.set_grid_frequency(grid_frequency.clone());
         // The wall-clock background loops (frequency driver, lisp
-        // refresh) are spawned only after the config
-        // evals successfully, below — a failed `Config::new` must
-        // not leave orphan loops ticking. A headless run never
-        // spawns them: it drives every tick itself, and the loops
-        // would race the stepped driver.
+        // refresh) are spawned only after the config evals
+        // successfully, below — a failed `Config::new` must not leave
+        // orphan loops ticking. A headless run never spawns them: it
+        // drives every tick itself, and the loops would race the
+        // stepped driver.
 
         // tulisp canonicalizes the load path, which requires the
         // directory to exist — create it up front so a fresh
