@@ -369,12 +369,7 @@ impl SimulatedComponent for EvCharger {
         if self.cfg.ramp_rate_w_per_s.is_finite() {
             kw.push((":ramp-rate", lf(self.cfg.ramp_rate_w_per_s)));
         }
-        if self.cfg.device_delay != crate::sim::inverter::DEFAULT_DEVICE_DELAY {
-            kw.push((
-                ":device-delay-ms",
-                self.cfg.device_delay.as_millis().to_string(),
-            ));
-        }
+        kw.extend(crate::sim::inverter::device_delay_kw(self.cfg.device_delay));
         if self.interval != Duration::from_millis(1000) {
             kw.push((":interval", self.interval.as_millis().to_string()));
         }

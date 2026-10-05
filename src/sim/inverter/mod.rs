@@ -17,6 +17,12 @@ use crate::sim::{
 /// given; it is not written into a managed file.
 pub(crate) const DEFAULT_DEVICE_DELAY: Duration = Duration::from_millis(100);
 
+/// The `:device-delay-ms` kwarg for `d`, or `None` when `d` is the
+/// default and so stays out of the rendered constructor.
+pub(crate) fn device_delay_kw(d: Duration) -> Option<(&'static str, String)> {
+    (d != DEFAULT_DEVICE_DELAY).then(|| (":device-delay-ms", d.as_millis().to_string()))
+}
+
 /// Telemetry shared by both inverters: P/Q with per-phase splits,
 /// grid voltage/frequency and apparent currents. The bounds come from
 /// the gateway (`MicrogridSite::telemetry_of`). The inverters differ
@@ -101,8 +107,6 @@ pub(crate) fn common_inverter_kwargs(cfg: CommonInverterCfg) -> Vec<(&'static st
     if cfg.reactive_ramp_rate_var_per_s.is_finite() {
         kw.push((":reactive-ramp-rate", lf(cfg.reactive_ramp_rate_var_per_s)));
     }
-    if cfg.device_delay != DEFAULT_DEVICE_DELAY {
-        kw.push((":device-delay-ms", cfg.device_delay.as_millis().to_string()));
-    }
+    kw.extend(device_delay_kw(cfg.device_delay));
     kw
 }
