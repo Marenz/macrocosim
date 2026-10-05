@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from frequenz.quantities import Energy
 
@@ -40,6 +42,35 @@ def test_grpc_url_prefixes_scheme() -> None:
 def test_microgrid_grpc_url_selects_by_id() -> None:
     site = _site()
     assert site.microgrid_grpc_url(2) == "grpc://10.0.0.2:61000"
+
+
+def test_resolve_mg_defaults_to_the_lowest_id() -> None:
+    site = mc.connect(
+        ui="127.0.0.1:8080",
+        microgrids={
+            7: mc.MicrogridEndpoint(id=7, name="a", grpc="10.0.0.7:61000"),
+            3: mc.MicrogridEndpoint(id=3, name="b", grpc="10.0.0.3:61000"),
+        },
+    )
+    assert site._resolve_mg(None) == 3
+    assert site._resolve_mg(7) == 7
+
+
+def test_control_routes_to_the_default_microgrid() -> None:
+    site = _site()
+    calls: list[tuple[str, Any]] = []
+
+    def fake_control(path: str, payload: Any) -> Any:
+        calls.append((path, payload))
+        return {}
+
+    site._http.control = fake_control  # type: ignore[method-assign]
+    site.control_component(6, "drive", {"power_w": 1.0})
+    site.control_component(6, "status", {"health": "ok"}, mg_id=2)
+    assert calls == [
+        ("/api/mg/1/component/6/drive", {"power_w": 1.0}),
+        ("/api/mg/2/component/6/status", {"health": "ok"}),
+    ]
 
 
 class _EnergyStub:

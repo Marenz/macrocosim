@@ -112,7 +112,19 @@ async def test_drive_posts_typed_control_payloads() -> None:
 
     site._http.control = fake_control  # type: ignore[method-assign]
     await site[6].drive(power=Power.from_kilowatts(20))
-    assert calls == [("/api/component/6/drive", {"power_w": 20000.0})]
+    assert calls == [("/api/mg/1/component/6/drive", {"power_w": 20000.0})]
+
+
+def test_resolve_mg_defaults_to_the_lowest_id() -> None:
+    site = mc.aio.connect(
+        ui="127.0.0.1:9",
+        microgrids={
+            7: mc.MicrogridEndpoint(id=7, name="a", grpc="10.0.0.7:61000"),
+            3: mc.MicrogridEndpoint(id=3, name="b", grpc="10.0.0.3:61000"),
+        },
+    )
+    assert site._resolve_mg(None) == 3
+    assert site._resolve_mg(7) == 7
 
 
 async def test_meter_reactive_power_reads_and_drives_through_the_site() -> None:

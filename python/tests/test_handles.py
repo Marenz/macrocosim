@@ -28,6 +28,9 @@ class FakeSite:
         self.evals.append(expr)
         return {"ok": True}
 
+    def _resolve_mg(self, mg_id: int | None) -> int:
+        return 1 if mg_id is None else mg_id
+
     def control_component(
         self, cid: int, action: str, payload: dict[str, Any], mg_id=None
     ) -> None:

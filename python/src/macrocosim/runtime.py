@@ -106,6 +106,8 @@ class Site:
         return f"grpc://{self.microgrids[mg_id].grpc}"
 
     def _resolve_mg(self, mg_id: int | None) -> int:
+        """The microgrid a per-microgrid call acts on: ``mg_id``,
+        else the lowest id in :attr:`microgrids`."""
         if mg_id is not None:
             return mg_id
         if not self.microgrids:
@@ -113,7 +115,7 @@ class Site:
                 "this Site has no microgrid endpoints; launch() discovers them, "
                 "connect() needs microgrids={id: MicrogridEndpoint(...)}"
             )
-        return next(iter(self.microgrids))
+        return min(self.microgrids)
 
     def grpc_client(self, mg_id: int | None = None) -> GrpcClient:
         """The gRPC client for a microgrid, connected on first use.
@@ -327,12 +329,12 @@ class Site:
                 taper_start=taper_start,
                 taper_floor=taper_floor,
             ),
-            mg_id,
+            self._resolve_mg(mg_id),
         )
 
     def unplug_ev(self, component_id: int, mg_id: int | None = None) -> bool:
         """Unplug the car; False when the charger was already empty."""
-        result = self._eval_ok(f"(unplug-ev {component_id})", mg_id)
+        result = self._eval_ok(f"(unplug-ev {component_id})", self._resolve_mg(mg_id))
         return result.get("value") == "t"
 
     def ev_info(self, component_id: int, mg_id: int | None = None) -> dict[str, Any]:
@@ -352,7 +354,8 @@ class Site:
 
         Rejections (unknown id, bad value) raise ``ControlRejected``.
         """
-        self._http.control(control_path(component_id, action, mg_id), payload)
+        path = control_path(component_id, action, self._resolve_mg(mg_id))
+        self._http.control(path, payload)
 
     def scenario(self, name: str) -> ScenarioRun:
         """Handle onto a registered ``(define-scenario …)`` for run/report."""

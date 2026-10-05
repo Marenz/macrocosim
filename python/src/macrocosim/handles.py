@@ -14,8 +14,9 @@ bound to the running site; act on it by *intent*:
 ``command`` issues a control command through the real gRPC gateway (so an
 out-of-envelope value raises :class:`~macrocosim.errors.SetpointRejected`, the
 production behaviour under test); ``status`` / ``drive`` are test-side stimuli
-POSTed to the typed control API (``/api/component/{id}/status`` / ``…/drive``);
-only a ``RawLisp`` drive goes through ``/api/eval``. The ``expect``
+POSTed to the typed control API
+(``/api/mg/{mg}/component/{id}/status`` / ``…/drive``); only a
+``RawLisp`` drive goes through the microgrid's eval. The ``expect``
 assertions are ``async`` (they await between polls): ``await
 site.expect.grid_power(...)`` (or ``site.microgrid(id)`` for a
 non-default one).
@@ -209,7 +210,7 @@ class ComponentHandle:
 
         Constant values go over the typed control API (rejections raise
         ``ControlRejected``); a ``RawLisp`` power (a lambda or symbol,
-        re-resolved every tick) still goes through ``/api/eval``.
+        re-resolved every tick) still goes through the microgrid's eval.
         """
         payload: dict[str, float] = {}
         if isinstance(power, RawLisp):
@@ -236,10 +237,10 @@ class ComponentHandle:
         return ComponentExpect(self._site, self._id, self._mg)
 
     def _eval(self, expr: str) -> None:
-        # /api/eval reports interpreter rejections as HTTP 200 + ok:false —
-        # surface them, or a status()/drive() typo silently no-ops and the
-        # test asserts against an unfaulted, undriven sim.
-        result = self._site.eval(expr, self._mg)
+        # Site.eval reports interpreter rejections as ok: False — surface
+        # them, or a status()/drive() typo silently no-ops and the test
+        # asserts against an unfaulted, undriven sim.
+        result = self._site.eval(expr, self._site._resolve_mg(self._mg))
         if not result.get("ok", True):
             raise EvalRejected(f"eval of {expr!r} failed: {result.get('error')}")
 

@@ -119,6 +119,8 @@ class Site:
         return f"grpc://{self.microgrids[mg_id].grpc}"
 
     def _resolve_mg(self, mg_id: int | None) -> int:
+        """The microgrid a per-microgrid call acts on: ``mg_id``,
+        else the lowest id in :attr:`microgrids`."""
         if mg_id is not None:
             return mg_id
         if not self.microgrids:
@@ -126,7 +128,7 @@ class Site:
                 "this Site has no microgrid endpoints; launch() discovers them, "
                 "connect() needs microgrids={id: MicrogridEndpoint(...)}"
             )
-        return next(iter(self.microgrids))
+        return min(self.microgrids)
 
     def _grpc(self, mg_id: int | None = None) -> AsyncGrpcClient:
         mg = self._resolve_mg(mg_id)
@@ -329,12 +331,13 @@ class Site:
                 taper_start=taper_start,
                 taper_floor=taper_floor,
             ),
-            mg_id,
+            self._resolve_mg(mg_id),
         )
 
     async def unplug_ev(self, component_id: int, mg_id: int | None = None) -> bool:
         """Unplug the car; False when the charger was already empty."""
-        result = await self._eval_ok(f"(unplug-ev {component_id})", mg_id)
+        mg = self._resolve_mg(mg_id)
+        result = await self._eval_ok(f"(unplug-ev {component_id})", mg)
         return result.get("value") == "t"
 
     async def ev_info(
@@ -356,7 +359,8 @@ class Site:
 
         Rejections (unknown id, bad value) raise ``ControlRejected``.
         """
-        await self._http.control(control_path(component_id, action, mg_id), payload)
+        path = control_path(component_id, action, self._resolve_mg(mg_id))
+        await self._http.control(path, payload)
 
     # --- scenarios --------------------------------------------------------------
 
@@ -532,12 +536,13 @@ class ComponentHandle:
 
         Constant values go over the typed control API (rejections raise
         ``ControlRejected``); a ``RawLisp`` power (a lambda or symbol,
-        re-resolved every tick) still goes through ``/api/eval``.
+        re-resolved every tick) still goes through the microgrid's eval.
         """
         payload: dict[str, float] = {}
         if isinstance(power, RawLisp):
             await self._site._eval_ok(
-                f"(set-meter-power {self._id} {to_lisp_atom(power)})", self._mg
+                f"(set-meter-power {self._id} {to_lisp_atom(power)})",
+                self._site._resolve_mg(self._mg),
             )
         elif power is not None:
             payload["power_w"] = power.as_watts()
