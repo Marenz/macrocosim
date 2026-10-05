@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::TestServer;
+use common::{TestServer, first_bounds};
 use macrocosim::proto::common::metrics::{Bounds, Metric};
 use macrocosim::proto::microgrid::microgrid_client::MicrogridClient;
 use macrocosim::proto::microgrid::{
@@ -27,48 +27,6 @@ fn active_power_w(resp: &ReceiveElectricalComponentTelemetryStreamResponse) -> O
             _ => None,
         }
     })
-}
-
-/// Pull the `AC_POWER_REACTIVE` sample's bounds out of a telemetry
-/// response. `None` when the component published no reactive sample.
-fn reactive_sample_bounds(
-    resp: &ReceiveElectricalComponentTelemetryStreamResponse,
-) -> Option<Vec<Bounds>> {
-    let t = resp.telemetry.as_ref()?;
-    t.metric_samples
-        .iter()
-        .find(|s| s.metric == Metric::AcPowerReactive as i32)
-        .map(|s| s.bounds.clone())
-}
-
-/// Subscribe to `id` and return the first reactive sample that
-/// carries bounds. Panics if none arrives within 5 s.
-async fn first_reactive_bounds(
-    c: &mut MicrogridClient<tonic::transport::Channel>,
-    id: u64,
-) -> Vec<Bounds> {
-    let mut stream = c
-        .receive_electrical_component_telemetry_stream(
-            ReceiveElectricalComponentTelemetryStreamRequest {
-                electrical_component_id: id,
-                filter: None,
-            },
-        )
-        .await
-        .expect("subscribe")
-        .into_inner();
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while let Ok(Some(msg)) = stream.message().await {
-            match reactive_sample_bounds(&msg) {
-                Some(b) if !b.is_empty() => return Some(b),
-                _ => continue,
-            }
-        }
-        None
-    })
-    .await
-    .expect("telemetry stream timed out")
-    .expect("a reactive sample carrying bounds")
 }
 
 /// Subscribe to `id` and block until its AC active power reaches
@@ -818,7 +776,7 @@ async fn reactive_augmentation_is_accepted_and_narrows_the_stream() {
     let mut c = connect(&s).await;
 
     // Baseline: the un-augmented band is the ±5 kVAr apparent cap.
-    let wide = first_reactive_bounds(&mut c, 4).await;
+    let wide = first_bounds(&mut c, 4, Metric::AcPowerReactive).await;
     assert_eq!(wide.len(), 1, "expected one band, got {wide:?}");
     assert_eq!(wide[0].lower, Some(-5000.0));
     assert_eq!(wide[0].upper, Some(5000.0));
@@ -857,7 +815,7 @@ async fn reactive_augmentation_is_accepted_and_narrows_the_stream() {
         "the active augment kind must not be used for a Q request, got {kinds:?}",
     );
 
-    let narrowed = first_reactive_bounds(&mut c, 4).await;
+    let narrowed = first_bounds(&mut c, 4, Metric::AcPowerReactive).await;
     assert_eq!(narrowed.len(), 1, "expected one band, got {narrowed:?}");
     assert_eq!(narrowed[0].lower, Some(-1000.0));
     assert_eq!(narrowed[0].upper, Some(1000.0));
@@ -942,7 +900,7 @@ async fn a_disjoint_q_augmentation_is_rejected_at_zero_headroom() {
 
     // 4. Nothing was stored: the axis still reports the honest zero
     //    headroom, and every nonzero Q setpoint is still refused.
-    let band = first_reactive_bounds(&mut c, 4).await;
+    let band = first_bounds(&mut c, 4, Metric::AcPowerReactive).await;
     assert_eq!(band.len(), 1, "expected one band, got {band:?}");
     assert_eq!((band[0].lower, band[0].upper), (Some(0.0), Some(0.0)));
     let err = c
@@ -1125,7 +1083,7 @@ async fn malformed_reactive_augmentation_is_rejected() {
 
     // Nothing was stored: the band is still the full ±5 kVAr cap, not
     // a silently unconstrained or bricked axis.
-    let band = first_reactive_bounds(&mut c, 4).await;
+    let band = first_bounds(&mut c, 4, Metric::AcPowerReactive).await;
     assert_eq!(band.len(), 1, "expected one band, got {band:?}");
     assert_eq!(band[0].lower, Some(-5000.0));
     assert_eq!(band[0].upper, Some(5000.0));
@@ -1185,34 +1143,7 @@ async fn battery_telemetry_carries_the_throttled_bounds() {
     )
     .await;
     let mut c = connect(&s).await;
-    let mut stream = c
-        .receive_electrical_component_telemetry_stream(
-            ReceiveElectricalComponentTelemetryStreamRequest {
-                electrical_component_id: 3,
-                filter: None,
-            },
-        )
-        .await
-        .expect("subscribe")
-        .into_inner();
-    let bounds = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while let Ok(Some(msg)) = stream.message().await {
-            let dc = msg.telemetry.as_ref().and_then(|t| {
-                t.metric_samples
-                    .iter()
-                    .find(|s| s.metric == Metric::DcPower as i32)
-            });
-            if let Some(dc) = dc
-                && !dc.bounds.is_empty()
-            {
-                return Some(dc.bounds.clone());
-            }
-        }
-        None
-    })
-    .await
-    .expect("telemetry stream timed out")
-    .expect("a DC power sample carrying bounds");
+    let bounds = first_bounds(&mut c, 3, Metric::DcPower).await;
     let (lo, hi) = soc_protected_bounds(-5_000.0, 5_000.0, 85.0, SocProtect::new(10.0, 90.0, 10.0));
     assert!(hi > 0.0 && hi < 5_000.0, "the test needs a taper, got {hi}");
     assert_eq!(bounds.len(), 1);

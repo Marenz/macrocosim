@@ -8,12 +8,11 @@ use std::time::Duration;
 
 mod common;
 
-use common::TestServer;
+use common::{TestServer, first_bounds};
 use macrocosim::proto::common::metrics::{Bounds, Metric};
 use macrocosim::proto::microgrid::microgrid_client::MicrogridClient;
 use macrocosim::proto::microgrid::{
-    AugmentElectricalComponentBoundsRequest, PowerType,
-    ReceiveElectricalComponentTelemetryStreamRequest, SetElectricalComponentPowerRequest,
+    AugmentElectricalComponentBoundsRequest, PowerType, SetElectricalComponentPowerRequest,
 };
 
 use macrocosim::lisp::Config;
@@ -361,41 +360,6 @@ fn a_standing_q_command_follows_a_narrowing_apparent_power_limit() {
     assert!((q - 8_000.0).abs() < 1.0, "back to the command, got {q}");
 }
 
-/// The upper edge of the first `metric` sample from `id`'s stream
-/// that carries bounds.
-async fn streamed_upper(
-    c: &mut MicrogridClient<tonic::transport::Channel>,
-    id: u64,
-    metric: Metric,
-) -> f32 {
-    let mut stream = c
-        .receive_electrical_component_telemetry_stream(
-            ReceiveElectricalComponentTelemetryStreamRequest {
-                electrical_component_id: id,
-                filter: None,
-            },
-        )
-        .await
-        .expect("subscribe")
-        .into_inner();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while let Ok(Some(msg)) = stream.message().await {
-            if let Some(t) = msg.telemetry.as_ref()
-                && let Some(s) = t
-                    .metric_samples
-                    .iter()
-                    .find(|s| s.metric == metric as i32 && !s.bounds.is_empty())
-            {
-                return s.bounds.last().and_then(|b| b.upper);
-            }
-        }
-        None
-    })
-    .await
-    .expect("telemetry stream timed out")
-    .expect("a sample carrying bounds")
-}
-
 const AGREEMENT_TOPOLOGY: &str = r#"
 (%make-grid-connection-point :id 1
   :successors (list (%make-meter :id 2
@@ -448,7 +412,11 @@ async fn bounds_reads_agree_across_every_consumer() {
             .unwrap()
             .upper
             .unwrap();
-        let grpc = streamed_upper(&mut c, id, metric).await;
+        let grpc = first_bounds(&mut c, id, metric)
+            .await
+            .last()
+            .and_then(|b| b.upper)
+            .expect("an upper edge");
         let lisp = num(&s.config, &format!("(component-bound-upper {id})")) as f32;
         let history = site
             .history_window(

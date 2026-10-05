@@ -18,6 +18,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use macrocosim::proto::common::metrics::{Bounds, Metric};
+use macrocosim::proto::microgrid::{
+    ReceiveElectricalComponentTelemetryStreamRequest, microgrid_client::MicrogridClient,
+};
 use macrocosim::{
     assets_server::AssetsServer, lisp::Config,
     proto::assets::platform_assets_server::PlatformAssetsServer as AssetsGrpcServer, ui,
@@ -195,6 +199,43 @@ pub async fn eval_or_panic(client: &reqwest::Client, s: &TestServer, body: &str)
         status.is_success() && json["ok"] == true,
         "eval {body} failed: {status} {json}",
     );
+}
+
+/// Subscribe to `id` and return the bounds of the first `metric`
+/// sample that carries any. Panics if none arrives within 5 s.
+#[allow(dead_code)]
+pub async fn first_bounds(
+    c: &mut MicrogridClient<tonic::transport::Channel>,
+    id: u64,
+    metric: Metric,
+) -> Vec<Bounds> {
+    let mut stream = c
+        .receive_electrical_component_telemetry_stream(
+            ReceiveElectricalComponentTelemetryStreamRequest {
+                electrical_component_id: id,
+                filter: None,
+            },
+        )
+        .await
+        .expect("subscribe")
+        .into_inner();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Ok(Some(msg)) = stream.message().await {
+            let sample = msg
+                .telemetry
+                .as_ref()
+                .and_then(|t| t.metric_samples.iter().find(|s| s.metric == metric as i32));
+            if let Some(s) = sample
+                && !s.bounds.is_empty()
+            {
+                return Some(s.bounds.clone());
+            }
+        }
+        None
+    })
+    .await
+    .expect("telemetry stream timed out")
+    .expect("a sample carrying bounds")
 }
 
 /// Wrap a test body in `(make-microgrid …)` if the body doesn't
