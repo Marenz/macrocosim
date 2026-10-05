@@ -17,9 +17,9 @@
 ;; snapshot (taken the moment before a scenario first touches a
 ;; knob) wins, always — and it holds for EVERY door onto those
 ;; knobs: the Lisp setters, the UI/REPL through them, and the typed
-;; `POST /api/component/:id/drive` route, which snapshots on exactly
-;; the same first-touch rule. `scenario-stop` also cancels every
-;; timer THIS scenario armed for itself — every `agent`
+;; `POST /api/mg/{mg}/component/{id}/drive` route, which snapshots on
+;; exactly the same first-touch rule. `scenario-stop` also cancels
+;; every timer THIS scenario armed for itself — every `agent`
 ;; (`scenario--agent` -> `define-controller` -> `every`), every
 ;; `cue` / `expect` check timer (`scenario--at`), and any
 ;; `random-outage` chain started while it was running — via

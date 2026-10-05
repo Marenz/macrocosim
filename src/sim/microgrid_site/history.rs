@@ -47,7 +47,7 @@ impl MicrogridSite {
     /// Each pushed metric also fans out as a `SiteEvent::Sample` on
     /// the broadcast bus, after the histories lock is released — so
     /// WS subscribers see live samples but can't deadlock against
-    /// each other or against /api/history readers.
+    /// each other or against component history readers.
     pub fn record_history_snapshot(&self, now: DateTime<Utc>) {
         let components = self.inner.components.read().clone();
         let mut emitted: Vec<(u64, Metric, f32)> = Vec::new();

@@ -271,7 +271,7 @@ fn parse_expect_metric(name: &str) -> Option<Metric> {
 /// EVERY door onto those knobs takes that snapshot, on the same
 /// first-touch rule: the `set-meter-power` &c. Lisp defuns and the
 /// two `clear-meter-*` defuns (`src/lisp/defuns/load_drivers.rs`),
-/// and the typed `POST /api/component/:id/drive` route
+/// and the typed `POST /api/mg/{mg}/component/{id}/drive` route
 /// (`src/ui/handlers/control.rs`). No door is exempt — one that was
 /// would not merely leak its own poke past teardown, it would let a
 /// first-touch poke through it be captured as the "pre-scenario"

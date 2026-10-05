@@ -1,9 +1,9 @@
 // Phase-1 SPA. Renders the topology route with vis-network, and on
 // node selection shows category-appropriate live charts in the
-// floating inspector.
-// Visual editing (add / connect / rename / delete) + REPL +
-// Defaults / Scenarios all hang off the same /api/eval mutation
-// path so anything done in the UI is also scriptable from outside.
+// floating inspector. Visual editing (add / connect / rename /
+// delete) + REPL + Defaults / Scenarios all hang off the same
+// /api/eval mutation path so anything done in the UI is also
+// scriptable from outside.
 
 import { clockState, pulseBar } from "./chrome.js";
 import {
@@ -560,24 +560,23 @@ async function init() {
       clearTimeout(formulaRefreshTimer);
       formulaRefreshTimer = setTimeout(refreshFormula, 300);
     }
-    // On a structural change the loopback supervisor debounces
-    // ~300ms and rebuilds the Microgrid handle; metrics/status
-    // reports not connected and metrics/formulas answers 503
-    // mid-rebuild. (A runtime poke such as set-meter-power fires
-    // this event too but triggers no rebuild; the backfill below
-    // then just refetches an unchanged history.) Delay the
-    // metrics-panel re-fetch so it lands after the supervisor
-    // settles. At most one backfill timer is armed at a time (each
-    // backfill refetches the full 15-min history for every stream);
-    // events landing while it's armed set the pending flag, and the
-    // callback re-arms once more when the flag is set. So a
-    // sustained event storm gets one backfill per 800 ms window
-    // (never starved), and the last event of a burst always has a
-    // backfill land ≥ 800 ms after it — past the supervisor's
-    // rebuild, so the final history refetch isn't the one that ate
-    // a 503. The store's backfill() is 503-tolerant — an undershoot
-    // leaves the existing series in place, and the next sample-flow
-    // tick extends them again.
+    // On a structural change the loopback supervisor debounces ~300ms
+    // and rebuilds the Microgrid handle; metrics/status reports not
+    // connected and metrics/formulas answers 503 mid-rebuild. (A
+    // runtime poke such as set-meter-power fires this event too but
+    // triggers no rebuild; the backfill below then just refetches an
+    // unchanged history.) Delay the metrics-panel re-fetch so it
+    // lands after the supervisor settles. At most one backfill timer
+    // is armed at a time (each backfill refetches the full 15-min
+    // history for every stream); events landing while it's armed set
+    // the pending flag, and the callback re-arms once more when the
+    // flag is set. So a sustained event storm gets one backfill per
+    // 800 ms window (never starved), and the last event of a burst
+    // always has a backfill land ≥ 800 ms after it — past the
+    // supervisor's rebuild, so the final history refetch isn't the
+    // one that ate a 503. The store's backfill() is 503-tolerant — an
+    // undershoot leaves the existing series in place, and the next
+    // sample-flow tick extends them again.
     if (topologyBackfillTimer == null) {
       armTopologyBackfill();
     } else {

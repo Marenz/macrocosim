@@ -116,8 +116,8 @@ function pressureAux(pressure) {
   return { kind: "text", text: `${pressure.toFixed(1)} bar` };
 }
 
-// component: an /api/topology component; live: { p, q, soc, dc, hz }
-// or null; options: { valuesOn, catColor, deadBand }.
+// component: a component of /api/mg/{mg}/topology; live: { p, q,
+// soc, dc, hz } or null; options: { valuesOn, catColor, deadBand }.
 export function pillModel(c, live, { valuesOn, catColor, deadBand }) {
   let hero = null;
   let aux = null;

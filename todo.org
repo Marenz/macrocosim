@@ -50,9 +50,9 @@ output to verify.
   not collide with anything else), waits for the
   =Macrocosim UI listening= readiness marker, returns
   ={ uiUrl }=. Tear-down kills the process.
-- Tests: page loads at =/=, =/api/topology= returns a non-empty
-  graph, clicking a node populates the inspect pane, the REPL
-  textarea accepts =42= and renders =42= in the output.
+- Tests: page loads at =/=, =/api/mg/{mg}/topology= returns a
+  non-empty graph, clicking a node populates the inspect pane, the
+  REPL textarea accepts =42= and renders =42= in the output.
 
 Acceptance: =npm test= passes on a clean checkout in <30 s; one
 flake-free pass over 10 consecutive runs.
@@ -951,16 +951,17 @@ a small change once decided.
 - State "DONE"       from "TODO"       [2026-08-25 Di] \\
   Mostly stale by the time it was picked up: schedulePoll already
   gated on the mode, running the full 5-fetch refresh only while
-  Scenarios shows and a single /api/scenario chip fetch otherwise.
-  The remaining cadence call is now made too: the hidden-mode chip
-  poll runs every 15 s instead of 3 s.
+  Scenarios shows and a single /api/mg/{mg}/scenario chip fetch
+  otherwise. The remaining cadence call is now made too: the
+  hidden-mode chip poll runs every 15 s instead of 3 s.
 :END:
 
 =panels.js='s =schedulePoll= never cancelled, so once the Scenarios
 view had been opened it kept polling on every view. By pickup time
 the full multi-fetch refresh was already gated on the mode with a
-chip-only =/api/scenario= fallback; the remaining cadence call —
-how often that background chip poll should run — landed as 15 s.
+chip-only =/api/mg/{mg}/scenario= fallback; the remaining cadence
+call — how often that background chip poll should run — landed as
+15 s.
 
 *** DONE [#C] hot_reload test races watcher installation          :testing:
 :LOGBOOK:
@@ -1070,8 +1071,11 @@ config just went =inactive=. The tri-knob atomic apply alone won't
 close it: =operational_modes= is a separate lock from =runtime=, so
 the fix must also re-read (or hold) the mode under the runtime lock.
 
-** TODO [#C] Inspector setpoints pane queries the ambient site           :ui:
+** DONE [#C] Inspector setpoints pane queries the ambient site           :ui:
 :LOGBOOK:
+- State "DONE"       from "TODO"       [2026-10-05 Mo] \\
+  The setpoints pane reads =/api/mg/{mg}/component/{cid}/setpoints=,
+  so it shows the selected microgrid's own traffic.
 - State "TODO"       from              [2026-07-17 Fr 12:46]
 :END:
 
@@ -2129,7 +2133,7 @@ the same hole), surfaced during the 2026-08-29 race fix review.
 :END:
 
 The SDK reaches weather only through raw ~site.eval~ lisp strings. Add
-a typed surface wrapping ~GET~/~POST /api/weather~: an ~mg.weather~
+a typed surface wrapping ~GET~/~POST /api/mg/{mg}/weather~: an ~mg.weather~
 handle with ~configure(sunrise=..., sunset=..., peak=..., cloud_rate=...,
 depth=(lo, hi), duration=..., ramp=..., seed=...)~, ~pass_cloud(depth,
 duration, ramp=None)~ and ~status()~ — so Python callers get the typed

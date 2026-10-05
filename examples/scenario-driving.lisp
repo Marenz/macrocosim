@@ -10,9 +10,9 @@
 ;; Watch progress in the UI's "Report" side panel, or curl the JSON
 ;; endpoints:
 ;;
-;;   curl -s http://127.0.0.1:8801/api/scenario          ;; lifecycle
-;;   curl -s http://127.0.0.1:8801/api/scenario/events   ;; journal
-;;   curl -s http://127.0.0.1:8801/api/scenario/report   ;; metrics
+;;   curl -s http://127.0.0.1:8801/api/mg/2200/scenario          ;; lifecycle
+;;   curl -s http://127.0.0.1:8801/api/mg/2200/scenario/events   ;; journal
+;;   curl -s http://127.0.0.1:8801/api/mg/2200/scenario/report   ;; metrics
 ;;
 ;; Component ids referenced below match berlin-demo.lisp's pinned
 ;; topology:
@@ -88,8 +88,8 @@
 ;; what happened when.
 ;;
 ;; Replace the id list with your actual battery ids — `macroctl tree`
-;; or the topology JSON (/api/topology) is the easiest way to look
-;; them up.
+;; or the topology JSON (/api/mg/{mg}/topology) is the easiest way to
+;; look them up.
 (random-outage '(1000)
                :min-every 300.0
                :max-every 600.0

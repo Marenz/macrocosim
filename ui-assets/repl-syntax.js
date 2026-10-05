@@ -66,7 +66,7 @@ export const COMPLETIONS = [
   "set-voltage-per-phase",
   "set-frequency",
   // Site weather — the sky the solar inverters follow. Same doors the
-  // weather panel drives over /api/weather.
+  // weather panel drives over /api/mg/{mg}/weather.
   "make-weather",
   "set-weather",
   "pass-cloud",

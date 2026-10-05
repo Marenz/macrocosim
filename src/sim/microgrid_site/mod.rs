@@ -231,9 +231,9 @@ struct MicrogridSiteInner {
     /// `SimulatedComponent::name()` stays as the auto-derived default.
     name_overrides: RwLock<HashMap<u64, String>>,
     /// Per-component telemetry history rings, populated by the
-    /// `spawn_history_sampler` task. Read by the UI's `/api/history`
-    /// endpoint. Cleared on `reset()` so a hot-reload starts charts
-    /// fresh.
+    /// `spawn_history_sampler` task. Read by the UI's
+    /// `component/{cid}/history` endpoint. Cleared on `reset()` so a
+    /// hot-reload starts charts fresh.
     histories: RwLock<HashMap<u64, ComponentHistory>>,
     /// Per-component cumulative-energy accumulators, advanced on every
     /// physics `tick_once` from the power the component settled on (so
@@ -247,12 +247,12 @@ struct MicrogridSiteInner {
     component_energy: RwLock<HashMap<u64, EnergyAccum>>,
     /// Per-component log of incoming setpoint requests + outcome.
     /// Populated by the gRPC server handlers for SetActivePower /
-    /// SetReactivePower / AugmentBounds; read by /api/setpoints for
-    /// the UI's control inspector.
+    /// SetReactivePower / AugmentBounds; read by
+    /// `component/{cid}/setpoints` for the UI's control inspector.
     setpoint_logs: RwLock<HashMap<u64, SetpointLog>>,
     /// Monotonic version counter; bumped via `bump_version` on every
-    /// accepted /api/eval (and future programmatic mutations) so UI
-    /// tabs know to refetch /api/topology.
+    /// accepted eval (and future programmatic mutations) so UI tabs
+    /// know to refetch /api/mg/{mg}/topology.
     version: AtomicU64,
     /// Run generation — bumped by `reset()`, which a config hot-reload
     /// runs before rebuilding the site. Readers holding cumulative state
@@ -493,9 +493,9 @@ impl MicrogridSite {
 
     // ─── Version counter + event broadcast bus ────────────────────────
     //
-    // Every accepted /api/eval bumps `version`, which fires a
-    // `TopologyChanged` on the broadcast bus. Live UI tabs listen
-    // and refetch /api/topology on each bump.
+    // Every accepted eval bumps `version`, which fires a
+    // `TopologyChanged` on the broadcast bus. Live UI tabs listen and
+    // refetch /api/mg/{mg}/topology on each bump.
 
     pub fn version(&self) -> u64 {
         self.inner.version.load(Ordering::Relaxed)
@@ -1373,8 +1373,8 @@ impl MicrogridSite {
     //
     // Per-component rolling log of accepted / rejected setpoint
     // requests. Populated by the gRPC handlers; read by the UI's
-    // /api/setpoints inspector. Each `log_setpoint` also broadcasts
-    // on the event bus for live UI updates.
+    // `component/{cid}/setpoints` inspector. Each `log_setpoint` also
+    // broadcasts on the event bus for live UI updates.
 
     /// Append a setpoint event to the per-component log + broadcast
     /// it on the site event bus so live UI inspectors update without

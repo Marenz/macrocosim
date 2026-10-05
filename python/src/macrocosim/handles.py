@@ -237,9 +237,10 @@ class ComponentHandle:
         return ComponentExpect(self._site, self._id, self._mg)
 
     def _eval(self, expr: str) -> None:
-        # Site.eval reports interpreter rejections as ok: False — surface
-        # them, or a status()/drive() typo silently no-ops and the test
-        # asserts against an unfaulted, undriven sim.
+        # The server answers a rejected eval with HTTP 400, and
+        # Site.eval turns that into ok: False. Surface it, or a
+        # status()/drive() typo silently no-ops and the test asserts
+        # against an unfaulted, undriven sim.
         result = self._site.eval(expr, self._site._resolve_mg(self._mg))
         if not result.get("ok", True):
             raise EvalRejected(f"eval of {expr!r} failed: {result.get('error')}")

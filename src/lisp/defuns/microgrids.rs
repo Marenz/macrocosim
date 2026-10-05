@@ -73,11 +73,10 @@ pub(in crate::lisp) fn register(
         );
     }
     // Read-only accessors scripts use to dispatch on the active
-    // microgrid. Outside a per-mg
-    // context (e.g. boot before any (make-microgrid) form, or a
-    // legacy /api/eval call without an mg scope) they fall back
-    // to the first registry entry so single-microgrid configs
-    // keep returning sensible values.
+    // microgrid. Outside a per-mg context (e.g. boot before any
+    // (make-microgrid) form, or a `POST /api/eval` call, which has no
+    // microgrid in scope) they fall back to the first registry entry
+    // so single-microgrid configs keep returning sensible values.
     {
         let cur = current.clone();
         let reg = registry.clone();

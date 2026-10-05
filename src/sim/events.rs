@@ -24,7 +24,7 @@ pub const EVENT_BUS_CAPACITY: usize = 4096;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SiteEvent {
     /// Mutation occurred (eval, reload, …). Subscribers should
-    /// refetch /api/topology if they care about structure or
+    /// refetch /api/mg/{mg}/topology if they care about structure or
     /// metadata changes. Cheap signal — sent on every accepted eval
     /// regardless of whether the eval actually mutated state.
     TopologyChanged { version: u64 },

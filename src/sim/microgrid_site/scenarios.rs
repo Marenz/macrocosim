@@ -280,11 +280,11 @@ impl MicrogridSite {
     /// the `set-meter-power` / `set-meter-reactive-power` /
     /// `set-meter-power-factor` / `set-solar-sunlight` /
     /// `set-boiler-demand` / `clear-meter-power` /
-    /// `clear-meter-reactive` Lisp defuns, and the typed
-    /// `POST /api/component/:id/drive` route's equivalent fields. A
-    /// door that skipped it would not just leak its own write past
-    /// teardown — its first-touch write would become the "baseline"
-    /// a later drive captures, and `scenario_stop` would restore THAT
+    /// `clear-meter-reactive` Lisp defuns, and the typed `POST
+    /// /api/mg/{mg}/component/{id}/drive` route's equivalent fields.
+    /// A door that skipped it would not just leak its own write past
+    /// teardown — its first-touch write would become the "baseline" a
+    /// later drive captures, and `scenario_stop` would restore THAT
     /// instead of the pre-scenario state.
     pub(crate) fn scenario_snapshot_knob(&self, id: u64, kind: KnobKind) {
         if !self.scenario_is_running() {

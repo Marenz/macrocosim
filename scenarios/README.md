@@ -163,7 +163,7 @@ explicit `(load …)` is needed:
   goes back in. First snapshot wins:
   it doesn't matter how often the run re-drove a knob, whether a
   cue re-drove it, or whether you poked it yourself mid-run — from
-  the REPL, the UI, or `POST /api/component/:id/drive`, all of
+  the REPL, the UI, or `POST /api/mg/{mg}/component/{id}/drive`, all of
   which snapshot on the same rule. A knob the run never touched is
   never restored.
 - Freezes elapsed time and every metric accumulator, and flushes +

@@ -97,16 +97,20 @@ macroctl scenario list                                         # registered scen
 macroctl scenario run cloud-fade --wait --assert              # run one live + gate
 macroctl snapshot save before-test                             # freeze the mg's managed file
 macroctl dashboard --tail                                      # one-line/sec pulse bar
-macroctl dispatch list 1                                       # dispatch API CRUD
-macroctl dispatch create 1 <type> battery --duration 3600
+macroctl dispatch list                                         # dispatch API CRUD
+macroctl dispatch create <type> battery --duration 3600
+macroctl --microgrid-id 2 info                                 # pick another microgrid
 ```
 
-`--addr` (default `http://[::1]:8800`) points the gRPC client
-at the first microgrid; for additional microgrids pass
-`--addr http://[::1]:8810` etc. `--ui-addr` (default
-`http://127.0.0.1:8801`) points the HTTP-driven verbs
-(`scenario*`, `snapshot`, `dashboard`). `--json` swaps any
-human table for the raw JSON.
+`--microgrid-id` selects the microgrid for every subcommand (default:
+the lowest id). `--addr` overrides the gRPC address of the commands
+that use gRPC; with `--microgrid-id` it must be that microgrid's own
+address. `--ui-addr` (default `http://127.0.0.1:8801`) points at the
+UI server, which the HTTP-driven verbs (`scenario*`, `snapshot`,
+`dashboard`, `pool`) talk to. The gRPC commands ask it for the
+microgrid's address unless `--addr` alone is given, and `dispatch`
+asks it for the lowest microgrid id when `--microgrid-id` is not
+given. `--json` swaps any human table for the raw JSON.
 
 The `scenario` subcommand covers both the ad-hoc journal verbs
 (start / stop / event / load / report / events / summary) and the

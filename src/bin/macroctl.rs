@@ -425,10 +425,11 @@ async fn main() {
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.cmd {
-        // HTTP-backed commands dispatch directly — they only need
-        // the HTTP client, not a live gRPC channel. Avoids paying
-        // for a failing gRPC connect when the user only wants
-        // a scenario readout.
+        // HTTP-backed commands dispatch directly: they use the HTTP
+        // client (`dispatch` only to look up the microgrid id, then
+        // talks to the dispatch service) and need no gRPC channel to
+        // the Microgrid service, so a scenario readout never waits
+        // on a gRPC connect.
         Cmd::Dispatch(d) => {
             let http = reqwest::Client::new();
             let mg = resolve_microgrid_id(&http, &cli.ui_addr, cli.microgrid_id).await?;

@@ -25,8 +25,9 @@ pub enum SetpointKind {
     /// consumer already reads changes meaning.
     AugmentBounds,
     /// A *reactive*-power bounds augmentation. The two augment routes
-    /// journal distinct kinds so `/api/setpoints`, the event bus and
-    /// the setpoints CSV keep the axis the request was aimed at.
+    /// journal distinct kinds so `component/{cid}/setpoints`, the
+    /// event bus and the setpoints CSV keep the axis the request was
+    /// aimed at.
     AugmentReactiveBounds,
 }
 

@@ -284,10 +284,28 @@ UI").
   multi-PV site, and `:weather-lag-s 0` opts out; `:array-peak-w` sizes
   the DC array whichever source the sunlight comes from); passing
   `:sunlight%` explicitly makes it Manual instead, and
-  `(clear-solar-sunlight ID)` is the way back to Follow. `GET`/`POST
-  /api/weather` mirror the same four doors for the weather panel (day
-  curve, live site-% readout, pass-a-cloud trigger), which has no Lisp
-  console of its own.
+  `(clear-solar-sunlight ID)` is the way back to Follow.
+  `GET`/`POST /api/mg/{mg}/weather` mirror the same four doors for the
+  weather panel (day curve, live site-% readout, pass-a-cloud
+  trigger), which has no Lisp console of its own.
+
+## HTTP API
+
+- Whole-site routes live under `/api/` (microgrids, load, load-as,
+  import, eval, format, defaults, logs, clock, scripts, scenarios).
+  `POST /api/eval` evaluates with no microgrid in scope.
+- Everything about one microgrid lives under `/api/mg/{mg}/`, served
+  by one nested router; the `Mg` extractor resolves `{mg}` and
+  answers 404 `microgrid {mg} not registered` itself.
+- A path names a resource; a verb appears only for an action (start,
+  stop, load, load-as, import, adopt, undo, redo, snapshots/load, a
+  dispatch's active). Ids that pick the resource are path segments;
+  query parameters only filter.
+- Every failure is JSON `{"error": "..."}` with a 4xx/5xx status
+  (`ApiError` in `src/ui/api.rs`); a route may add fields beside it.
+  An unknown path answers 404 `no route for {METHOD} {path}`.
+  Success bodies carry no `ok`; an action with nothing to return
+  answers 204.
 
 ## Build / run / test
 
@@ -341,15 +359,15 @@ for the start and report it; the microgrid card shows the address and
 a "failed" chip. The UI's loopback client reads a private copy of the
 Microgrid service through an in-memory channel, so a microgrid's live
 data reaches the UI whether or not its public port is bound.
-macroctl's `--addr` points the gRPC client at
-the first microgrid by default; pass `--addr http://[::1]:8810`
-etc. to reach others. The UI server binds `127.0.0.1:8801` by
-default; override the port with `--ui-port N`, or pass
-`--ephemeral-ports` to bind the UI and every gRPC / assets / dispatch
-listener on OS-chosen ports (parallel CI instances). A routable
-`--ui-bind` host is still on the roadmap. Add `--emit-endpoints=PATH`
-to write the resolved addresses as one JSON line once bound (the
-readiness signal).
+macroctl's global `--microgrid-id` picks the microgrid for every
+subcommand (default: the lowest id); `--addr` optionally overrides
+the gRPC address and must agree with `--microgrid-id` when both are
+given. The UI server binds `127.0.0.1:8801` by default; override the
+port with `--ui-port N`, or pass `--ephemeral-ports` to bind the UI
+and every gRPC / assets / dispatch listener on OS-chosen ports
+(parallel CI instances). A routable `--ui-bind` host is still on the
+roadmap. Add `--emit-endpoints=PATH` to write the resolved addresses
+as one JSON line once bound (the readiness signal).
 
 `PlatformAssets` and `MicrogridDispatchService` each bind a single
 shared listener (they're enterprise-wide, keyed by `microgrid_id` per
@@ -512,10 +530,10 @@ overrides)` (`:soc`, `:target-soc`, `:phases`, `:max-current-a`,
 component that takes no EV — and `(ev-presets)`, the catalog.
 `(set-battery-soc ID PCT)` on a charger moves the plugged car's SoC
 and errors when nothing is plugged, as does
-`POST /api/component/{id}/drive` with `soc_pct`. Plug state is a
-scenario knob (`KnobKind::Ev`): every write that changes the plug or
-the car snapshots it first, so a scenario's teardown puts the
-charger back the way it found it.
+`POST /api/mg/{mg}/component/{id}/drive` with `soc_pct`. Plug state
+is a scenario knob (`KnobKind::Ev`): every write that changes the
+plug or the car snapshots it first, so a scenario's teardown puts
+the charger back the way it found it.
 
 Being runtime state, the plugged car is never written to the managed
 file — `EvCharger::constructor_kwargs` renders `:phases`, `:idle` and
@@ -578,7 +596,9 @@ GCP active-power limiter is the motivating case).
   setpoint.
 - Drive sim state ad-hoc by POSTing lisp to
   `http://127.0.0.1:8801/api/eval`, e.g.
-  `--data "(set-component-health 201 'error)"` → `{"ok":true,…}`.
+  `--data "(set-component-health 201 'error)"` → `{"value":…}`; a
+  failed eval answers 400 `{"error":"…"}`. Use
+  `/api/mg/{mg}/eval` to evaluate inside one microgrid's scope.
 - Macrocosim's physics supports closed-loop bound tests today; the
   remaining gaps are ergonomic, not physical — scenario assertions,
   an in-sim controller/actor that reacts to live bounds, declarative

@@ -408,7 +408,8 @@ impl Config {
         // Validate every registered site, not the (always-empty)
         // bootstrap: components live in the per-mg sites created by
         // `(make-microgrid …)`. The UI reads validation per request
-        // via /api/topology; these calls exist for the boot log.
+        // via /api/mg/{mg}/topology; these calls exist for the boot
+        // log.
         for (id, entry) in microgrids.lock().iter() {
             log_topology_validation(&entry.site, &format!("boot (microgrid {id})"));
         }
@@ -1493,7 +1494,8 @@ fn script_parent_dir(script: &str) -> PathBuf {
 /// that wire up `Config` against `""` would otherwise fail.
 /// Non-empty worlds that fail validation surface as a `log::warn!`
 /// in the simulator log; the pulse bar's graph pill gets its ⚠ from
-/// `/api/topology`, which validates the requested site per request.
+/// `/api/mg/{mg}/topology`, which validates the requested site per
+/// request.
 ///
 /// On success the log line includes a one-line summary so a dev
 /// reading the log can confirm macrocosim parsed the topology the

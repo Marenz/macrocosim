@@ -619,8 +619,8 @@ impl microgrid_server::Microgrid for MicrogridServer {
         // Only the two AC power axes carry augmentable bounds. Every
         // other metric is a protocol error, and the message names the
         // metric that was asked for. The two axes journal distinct
-        // kinds so /api/setpoints, the event bus and the setpoints CSV
-        // can tell a P augmentation from a Q one.
+        // kinds so `component/{cid}/setpoints`, the event bus and the
+        // setpoints CSV can tell a P augmentation from a Q one.
         let (axis, journal_kind) = match target_metric {
             Metric::AcPowerActive => (SetpointAxis::Active, SetpointKind::AugmentBounds),
             Metric::AcPowerReactive => {

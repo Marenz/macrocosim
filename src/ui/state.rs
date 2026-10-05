@@ -51,19 +51,19 @@ pub struct MicrogridSampleSnapshot {
 pub struct MicrogridState {
     pub microgrid: RwLock<Option<Microgrid>>,
     /// Latest sample seen per stream name. Forwarders overwrite on
-    /// each recv; the `metrics/latest` endpoint snapshots the
+    /// each recv; `GET /api/mg/{mg}/metrics/latest` snapshots the
     /// whole map on each call. `parking_lot::RwLock` because writes
-    /// are non-async (no await between lock + drop) and contention
-    /// is tiny (one writer per stream at 1 Hz). A rebuild prunes it
-    /// to the streams the new graph publishes, so absent streams
-    /// don't surface stale values while the rest carry on; a new run
-    /// (site reset) clears it.
+    /// are non-async (no await between lock + drop) and contention is
+    /// tiny (one writer per stream at 1 Hz). A rebuild prunes it to
+    /// the streams the new graph publishes, so absent streams don't
+    /// surface stale values while the rest carry on; a new run (site
+    /// reset) clears it.
     pub latest: RwLock<HashMap<&'static str, MicrogridSampleSnapshot>>,
     /// Rolling history per stream (timestamp + value), ring-buffered
     /// to 1000 entries — 15 minutes at the 1 Hz forwarder cadence
-    /// with a little slack. Feeds `metrics/history` so the
-    /// Dashboard tile sparklines can backfill on page load instead
-    /// of starting empty. Pruned and cleared on rebuilds like
+    /// with a little slack. Feeds `/api/mg/{mg}/metrics/history` so
+    /// the Dashboard tile sparklines can backfill on page load
+    /// instead of starting empty. Pruned and cleared on rebuilds like
     /// `latest`.
     pub history: RwLock<HashMap<&'static str, VecDeque<HistorySample>>>,
     /// Currently-running forwarder tasks. Rebuilds abort these +

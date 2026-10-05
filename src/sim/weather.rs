@@ -504,15 +504,16 @@ impl WeatherDoor<'_> {
 /// parsed out of whatever wire shape it arrived in.
 ///
 /// Both weather doors — the Lisp `(make-weather)` / `(set-weather)`
-/// forms in `src/lisp/defuns/weather.rs` and `POST /api/weather` in
-/// `src/ui/handlers/weather.rs` — carry the same fields, fold them in
-/// the same order, run the same checks, and share the same "a
-/// rejected request changes nothing" contract. So each door only
-/// parses its own spelling (an `"HH:MM"` string or bare seconds and a
-/// number-or-`(lo hi)` range from Lisp; JSON strings and `[lo, hi]`
-/// pairs over HTTP) into this struct. Everything past that point —
-/// the fold order, the validation, the sunrise/sunset pair check and
-/// the create-or-update install decision — lives here, written once.
+/// forms in `src/lisp/defuns/weather.rs` and `POST
+/// /api/mg/{mg}/weather` in `src/ui/handlers/weather.rs` — carry the
+/// same fields, fold them in the same order, run the same checks, and
+/// share the same "a rejected request changes nothing" contract. So
+/// each door only parses its own spelling (an `"HH:MM"` string or
+/// bare seconds and a number-or-`(lo hi)` range from Lisp; JSON
+/// strings and `[lo, hi]` pairs over HTTP) into this struct.
+/// Everything past that point — the fold order, the validation, the
+/// sunrise/sunset pair check and the create-or-update install
+/// decision — lives here, written once.
 #[derive(Default)]
 pub struct WeatherPatch {
     /// Time of day (UTC) the clear-sky curve turns on.
