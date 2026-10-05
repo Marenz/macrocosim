@@ -11,7 +11,11 @@ is wiring the topology + animating the environment.
   microgrid (physics, history, gRPC server, UI loopback) and its
   started / failed status
 - `src/sim/` — components + scheduler
-  - `component.rs` — `SimulatedComponent` trait, `ComponentHandle`, `Telemetry`
+  - `component.rs` — `SimulatedComponent` trait, `ComponentHandle`,
+    `Telemetry`; `component/` holds the capability traits
+    (`Controllable`, `DcStorage`, `ReactiveLimits`, and the knob
+    traits `MeterDrive`, `SunlightDrive`, `SteamDrive`, `EvPort`),
+    each reached through an accessor on `SimulatedComponent`
   - `microgrid_site/` — per-microgrid registry, physics tick, grid state,
     topology (+ `history.rs` sampler, `scenarios.rs` event log)
   - `microgrids.rs` — enterprise registry + per-mg routing
@@ -209,31 +213,32 @@ UI").
 - **One gateway per microgrid holds every Microgrid API rule.** The
   gRPC service and the Lisp setpoint / augmentation commands talk to
   `site.gateway()`; the components are plain hardware with one command
-  input per power axis (`set_command`). The gateway validates (0 is
-  always accepted; NaN never), arms request lifetimes and stamps
-  augmentations on the site clock, expires both on the physics tick
-  (`gateway.step` runs in `tick_once` before the components), and
-  refuses a command whose site was reset since its lookup ("site was
-  reset"). The protocol layer — fault gates, over-bound fault
-  injection, the setpoint journal, lifetime windows — stays in
-  `server.rs`. Lock order: gateway → registry read guards → component
-  locks; the gateway lock is never held across an `.await`.
+  input per power axis (`Controllable::set_command`). The gateway
+  validates (0 is always accepted; NaN never), arms request lifetimes
+  and stamps augmentations on the site clock, expires both on the
+  physics tick (`gateway.step` runs in `tick_once` before the
+  components), and refuses a command whose site was reset since its
+  lookup ("site was reset"). The protocol layer — fault gates,
+  over-bound fault injection, the setpoint journal, lifetime windows —
+  stays in `server.rs`. Lock order: gateway → registry read guards →
+  component locks; the gateway lock is never held across an `.await`.
 - **An axis is a `GatewayAxis` in the gateway plus a `DeviceAxis` in
   the component.** The chain is gateway delay → gateway ramp → device
   delay → output. Each step the gateway targets the armed command
-  (else the component's `idle_value`), clamps it to validation
-  envelope ∩ `physical_band`, narrows that toward 0 by (battery
-  inverter, P) its window share without crossing 0, ramps, and never
-  leaves the ramp outside the physical band or the share — a narrowing
-  is followed at once, a widening is climbed at the ramp rate. The
-  validation envelope is the rated band (P) or the
+  (else the component's `Controllable::idle_value`), clamps it to
+  validation envelope ∩ `Controllable::physical_band`, narrows that
+  toward 0 by (battery inverter, P) its window share without crossing
+  0, ramps, and never leaves the ramp outside the physical band or the
+  share — a narrowing is followed at once, a widening is climbed at
+  the ramp rate. The validation envelope is the rated band (P) or the
   `ReactiveCapability` at the last measured P (Q) ∩ live
   augmentations; `:reactive-pf-limit` sets `k` in `|Q| ≤ k × |P|` — a
   ratio of apparent quantities, not true power factor. The device
   output is the delayed command clamped to the rated band and the
-  current physical band, so a direct `set_command` is capped too. A
-  health trip snaps both to 0, empties the delay line, and clears the
-  command unless `keeps_command_through_fault` (PV active, a charger
+  current physical band, so a direct `Controllable::set_command` is
+  capped too. A health trip snaps both to 0, empties the delay line,
+  and clears the command unless
+  `Controllable::keeps_command_through_fault` (PV active, a charger
   with `:resume-on-recovery`). The EV charger's axis produces the
   *limit* it offers the plugged car, not the draw.
 - **The battery is hardware from 0 % to 100 %; the SoC window is the
@@ -245,19 +250,19 @@ UI").
   pushing into it in proportion to their pushes (same sign only), so a
   running setpoint tapers and holds inside the window within one
   device delay. Inverters still publish their push scaled by each
-  child's `dc_accept_ratio`, which stays 1 inside the window; without
-  the gateway a battery charges to 100 %. Every inverter pushing into
-  a battery gets the same ratio, so inverters on one bus share a clip
-  in proportion to their pushes. An inverter publishes 0 (P and Q)
-  when it is tripped or when no healthy child took its push. Reactive
-  power terminates at the inverter: a DC bus carries no Q. A meter's
-  own reactive source is the real thing: mutually-exclusive
-  `:reactive-power` (a VAr constant, lambda, or symbol) or
-  `:power-factor` + `:leading` (true cos φ in `(0, 1]`, deriving `Q =
-  P·tan(acos(pf))` off the meter's own live P, negated when leading).
-  Like `:power`, a fixed numeric reactive source freezes into the
-  persisted managed file; a lambda or symbol source doesn't, and
-  leaves the meter unrenderable.
+  child's `DcStorage::dc_accept_ratio`, which stays 1 inside the
+  window; without the gateway a battery charges to 100 %. Every
+  inverter pushing into a battery gets the same ratio, so inverters on
+  one bus share a clip in proportion to their pushes. An inverter
+  publishes 0 (P and Q) when it is tripped or when no healthy child
+  took its push. Reactive power terminates at the inverter: a DC bus
+  carries no Q. A meter's own reactive source is the real thing:
+  mutually-exclusive `:reactive-power` (a VAr constant, lambda, or
+  symbol) or `:power-factor` + `:leading` (true cos φ in `(0, 1]`,
+  deriving `Q = P·tan(acos(pf))` off the meter's own live P, negated
+  when leading). Like `:power`, a fixed numeric reactive source
+  freezes into the persisted managed file; a lambda or symbol source
+  doesn't, and leaves the meter unrenderable.
 - **Single physics tick, registration order = tick order.** `MicrogridSite::spawn_physics`
   runs one `tokio::time::interval` at `physics_tick_ms` and calls `tick()` on
   every component in registration order. Children register first because Lisp
@@ -382,13 +387,16 @@ so construction + validation stay identical.
 
 ## Adding a component type
 
-1. New file under `src/sim/` implementing `SimulatedComponent`. A
-   controllable component answers the hardware facts the gateway reads
-   (`has_axis`, `set_command`, `physical_band`, `idle_value`,
-   `initial_value`, `keeps_command_through_fault`,
+1. New file under `src/sim/` implementing `SimulatedComponent`.
+   A component with a capability implements its trait from
+   `src/sim/component/` and overrides the matching accessor with
+   `Some(self)`: a controllable one implements `Controllable`
+   (`has_axis`, `set_command`, `physical_band`, plus the defaulted
+   `idle_value`, `initial_value`, `keeps_command_through_fault`,
    `bounds_follow_physical_band`, `gateway_settings`) and keeps one
-   `DeviceAxis` per axis; the gateway supplies validation, lifetimes,
-   augmentations and the ramp.
+   `DeviceAxis` per axis; the gateway supplies validation,
+   lifetimes, augmentations and the ramp. Add the component to the
+   capability table test in `src/sim/component.rs`.
 2. Add to `src/sim/mod.rs` re-exports.
 3. Add a `%make-foo` defun in `src/lisp/make.rs` with `AsPlist!`-derived
    args, calling `site.register(...)`. Note the leading `%` —
@@ -470,9 +478,16 @@ rebuild; a script that wants live defaults-editing can still
 ## Adding a runtime knob
 
 1. Field on the component config struct + plist arg in `src/lisp/make.rs`.
-2. (If runtime-mutable) trait method override + `MicrogridSite` setter + Lisp defun
-   in the matching `src/lisp/defuns/` file. Use `(every …)` or
-   `(run-with-timer …)` from the config to script behaviour over time.
+2. (If runtime-mutable) a method on the matching capability trait,
+   and a Lisp defun in the matching `src/lisp/defuns/` file that
+   reaches it through the accessor and broadcasts `note_knob_changed`.
+   A knob a scenario can displace also first calls
+   `scenario_snapshot_knob` with the `KnobKind` of the slot it writes;
+   a new slot needs a new variant, with arms in `snapshot_knob` /
+   `restore_knob`. A new capability also needs its own trait, an
+   accessor on `SimulatedComponent`, and a row in the capability table
+   test. Use `(every …)` or `(run-with-timer …)` from the config to
+   script behaviour over time.
 3. Demonstrate via a new line in `examples/berlin-demo.lisp` and
    verify via macroctl.
 

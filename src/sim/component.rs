@@ -365,22 +365,28 @@ pub enum KnobSnapshot {
 ///
 /// Reading order:
 ///   - **Identity**: id, category, name, subtype, is_hidden.
-///   - **Lifecycle**: stream_interval, stream_jitter_pct, tick, telemetry.
-///   - **Capability groups**: controllable ([`Controllable`]),
-///     reactive_limits ([`ReactiveLimits`]), meter_drive
-///     ([`MeterDrive`]), sunlight_drive ([`SunlightDrive`]),
-///     steam_drive ([`SteamDrive`]), ev_port ([`EvPort`]),
-///     dc_storage ([`DcStorage`]). Each accessor answers `Some` on
-///     the components that have the group. The Microgrid API rules
-///     themselves live in `sim::gateway`, never here.
+///   - **Lifecycle**: stream_interval, stream_jitter_pct,
+///     refresh_inputs, tick, telemetry, active_power_w.
+///   - **Capabilities**, each its own trait reached through an
+///     accessor that returns `None` unless the component has it:
+///     `controllable` ([`Controllable`], what the gateway drives),
+///     `dc_storage` ([`DcStorage`], the battery side of the DC bus),
+///     `reactive_limits` ([`ReactiveLimits`]), and the scenario and
+///     UI knobs `meter_drive` ([`MeterDrive`]), `sunlight_drive`
+///     ([`SunlightDrive`]), `steam_drive` ([`SteamDrive`]) and
+///     `ev_port` ([`EvPort`]). The Microgrid API rules live in
+///     `sim::gateway`, never in a component.
 ///   - **Bounds**: rated_active_bounds, rated_fuse_current.
-///   - **Aggregation** (parent → child): aggregate_power_w,
+///   - **Aggregation** (parent reads from child): aggregate_power_w,
 ///     aggregate_reactive_var.
+///   - **Scenario teardown**: snapshot_knob, restore_knob.
+///   - **Managed-file rendering**: make_fn, has_unrenderable_source,
+///     constructor_kwargs.
 ///
-/// Every method except the required ones (`id`, `category`, `name`,
-/// `stream_interval`, `tick`, `telemetry`, `make_fn`,
-/// `constructor_kwargs`) has a default — components implement only
-/// the surface they need.
+/// The required methods are `id`, `category`, `name`,
+/// `stream_interval`, `tick`, `telemetry`, `make_fn` and
+/// `constructor_kwargs`; a component overrides the accessors for the
+/// capabilities it has.
 pub trait SimulatedComponent: Send + Sync + fmt::Display {
     // ── identity ─────────────────────────────────────────────────────
 
