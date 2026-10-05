@@ -39,7 +39,7 @@ use events_ws::events_ws;
 /// Run the UI HTTP server on an already-bound listener.
 ///
 /// `runtimes` starts and reports each microgrid's runtime, and holds
-/// the per-microgrid loopback slots the `/api/mg/{mg}/microgrid/*`
+/// the per-microgrid loopback slots the `/api/mg/{mg}/metrics/*`
 /// routes read.
 pub async fn serve_with_listener(
     listener: tokio::net::TcpListener,
@@ -63,7 +63,7 @@ fn router(config: Config, runtimes: crate::runtime::MicrogridRuntimes) -> Router
         formula::formula,
         history::{history, setpoints},
         microgrid_data::{
-            clock_info, microgrid_formulas, microgrid_history, microgrid_latest, microgrid_status,
+            clock_info, metrics_formulas, metrics_history, metrics_latest, metrics_status,
         },
         microgrids::{
             adopt, load_file, load_file_as, microgrids_create, microgrids_import, microgrids_list,
@@ -82,22 +82,21 @@ fn router(config: Config, runtimes: crate::runtime::MicrogridRuntimes) -> Router
         .route("/topology", get(topology))
         .route("/eval", post(eval_for_mg))
         .route("/formula", get(formula))
+        .route("/component/{id}", get(component))
         .route("/component/{id}/status", post(component_status))
         .route("/component/{id}/drive", post(component_drive))
+        .route("/component/{id}/history", get(history))
+        .route("/component/{id}/setpoints", get(setpoints))
+        .route("/component/{id}/ev", get(ev))
         .route("/weather", get(weather_get).post(weather_post))
-        .route("/history", get(history))
-        .route("/setpoints", get(setpoints))
-        .route("/component", get(component))
-        .route("/ev/{id}", get(ev))
-        .route("/microgrid/status", get(microgrid_status))
-        .route("/microgrid/latest", get(microgrid_latest))
-        .route("/microgrid/history", get(microgrid_history))
-        .route("/microgrid/formulas", get(microgrid_formulas))
+        .route("/metrics/status", get(metrics_status))
+        .route("/metrics/latest", get(metrics_latest))
+        .route("/metrics/history", get(metrics_history))
+        .route("/metrics/formulas", get(metrics_formulas))
         .route("/adopt", post(adopt))
         .route("/undo", get(undo_depths).post(undo))
         .route("/redo", post(redo))
-        .route("/snapshots", get(snapshots_list))
-        .route("/snapshots/save", post(snapshots_save))
+        .route("/snapshots", get(snapshots_list).post(snapshots_save))
         .route("/snapshots/load", post(snapshots_load))
         .route("/dispatches", get(dispatches).post(dispatch_create))
         .route("/dispatches/{dispatch_id}", delete(dispatch_delete))
@@ -124,8 +123,10 @@ fn router(config: Config, runtimes: crate::runtime::MicrogridRuntimes) -> Router
         .route("/api/scripts", get(scripts_list))
         .route("/api/load", post(load_file))
         .route("/api/load-as", post(load_file_as))
-        .route("/api/microgrids", get(microgrids_list))
-        .route("/api/microgrids/create", post(microgrids_create))
+        .route(
+            "/api/microgrids",
+            get(microgrids_list).post(microgrids_create),
+        )
         .route(
             "/api/microgrids/import",
             // Site exports run to tens of MB; axum's 2 MB default

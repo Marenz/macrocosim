@@ -38,7 +38,6 @@ pub(in crate::ui) async fn snapshots_save(
         .await?
         .map_err(status_for)?;
     Ok(Json(serde_json::json!({
-        "ok": true,
         "path": path.display().to_string(),
     })))
 }
@@ -73,12 +72,11 @@ pub(in crate::ui) async fn snapshots_load(
         && let Some(id) = loaded
     {
         return Ok(Json(serde_json::json!({
-            "ok": true,
             "id": id,
             "runtime": super::microgrids::start_and_report(&runtimes, id).await,
         })));
     }
-    Ok(Json(serde_json::json!({ "ok": true, "id": loaded })))
+    Ok(Json(serde_json::json!({ "id": loaded })))
 }
 
 /// Map a snapshot failure onto the status code that describes it:

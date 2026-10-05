@@ -61,7 +61,6 @@ async fn step(
 
 fn depths_json(depths: UndoDepths) -> serde_json::Value {
     serde_json::json!({
-        "ok": true,
         "undo_depth": depths.undo,
         "redo_depth": depths.redo,
     })

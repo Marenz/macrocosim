@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import Any
 
@@ -10,6 +11,7 @@ import pytest
 from frequenz.quantities import Percentage, Power
 
 from macrocosim._http import HttpClient
+from macrocosim.aio._http import AsyncHttpClient
 from macrocosim.build import raw
 from macrocosim.enums import CommandMode, Health, TelemetryMode
 from macrocosim.errors import ControlRejected
@@ -127,3 +129,31 @@ def test_eval_maps_400_to_ok_false() -> None:
     assert bad.eval("(x)") == {"ok": False, "error": "boom"}
     good = _client_answering(200, {"value": "3"})
     assert good.eval("(+ 1 2)") == {"ok": True, "value": "3"}
+
+
+def _no_content(_req: httpx.Request) -> httpx.Response:
+    return httpx.Response(204)
+
+
+def test_post_and_control_tolerate_204() -> None:
+    client = HttpClient("http://macrocosim.test")
+    client._client = httpx.Client(
+        base_url="http://macrocosim.test",
+        transport=httpx.MockTransport(_no_content),
+    )
+    assert client.post("/api/mg/1/component/2/status") == {}
+    assert client.control("/api/mg/1/component/2/drive", {"power_w": 1.0}) == {}
+
+
+def test_async_post_and_control_tolerate_204() -> None:
+    async def run() -> None:
+        client = AsyncHttpClient("http://macrocosim.test")
+        client._client = httpx.AsyncClient(
+            base_url="http://macrocosim.test",
+            transport=httpx.MockTransport(_no_content),
+        )
+        assert await client.post("/api/scenarios/stop") == {}
+        assert await client.control("/api/mg/1/component/2/drive", {}) == {}
+        await client.aclose()
+
+    asyncio.run(run())

@@ -1,25 +1,21 @@
-//! `/api/mg/{mg}/component` — the inspector's read-back snapshot for
-//! one component: its runtime knobs (meter power/reactive/PF, solar
-//! sunlight, reactive PF-limit/apparent-VA caps), the last accepted
-//! setpoint per axis with its remaining request-lifetime, whether a
-//! bounds augmentation is currently narrowing each axis, and the
-//! setpoint envelope each axis is gated against. Distinct from
-//! `history` (time series) and `setpoints` (the raw event log) — this
-//! is "what does the component look like right now".
+//! `/api/mg/{mg}/component/{id}` — the inspector's read-back snapshot
+//! for one component: its runtime knobs (meter power/reactive/PF,
+//! solar sunlight, reactive PF-limit/apparent-VA caps), the last
+//! accepted setpoint per axis with its remaining request-lifetime,
+//! whether a bounds augmentation is currently narrowing each axis,
+//! and the setpoint envelope each axis is gated against. Distinct
+//! from `component/{id}/history` (time series) and
+//! `component/{id}/setpoints` (the raw event log) — this is "what
+//! does the component look like right now".
 
 use chrono::{Duration as ChronoDuration, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::sim::component::{ReactiveReading, ScalarReading};
 use crate::sim::setpoints::{SetpointKind, SetpointOutcome};
 use crate::timeout_tracker::SetpointAxis;
 
-use crate::ui::api::{ApiError, Json, Mg, Query};
-
-#[derive(Deserialize)]
-pub(in crate::ui) struct ComponentQuery {
-    id: u64,
-}
+use crate::ui::api::{ApiError, Json, Mg, Path};
 
 #[derive(Serialize)]
 pub(in crate::ui) struct ComponentStateResponse {
@@ -81,9 +77,9 @@ struct Envelope {
 
 pub(in crate::ui) async fn component(
     mg: Mg,
-    Query(q): Query<ComponentQuery>,
+    Path((_, id)): Path<(u64, u64)>,
 ) -> Result<Json<ComponentStateResponse>, ApiError> {
-    component_state(&mg.site, q.id).map(Json)
+    component_state(&mg.site, id).map(Json)
 }
 
 fn knob(

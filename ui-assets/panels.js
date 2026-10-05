@@ -7,7 +7,7 @@ import { refreshPaletteLock } from "./editor.js";
 import { errorText } from "./http.js";
 import { publishMgFlags, readSelectedMg, reconcileSelection, renderReplMgChip } from "./routing.js";
 
-// Lowest id `/api/microgrids/create` allocates when none is asked
+// Lowest id `POST /api/microgrids` allocates when none is asked
 // for (`DEFAULT_MICROGRID_ID` server-side). The create dialog
 // pre-fills the same choice the server would make, computed off the
 // list the panel already holds, so the field shows a real id rather
@@ -72,7 +72,7 @@ export const microgridsPanel = (() => {
       grid.appendChild(card);
     }
     // Trailing [+ New microgrid] card: opens the create dialog,
-    // which POSTs /api/microgrids/create and selects the new entry.
+    // which POSTs /api/microgrids and selects the new entry.
     const newCard = document.createElement("button");
     newCard.type = "button";
     newCard.className = "mglist-card mglist-new";
@@ -350,7 +350,7 @@ export const microgridsPanel = (() => {
         if (port !== "") body.grpc_port = Number(port);
         let created;
         try {
-          created = await (await mutate("POST", "/api/microgrids/create", body)).json();
+          created = await (await mutate("POST", "/api/microgrids", body)).json();
         } catch (ex) {
           // A taken id or port comes back 409 with the server's own
           // wording — shown in the dialog, which stays open so the

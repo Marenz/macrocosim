@@ -13,6 +13,7 @@
 
 import { escapeHtml, mutate, notify } from "./app.js";
 import { ACCEPTS_SETPOINTS } from "./inspect.js";
+import { mgFetch, readSelectedMg } from "./routing.js";
 
 // The server's duration_s / recurrence interval are u32 — validate
 // here so the user gets a readable message instead of the server's
@@ -331,13 +332,16 @@ export const dispatchForm = (() => {
     // Re-entrancy guard: a double-click on the New-dispatch button
     // would otherwise run two concurrent opens, and the second
     // showModal() on an already-open dialog throws.
-    if (mgId == null || opening || dlg().open) return;
+    // The form posts to mgId but loads the selected microgrid's
+    // topology, so the two must agree.
+    if (mgId == null || mgId !== readSelectedMg() || opening || dlg().open) return;
     opening = true;
     session += 1;
     currentMg = mgId;
     resetForm();
     try {
-      const res = await fetch(`/api/mg/${mgId}/topology`);
+      const res = await mgFetch("topology");
+      if (res == null) throw new Error("no microgrid selected");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const topo = await res.json();
       populateTargets(topo.components || []);

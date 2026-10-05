@@ -26,7 +26,7 @@ import { topology } from "./topology.js";
 // would otherwise pass the unchanged gen check and install a uPlot,
 // a live metricsStore subscription, or a TTL timer that nothing is
 // registered to ever clear. Three live in this file: one for the
-// deferred chart builds, one for the /api/component snapshot fetches
+// deferred chart builds, one for the component/{id} snapshot fetches
 // and one for the EV card's poll (the latter two also keep a sequence
 // so two in-flight fetches for the same open node resolve in start
 // order).
@@ -59,7 +59,7 @@ const CHARTS_BY_CATEGORY = {
 
 // Display-only labels per metric. Scaling, units, and the
 // "is this a power-family quantity?" decision now come off the
-// /api/history response's `quantity` + `unit` fields — see
+// component/{id}/history response's `quantity` + `unit` fields — see
 // chooseScale below. Anything not in this table falls back to the
 // raw metric name as the chart title.
 const METRIC_TITLES = {
@@ -381,7 +381,7 @@ function saveCardOpen(name, open) {
 //
 // The charger's own telemetry deliberately says nothing about the car
 // in it, so this card reads the simulator's private view over
-// /api/mg/{mg}/ev/{id} instead and writes back through plug-ev /
+// component/{id}/ev instead and writes back through plug-ev /
 // unplug-ev — the same eval path every other inspector control uses.
 // The preset catalog is the server's (`presets`, sent plugged or not),
 // never a copy of it here: a car added to the catalog shows up in this
@@ -438,7 +438,7 @@ async function refreshEvCard(id) {
   const token = beginEvFetch();
   let info;
   try {
-    const res = await mgFetch(`ev/${id}`);
+    const res = await mgFetch(`component/${id}/ev`);
     if (res == null) throw new Error("no microgrid selected");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     info = await res.json();
@@ -795,7 +795,7 @@ function renderInspect(d, parentIds, childIds) {
 
 // ── Live read-back ─────────────────────────────────────────────────
 //
-// Snapshot fetch (/api/component), edit-in-place knob prefill,
+// Snapshot fetch (component/{id}), edit-in-place knob prefill,
 // envelope bars, and the setpoint TTL row for whichever node is
 // currently shown. One session slot (`liveState`), mirroring
 // liveCharts' one-active-selection discipline: rebuilt wholesale on
@@ -813,7 +813,7 @@ function renderInspect(d, parentIds, childIds) {
 let liveState = null;
 let ttlTimerId = null;
 
-// The start-order half of the /api/component fetch guard, alongside
+// The start-order half of the component/{id} fetch guard, alongside
 // `snapshotAlive`: inspectorLive.applySetpoint's re-fetch has no
 // `gen` at all (it isn't triggered by a render), so two accepted
 // setpoint events for the same still-open node can resolve out of
@@ -822,7 +822,7 @@ let ttlTimerId = null;
 // most-recently-STARTED one's resolution is allowed to paint.
 let snapshotSeq = 0;
 
-// Call when starting any /api/component fetch that will (on success)
+// Call when starting any component/{id} fetch that will (on success)
 // call applySnapshot. Returns a token to pass to snapshotFetchStale
 // once the fetch settles.
 function beginSnapshotFetch() {
@@ -1044,7 +1044,7 @@ function prefillKnobs(snap) {
   }
 }
 
-// Rebuild liveState from a fresh /api/component snapshot and repaint
+// Rebuild liveState from a fresh component/{id} snapshot and repaint
 // everything it drives: knob prefill, both envelope bars, both TTL
 // rows, the augmented badge. Shared by the initial fetch (renderNode)
 // and inspectorLive.applySetpoint's re-fetch on an accepted setpoint
@@ -1102,14 +1102,14 @@ function applySnapshot(id, snap) {
   startTtlTimer();
 }
 
-// The raw /api/component GET, factored out so a single in-flight
+// The raw component/{id} GET, factored out so a single in-flight
 // fetch can be shared by fetchSnapshot (knob read-back) and, for a
 // steam boiler, buildCharts's pressure-target title suffix — both
 // want the same snapshot in the same render pass, and issuing it
 // twice would double the GETs every time a boiler is selected with
 // the Charts card pinned open.
 function fetchComponentSnapshot(id) {
-  return mgFetch(`component?id=${id}`).then(async (res) => {
+  return mgFetch(`component/${id}`).then(async (res) => {
     if (res == null) throw new Error("no microgrid selected");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
@@ -1159,7 +1159,7 @@ function stopTtlTimer() {
     ttlTimerId = null;
   }
   liveState = null;
-  // Disown any /api/component fetch still in flight for the panel
+  // Disown any component/{id} fetch still in flight for the panel
   // being torn down, so it can't resurrect this timer (see aliveToken).
   snapshotAlive.bump();
 }
@@ -1246,12 +1246,7 @@ export const inspectorLive = {
     // whose tenant has since been torn down, so an older response
     // can never paint over a newer one.
     const token = beginSnapshotFetch();
-    mgFetch(`component?id=${id}`)
-      .then((res) => {
-        if (res == null) throw new Error("no microgrid selected");
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
+    fetchComponentSnapshot(id)
       .then((snap) => {
         if (snapshotFetchStale(token)) return;
         if (liveState && liveState.id === id) applySnapshot(id, snap);
@@ -1302,7 +1297,7 @@ export function showComponent(d) {
 async function renderNode(d, gen, keptEvCard) {
   // vis-network's getConnectedNodes(id, direction) returns the
   // ids on either side of the selected node — cheaper than walking
-  // /api/topology for the disconnect buttons. Display labels get
+  // the topology route for the disconnect buttons. Display labels get
   // resolved by renderInspect via topology.get().
   const parentIds = topology.parentsOf(d.id);
   const childIds = topology.childrenOf(d.id);
@@ -1327,7 +1322,7 @@ async function renderNode(d, gen, keptEvCard) {
   // selections via localStorage). `built` guards against wiring the
   // charts twice if the card is folded/unfolded repeatedly.
   const isGrid = d.category === "grid";
-  // One /api/component fetch per selection — shared by the knob
+  // One component/{id} fetch per selection — shared by the knob
   // read-back below (fetchSnapshot) and buildCharts's pressure-target
   // title suffix — kicked off here so it's already in flight by the
   // time either consumer wants it, whichever runs first. The grid has
@@ -1399,12 +1394,12 @@ async function renderNode(d, gen, keptEvCard) {
 
 // The grid connection point's single chart. It reads the site-wide
 // `grid_frequency` stream out of the metrics store rather than
-// /api/history, because the sim's Grid publishes no per-component
-// telemetry — the old per-component frequency_hz fetch is exactly
-// what drew an empty chart here. Same source as the metrics panel's
-// Frequency card, and the store is fed by repl.js on every
-// microgrid_sample frame regardless of that panel's open state, so
-// this chart grows live on its own.
+// component/{id}/history, because the sim's Grid publishes no
+// per-component telemetry — the old per-component frequency_hz fetch
+// is exactly what drew an empty chart here. Same source as the
+// metrics panel's Frequency card, and the store is fed by repl.js on
+// every microgrid_sample frame regardless of that panel's open state,
+// so this chart grows live on its own.
 //
 // Returns { plot, destroy }; the caller owns the slot (see
 // gridChart / clearGridChart above).
@@ -1480,7 +1475,7 @@ async function buildCharts(d, container, snapshotJsonP) {
   // A steam boiler's pressure chart annotates the controller's
   // thermostat target in its title — no cheap reference-line idiom
   // in this hand-rolled uPlot setup, so this reads it off the
-  // /api/component snapshot the caller already has in flight
+  // component/{id} snapshot the caller already has in flight
   // (fetchComponentSnapshot, shared with fetchSnapshot's knob
   // read-back) rather than issuing its own fetch. `null` on any
   // failure just means no suffix, same degrade-quietly discipline as
@@ -1501,7 +1496,7 @@ async function buildCharts(d, container, snapshotJsonP) {
   });
   const results = await Promise.all(
     slots.map(({ metric }) =>
-      mgFetch(`history?id=${d.id}&metric=${metric}&window_s=300`)
+      mgFetch(`component/${d.id}/history?metric=${metric}&window_s=300`)
         .then(async (res) => {
           if (res == null) throw new Error("no microgrid selected");
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1568,7 +1563,7 @@ async function renderSetpoints(id, container) {
   wrap.innerHTML = "<h3>Recent setpoints</h3>";
   container.appendChild(wrap);
   try {
-    const res = await mgFetch(`setpoints?id=${id}&window_s=600`);
+    const res = await mgFetch(`component/${id}/setpoints?window_s=600`);
     if (res == null) throw new Error("no microgrid selected");
     if (!res.ok) throw new Error(await errorText(res));
     const data = await res.json();

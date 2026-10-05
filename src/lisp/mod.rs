@@ -277,7 +277,7 @@ pub struct Config {
     pub(crate) import_lock: Arc<tokio::sync::Mutex<()>>,
     /// Enterprise-wide notification fired when a new microgrid
     /// lands in `microgrids` — both `(make-microgrid …)` and
-    /// `/api/microgrids/create` publish on it. The WS event pump
+    /// `POST /api/microgrids` publish on it. The WS event pump
     /// subscribes so it can spawn a forwarder for the new site's
     /// event bus on the fly, instead of only the entries that
     /// existed at WS-connect time.
@@ -303,7 +303,7 @@ pub struct Config {
     /// [`crate::lisp::undo`].
     pub(crate) undo: undo::SharedUndo,
     /// Serializes the routes that claim a microgrid id and a port,
-    /// then write and load a file: `/api/microgrids/create` (import's
+    /// then write and load a file: `POST /api/microgrids` (import's
     /// create step included), `/api/load-as`, and a snapshot loaded
     /// as a new microgrid. The load cannot run under the registry
     /// lock (it evaluates lisp), so one claim at a time is what keeps
@@ -359,7 +359,7 @@ impl Config {
     }
 
     /// Shared process-wide id allocator backing every microgrid
-    /// in the registry. The /api/microgrids/create endpoint
+    /// in the registry. The `POST /api/microgrids` endpoint
     /// clones this into a fresh `MicrogridSite::with_id_allocator`
     /// so runtime-created microgrids participate in the same
     /// globally-unique component-id space as boot-time ones.

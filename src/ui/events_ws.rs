@@ -49,7 +49,7 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
     // enterprise-wide `microgrid_registered` channel. The initial
     // snapshot covers every entry present at connect time; the
     // registered-channel branch in the select! below spawns a fresh
-    // forwarder when /api/microgrids/create or (make-microgrid)
+    // forwarder when POST /api/microgrids or (make-microgrid)
     // adds an entry mid-session. One forwarder task per site tags
     // events with the originating mg_id and pushes onto a shared
     // mpsc that the select! drains into the WebSocket.
@@ -190,7 +190,7 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
                 Some(Err(_)) | None => break,
             },
             // A new microgrid landed in the registry (from
-            // `(make-microgrid)` or /api/microgrids/create). Spawn
+            // `(make-microgrid)` or POST /api/microgrids). Spawn
             // a forwarder for its site so this WS session starts
             // receiving its sample / topology_changed events.
             // Subscribers can lag if registrations burst past the

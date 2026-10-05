@@ -168,7 +168,7 @@ class Site:
     async def latest(self, mg_id: int | None = None) -> dict[str, Any]:
         """Latest sample per formula/component stream, keyed by name."""
         mg = self._resolve_mg(mg_id)
-        return await self._http.get_json(f"/api/mg/{mg}/microgrid/latest")
+        return await self._http.get_json(f"/api/mg/{mg}/metrics/latest")
 
     async def formula(self, name: str, mg_id: int | None = None) -> float | None:
         """Raw value of one formula stream (e.g. ``"grid_power"``), or None."""
@@ -346,7 +346,7 @@ class Site:
         """The car plugged into ``component_id``: ``{"plugged": False}`` or its
         fields, plus ``presets`` (the catalog) either way."""
         mg = self._resolve_mg(mg_id)
-        return await self._http.get_json(f"/api/mg/{mg}/ev/{component_id}")
+        return await self._http.get_json(f"/api/mg/{mg}/component/{component_id}/ev")
 
     async def control_component(
         self,
@@ -536,7 +536,7 @@ class ComponentHandle:
 
         Constant values go over the typed control API (rejections raise
         ``ControlRejected``); a ``RawLisp`` power (a lambda or symbol,
-        re-resolved every tick) still goes through the microgrid's eval.
+        re-resolved every tick) goes through the microgrid's eval.
         """
         payload: dict[str, float] = {}
         if isinstance(power, RawLisp):

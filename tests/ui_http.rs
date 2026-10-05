@@ -144,7 +144,7 @@ async fn structural_evals_rewrite_the_managed_microgrid_file() {
     let client = reqwest::Client::new();
 
     let created: Value = client
-        .post(format!("{}/api/microgrids/create", s.ui_url))
+        .post(format!("{}/api/microgrids", s.ui_url))
         .json(&serde_json::json!({"name": "saved"}))
         .send()
         .await
@@ -431,11 +431,7 @@ async fn grid_reactive_formula_converges_over_a_site_with_an_ev_charger() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     let snapshot = loop {
-        let body = json(
-            &client,
-            format!("{}/api/mg/{id}/microgrid/latest", s.ui_url),
-        )
-        .await;
+        let body = json(&client, format!("{}/api/mg/{id}/metrics/latest", s.ui_url)).await;
         let converged = body["grid_reactive_power"]["value"]
             .as_f64()
             .is_some_and(|v| v.is_finite());
@@ -509,11 +505,7 @@ async fn per_source_reactive_streams_converge() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     let snapshot = loop {
-        let body = json(
-            &client,
-            format!("{}/api/mg/{id}/microgrid/latest", s.ui_url),
-        )
-        .await;
+        let body = json(&client, format!("{}/api/mg/{id}/metrics/latest", s.ui_url)).await;
         let converged = ["pv_reactive_power", "battery_reactive_power"]
             .iter()
             .all(|s| body[*s]["value"].as_f64().is_some_and(|v| v.is_finite()));
@@ -580,11 +572,7 @@ async fn grid_frequency_streams_on_a_multi_feeder_site() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     let snapshot = loop {
-        let body = json(
-            &client,
-            format!("{}/api/mg/{id}/microgrid/latest", s.ui_url),
-        )
-        .await;
+        let body = json(&client, format!("{}/api/mg/{id}/metrics/latest", s.ui_url)).await;
         let converged = body["grid_frequency"]["value"]
             .as_f64()
             .is_some_and(|v| v.is_finite());
@@ -736,7 +724,7 @@ async fn drive_clear_sunlight_returns_to_weather_and_rejects_non_solar() {
         .error_for_status()
         .unwrap();
 
-    let comp = json(&client, s.mg_url("component?id=2")).await;
+    let comp = json(&client, s.mg_url("component/2")).await;
     let knobs = comp["knobs"].as_array().unwrap();
     let poked = knobs
         .iter()
@@ -754,7 +742,7 @@ async fn drive_clear_sunlight_returns_to_weather_and_rejects_non_solar() {
         .error_for_status()
         .unwrap();
 
-    let comp = json(&client, s.mg_url("component?id=2")).await;
+    let comp = json(&client, s.mg_url("component/2")).await;
     let cleared = comp["knobs"]
         .as_array()
         .unwrap()
@@ -878,11 +866,7 @@ async fn steam_boiler_pool_streams_reach_the_loopback_snapshot() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     let snapshot = loop {
-        let body = json(
-            &client,
-            format!("{}/api/mg/{id}/microgrid/latest", s.ui_url),
-        )
-        .await;
+        let body = json(&client, format!("{}/api/mg/{id}/metrics/latest", s.ui_url)).await;
         let converged = ["steam_boiler_pool_power", "steam_boiler_pool_bounds_upper"]
             .iter()
             .all(|k| body[k]["value"].as_f64().is_some_and(|v| v.is_finite()));
@@ -939,7 +923,7 @@ async fn a_meter_power_override_keeps_the_aggregate_history() {
     let id = mgs.as_array().expect("microgrids array")[0]["id"]
         .as_u64()
         .expect("microgrid id");
-    let history_url = format!("{}/api/mg/{id}/microgrid/history", s.ui_url);
+    let history_url = format!("{}/api/mg/{id}/metrics/history", s.ui_url);
     let grid_power_len = |body: &Value| body["grid_power"].as_array().map_or(0, |a| a.len());
 
     // Let the loopback connect and the grid_power ring fill a little.
@@ -982,7 +966,7 @@ async fn ev_route_reports_plug_state() {
     let client = reqwest::Client::new();
     let base = format!("{}/api/mg/2200", s.ui_url);
 
-    let empty = json(&client, format!("{base}/ev/6")).await;
+    let empty = json(&client, format!("{base}/component/6/ev")).await;
     assert_eq!(empty["plugged"], false, "{empty}");
     // The catalog rides along even on an empty charger, so the
     // inspector's dropdown never hardcodes it.
@@ -996,20 +980,28 @@ async fn ev_route_reports_plug_state() {
 
     eval_or_panic(&client, &s, "(plug-ev 6 'city :soc 25)").await;
 
-    let plugged = json(&client, format!("{base}/ev/6")).await;
+    let plugged = json(&client, format!("{base}/component/6/ev")).await;
     assert_eq!(plugged["plugged"], true, "{plugged}");
     assert_eq!(plugged["preset"], "city");
     assert_eq!(plugged["phases"], 1);
     assert!((plugged["soc_pct"].as_f64().unwrap() - 25.0).abs() < 0.01);
     assert!(plugged["state"].is_string());
 
-    let not_charger = client.get(format!("{base}/ev/2")).send().await.unwrap();
+    let not_charger = client
+        .get(format!("{base}/component/2/ev"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(not_charger.status(), 400);
     assert_eq!(
         not_charger.json::<Value>().await.unwrap()["error"],
         "component 2 is not an EV charger"
     );
-    let missing = client.get(format!("{base}/ev/99")).send().await.unwrap();
+    let missing = client
+        .get(format!("{base}/component/99/ev"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(missing.status(), 404);
 }
 
@@ -1057,7 +1049,7 @@ async fn drive_soc_on_an_empty_charger_names_the_missing_ev() {
         .unwrap()
         .error_for_status()
         .unwrap();
-    let plugged = json(&client, format!("{base}/ev/6")).await;
+    let plugged = json(&client, format!("{base}/component/6/ev")).await;
     assert!(
         (plugged["soc_pct"].as_f64().unwrap() - 50.0).abs() < 0.01,
         "{plugged}"
@@ -1085,14 +1077,14 @@ async fn drive_soc_on_a_charger_is_undone_by_scenario_teardown() {
         .unwrap()
         .error_for_status()
         .unwrap();
-    let mid = json(&client, format!("{base}/ev/6")).await;
+    let mid = json(&client, format!("{base}/component/6/ev")).await;
     assert!(
         (mid["soc_pct"].as_f64().unwrap() - 60.0).abs() < 0.5,
         "{mid}"
     );
 
     eval_or_panic(&client, &s, "(scenario-stop)").await;
-    let after = json(&client, format!("{base}/ev/6")).await;
+    let after = json(&client, format!("{base}/component/6/ev")).await;
     assert_eq!(
         after["plugged"], true,
         "the car the run found is back: {after}"

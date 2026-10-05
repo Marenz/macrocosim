@@ -497,7 +497,7 @@
         </ul>
         <h4>Microgrids</h4>
         <ul class="help-list">
-          <li>The <em>Microgrids</em> mode opens a card grid of every registered microgrid (one per <code>(make-microgrid …)</code> form, plus any added via the <em>+ New microgrid</em> card or <code>POST /api/microgrids/create</code>).</li>
+          <li>The <em>Microgrids</em> mode opens a card grid of every registered microgrid (one per <code>(make-microgrid …)</code> form, plus any added via the <em>+ New microgrid</em> card or <code>POST /api/microgrids</code>).</li>
           <li>The <em>⇪ Import site…</em> card creates a microgrid from a microgrid API site export: pick <code>components.json</code> and <code>connections.json</code> together (connections optional). Rated power bounds, battery capacity, SoC range and the grid's rated fuse current all carry over into the simulation.</li>
           <li>Clicking a card drills into that microgrid's Topology + Dispatches sub-tabs. The <em>← Microgrids</em> button in the header returns to the list; a small <em>→ name</em> chip on the REPL form shows which microgrid the REPL's evals route to.</li>
           <li>Each microgrid runs its own Microgrid gRPC server on <code>[::1]:&lt;port&gt;</code> (default 8800, 8810, 8820, …). PlatformAssets runs on a single shared port (default 9900).</li>

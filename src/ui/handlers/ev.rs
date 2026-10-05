@@ -1,6 +1,7 @@
-//! `GET /api/mg/{mg}/ev/{id}` — the simulator's private view of the
-//! car plugged into a charger, for the inspector's EV card and the
-//! Python client. Not the gRPC API: that sees only the charger.
+//! `GET /api/mg/{mg}/component/{id}/ev` — the simulator's private
+//! view of the car plugged into a charger, for the inspector's EV
+//! card and the Python client. Not the gRPC API: that sees only the
+//! charger.
 //!
 //! The JSON keys are the snake_case twins of `ev-info`'s plist keys,
 //! plus `plugged`; three of the twins do not line up: `capacity_wh`

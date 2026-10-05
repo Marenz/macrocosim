@@ -205,7 +205,7 @@ pub(in crate::lisp) fn register(
             //
             // One registry lock for the id probe, the port probe, the
             // reuse check, AND the insert — separate acquisitions let
-            // a concurrent /api/microgrids/create hand out the same
+            // a concurrent POST /api/microgrids hand out the same
             // id or port between our probe and our insert.
             //
             // The assets and dispatch ports, read before the registry

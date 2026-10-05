@@ -1,6 +1,6 @@
 // The weather panel: the site's sky as one card — a day curve, the
 // live sunlight readout, the config knobs, and a "pass a cloud"
-// trigger. It is the UI's face on `GET/POST /api/weather`
+// trigger. It is the UI's face on `GET/POST /api/mg/{mg}/weather`
 // (src/ui/handlers/weather.rs), which mirrors the Lisp
 // `(make-weather)` / `(set-weather)` / `(pass-cloud)` doors for
 // people who aren't driving the site from the console.
@@ -40,10 +40,10 @@ let plot = null;
 let sizeObserver = null;
 let pollTimer = 0;
 // Which skeleton is currently painted — "" (nothing yet), "empty"
-// (404, the create prompt) or "live". A refresh only re-paints the
-// skeleton when this changes; otherwise it writes into the DOM that
-// is already there, which is what keeps a focused field's text from
-// being blown away every 3 s.
+// (404, the create prompt), "none" (no microgrid selected) or "live".
+// A refresh only re-paints the skeleton when this changes; otherwise
+// it writes into the DOM that is already there, which is what keeps
+// a focused field's text from being blown away every 3 s.
 let skeleton = "";
 // Where the now-marker goes, in hours-of-day — read by the draw hook,
 // which uPlot calls on its own schedule and can't be handed an
@@ -304,7 +304,7 @@ async function call(init) {
     // Weather is site data: it reads and writes the selected
     // microgrid's sky, like every sibling data panel.
     const r = await mgFetch("weather", init);
-    if (r == null) return { ok: false, status: 0, body: { error: "no microgrid selected" } };
+    if (r == null) return { ok: false, status: 0, body: null, noSelection: true };
     const body = await r.json().catch(() => null);
     return { ok: r.ok, status: r.status, body };
   } catch (e) {
@@ -320,7 +320,8 @@ const postWeather = (payload) =>
     body: JSON.stringify(payload),
   });
 
-const errorOf = (res) => res.body?.error ?? `request failed (${res.status || "no response"})`;
+const errorOf = (res) =>
+  res.noSelection ? "no microgrid selected" : (res.body?.error ?? `request failed (${res.status || "no response"})`);
 
 function showError(text) {
   const el = document.getElementById("weather-error");
@@ -662,6 +663,12 @@ const EMPTY_HTML = `
     <p class="hint weather-err" id="weather-error" hidden></p>
   </div>`;
 
+const NO_SELECTION_HTML = `
+  <div class="weather-panel">
+    <div class="weather-head"><h2>Weather</h2></div>
+    <p class="hint">Select a microgrid to see its weather.</p>
+  </div>`;
+
 // The clouds still overhead. The model keeps an event for about an
 // hour after it ends, so lagged inverters can still read the sky they
 // were in — but a cloud that has already passed is not news, and a
@@ -770,10 +777,15 @@ function paintLiveSkeleton() {
   plot = null;
 }
 
-function paintEmptySkeleton() {
+// Replace the panel body with static markup, dropping any chart.
+function paintStatic(html) {
   plot?.destroy();
   plot = null;
-  contentEl.innerHTML = EMPTY_HTML;
+  contentEl.innerHTML = html;
+}
+
+function paintEmptySkeleton() {
+  paintStatic(EMPTY_HTML);
   document.getElementById("weather-create").addEventListener("click", async () => {
     // An empty body is a no-op partial update, which on a site with
     // no weather is exactly "install the defaults" (apply_weather's
@@ -858,6 +870,13 @@ async function refresh() {
   // teardown already dropped contentEl, and writing into the detached
   // DOM would resurrect a chart nobody can see.
   if (!isPanelOpen(PANEL) || !contentEl) return;
+  if (res.noSelection) {
+    if (skeleton !== "none") {
+      paintStatic(NO_SELECTION_HTML);
+      skeleton = "none";
+    }
+    return;
+  }
   if (res.status === 404) {
     if (skeleton !== "empty") {
       paintEmptySkeleton();

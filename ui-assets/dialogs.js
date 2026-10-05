@@ -5,7 +5,7 @@
 import { escapeHtml, mutate, notify } from "./app.js";
 import { evalQuoted } from "./eval.js";
 import { errorText } from "./http.js";
-import { currentMgEntry, readSelectedMg } from "./routing.js";
+import { currentMgEntry, mgFetch, readSelectedMg } from "./routing.js";
 import { makeSidePanelToggle } from "./side-panel.js";
 
 export function setupHelpButton() {
@@ -56,7 +56,8 @@ export function setupSnapshotsDialog() {
     if (blocked) return;
     const id = readSelectedMg();
     try {
-      const res = await fetch(`/api/mg/${id}/snapshots`);
+      const res = await mgFetch("snapshots");
+      if (res == null) throw new Error("no microgrid selected");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const names = (await res.json()).snapshots || [];
       if (names.length === 0) {
@@ -101,7 +102,7 @@ export function setupSnapshotsDialog() {
     const name = input.value.trim();
     if (!name || id == null) return;
     try {
-      await mutate("POST", `/api/mg/${id}/snapshots/save`, { name });
+      await mutate("POST", `/api/mg/${id}/snapshots`, { name });
     } catch (err) {
       notify(`Save failed: ${err.message}`);
       return;

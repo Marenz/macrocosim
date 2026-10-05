@@ -7,7 +7,7 @@
 // The default `topology` export is the Topology subview's instance,
 // with the same public API the rest of the SPA always drove:
 //
-// - topology.apply(snapshot)     — replace canvas state with /api/topology data
+// - topology.apply(snapshot)     — load a topology-route snapshot
 // - topology.fit()               — recenter on the current graph extent
 // - topology.get(id)             — lookup the component object by id
 // - topology.parentsOf / childrenOf / connections / allIds / selectedIds
@@ -324,7 +324,7 @@ export function createGraphCanvas(containerId, adapter = {}) {
     const hit = setpointCache.get(id);
     if (hit && Date.now() - hit.at < (hit.failed ? SETPOINT_FAIL_TTL_MS : SETPOINT_TTL_MS)) return hit.last;
     try {
-      const res = await mgFetch(`setpoints?id=${id}&window_s=600`, { signal });
+      const res = await mgFetch(`component/${id}/setpoints?window_s=600`, { signal });
       if (res == null) return hit ? hit.last : null;
       if (!res.ok) throw new Error(`setpoints: HTTP ${res.status}`);
       const data = await res.json();
@@ -391,7 +391,7 @@ export function createGraphCanvas(containerId, adapter = {}) {
     seededHist.add(id);
     const metric = c.category === "battery" ? "dc_power_w" : "active_power_w";
     try {
-      const res = await mgFetch(`history?id=${id}&metric=${metric}&window_s=60`, { signal });
+      const res = await mgFetch(`component/${id}/history?metric=${metric}&window_s=60`, { signal });
       if (res == null) return;
       const data = await res.json();
       const firstLive = entry.hist[0]?.[0] ?? Number.POSITIVE_INFINITY;

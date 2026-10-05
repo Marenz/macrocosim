@@ -81,14 +81,14 @@ pub(in crate::ui) struct CreateMicrogridResp {
     runtime: Option<RuntimeView>,
 }
 
-/// POST /api/microgrids/create — auto-allocates id + grpc_port,
+/// POST /api/microgrids — auto-allocates id + grpc_port,
 /// writes and loads a managed microgrid file with an empty topology,
 /// then starts its runtime — physics + history + Microgrid gRPC
 /// server + loopback client — through [`MicrogridRuntimes`] and
 /// reports it. The runtime listener starts it too, on the load's
 /// announcement; `start` is serialized and returns early for a
 /// running runtime, so neither can double-boot it. A runtime that
-/// fails to start is reported in a 200: the microgrid exists either
+/// fails to start is reported in the 201: the microgrid exists either
 /// way.
 ///
 /// Empty-name requests are rejected. `(make-microgrid …)` builds the
@@ -98,7 +98,7 @@ pub(in crate::ui) async fn microgrids_create(
     State(config): State<Config>,
     axum::Extension(runtimes): axum::Extension<MicrogridRuntimes>,
     Json(body): Json<CreateMicrogridBody>,
-) -> Result<Json<CreateMicrogridResp>, ApiError> {
+) -> Result<(StatusCode, Json<CreateMicrogridResp>), ApiError> {
     let mut created = create_serialized(
         &config,
         &body.name,
@@ -110,7 +110,7 @@ pub(in crate::ui) async fn microgrids_create(
     // The load registered the entry, so `start` finds it. Inert
     // runtimes (unit tests) start nothing and report `null`.
     created.runtime = start_and_report(&runtimes, created.id).await;
-    Ok(Json(created))
+    Ok((StatusCode::CREATED, Json(created)))
 }
 
 /// [`create_core`] under the create lock, on the blocking pool.
@@ -508,9 +508,7 @@ pub(in crate::ui) async fn adopt(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let mg_id = mg.id;
     let warnings = super::blocking(move || adopt_body(&config, mg_id)).await??;
-    Ok(Json(
-        serde_json::json!({ "ok": true, "warnings": warnings }),
-    ))
+    Ok(Json(serde_json::json!({ "warnings": warnings })))
 }
 
 /// [`adopt`]'s body: all blocking (file read + write) work.

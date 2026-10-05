@@ -11,7 +11,7 @@ use crate::lisp::Config;
 use super::super::state::{
     HistorySample, MicrogridLoopbacks, MicrogridSampleSnapshot, SharedMicrogrid,
 };
-use crate::ui::api::{Json, Mg};
+use crate::ui::api::{ApiError, Json, Mg};
 
 #[derive(Serialize)]
 pub(in crate::ui) struct MicrogridStatusResp {
@@ -26,37 +26,29 @@ pub(in crate::ui) struct MicrogridStatusResp {
 }
 
 /// The loopback slot for `mg`, present once its runtime has started.
-fn loopback_of(loopbacks: &MicrogridLoopbacks, mg: &Mg) -> Option<SharedMicrogrid> {
-    loopbacks.read().get(&mg.id).cloned()
+fn loopback_of(loopbacks: &MicrogridLoopbacks, mg_id: u64) -> Option<SharedMicrogrid> {
+    loopbacks.read().get(&mg_id).cloned()
 }
 
-/// Whether the loopback client is connected. 503 with
+/// Whether the loopback client is connected: 200 with
 /// `connected: false` when it is not, or when the microgrid's
 /// runtime has not started.
-pub(in crate::ui) async fn microgrid_status(
+pub(in crate::ui) async fn metrics_status(
     mg: Mg,
     Extension(loopbacks): Extension<MicrogridLoopbacks>,
-) -> (StatusCode, Json<MicrogridStatusResp>) {
-    let lm = loopback_of(&loopbacks, &mg)
+) -> Json<MicrogridStatusResp> {
+    let lm = loopback_of(&loopbacks, mg.id)
         .and_then(|slot| slot.microgrid.read().as_ref().map(|m| m.logical_meter()));
-    if let Some(lm) = lm {
-        let count = lm.graph().components().count();
-        (
-            StatusCode::OK,
-            Json(MicrogridStatusResp {
-                connected: true,
-                component_count: Some(count),
-            }),
-        )
-    } else {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(MicrogridStatusResp {
-                connected: false,
-                component_count: None,
-            }),
-        )
-    }
+    Json(match lm {
+        Some(lm) => MicrogridStatusResp {
+            connected: true,
+            component_count: Some(lm.graph().components().count()),
+        },
+        None => MicrogridStatusResp {
+            connected: false,
+            component_count: None,
+        },
+    })
 }
 
 /// Latest cached sample for every active aggregated stream.
@@ -65,12 +57,12 @@ pub(in crate::ui) async fn microgrid_status(
 /// map, and a microgrid whose runtime has not started answers `{}`.
 /// Lets the SPA's Dashboard paint a populated tile on page load
 /// instead of holding "loading…" until the next WS tick.
-pub(in crate::ui) async fn microgrid_latest(
+pub(in crate::ui) async fn metrics_latest(
     mg: Mg,
     Extension(loopbacks): Extension<MicrogridLoopbacks>,
 ) -> Json<HashMap<&'static str, MicrogridSampleSnapshot>> {
     Json(
-        loopback_of(&loopbacks, &mg)
+        loopback_of(&loopbacks, mg.id)
             .map(|slot| slot.latest.read().clone())
             .unwrap_or_default(),
     )
@@ -78,12 +70,12 @@ pub(in crate::ui) async fn microgrid_latest(
 
 /// The history ring of every aggregated stream; `{}` for a
 /// microgrid whose runtime has not started.
-pub(in crate::ui) async fn microgrid_history(
+pub(in crate::ui) async fn metrics_history(
     mg: Mg,
     Extension(loopbacks): Extension<MicrogridLoopbacks>,
 ) -> Json<HashMap<&'static str, Vec<HistorySample>>> {
     Json(
-        loopback_of(&loopbacks, &mg)
+        loopback_of(&loopbacks, mg.id)
             .map(|slot| {
                 slot.history
                     .read()
@@ -102,17 +94,20 @@ pub(in crate::ui) async fn microgrid_history(
 /// component ids participate and how. Absent categories don't
 /// appear in the response.
 ///
-/// 503 `{}` when the loopback Microgrid handle hasn't built its
-/// ComponentGraph yet, or the runtime has not started — same
-/// lifecycle as `microgrid/status`.
-pub(in crate::ui) async fn microgrid_formulas(
+/// 503 `{"error"}` when the loopback Microgrid handle hasn't built
+/// its ComponentGraph yet, or the runtime has not started — the same
+/// lifecycle as `metrics/status`.
+pub(in crate::ui) async fn metrics_formulas(
     mg: Mg,
     Extension(loopbacks): Extension<MicrogridLoopbacks>,
-) -> (StatusCode, Json<HashMap<&'static str, String>>) {
-    let lm = loopback_of(&loopbacks, &mg)
+) -> Result<Json<HashMap<&'static str, String>>, ApiError> {
+    let lm = loopback_of(&loopbacks, mg.id)
         .and_then(|slot| slot.microgrid.read().as_ref().map(|m| m.logical_meter()));
     let Some(lm) = lm else {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(HashMap::new()));
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "metrics client not connected",
+        ));
     };
     let graph = lm.graph();
     let mut out: HashMap<&'static str, String> = HashMap::new();
@@ -131,7 +126,7 @@ pub(in crate::ui) async fn microgrid_formulas(
     if let Ok(f) = graph.producer_formula() {
         out.insert("producer_power", format!("{f}"));
     }
-    (StatusCode::OK, Json(out))
+    Ok(Json(out))
 }
 
 #[derive(Serialize)]

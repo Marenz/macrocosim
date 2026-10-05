@@ -32,8 +32,7 @@ def _error_text(resp: httpx.Response) -> str:
 
 
 def control_path(component_id: int, action: str, mg_id: int) -> str:
-    """The control endpoint for one component action (``status``/``drive``)
-    on microgrid ``mg_id``.
+    """Route for one component action on microgrid ``mg_id``.
 
     One place builds the route for both client flavors, so a route change
     on the server cannot be missed in one of them.

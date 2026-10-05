@@ -206,7 +206,7 @@ impl Config {
         let loading = crate::sim::microgrids::new_loading_slot();
         let router = SiteRouter::new(microgrids.clone(), current_microgrid.clone(), site.clone());
         // Capacity = 1024 to absorb a mass-create burst (e.g. a
-        // script POST'ing /api/microgrids/create a few hundred times
+        // script POST'ing /api/microgrids a few hundred times
         // back-to-back) without lagging the WS event pump's
         // receiver. Even on Lagged the pump re-snapshots the
         // registry and back-fills forwarders, so capacity tuning is

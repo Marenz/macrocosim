@@ -294,10 +294,10 @@ async fn http_scenarios_stop_endpoint_restores_a_driven_knob() {
         .send()
         .await
         .unwrap();
-    assert!(
-        resp.status().is_success(),
-        "POST /api/scenarios/stop: {}",
-        resp.status()
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::NO_CONTENT,
+        "POST /api/scenarios/stop"
     );
 
     assert!(

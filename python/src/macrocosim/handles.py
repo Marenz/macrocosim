@@ -210,7 +210,7 @@ class ComponentHandle:
 
         Constant values go over the typed control API (rejections raise
         ``ControlRejected``); a ``RawLisp`` power (a lambda or symbol,
-        re-resolved every tick) still goes through the microgrid's eval.
+        re-resolved every tick) goes through the microgrid's eval.
         """
         payload: dict[str, float] = {}
         if isinstance(power, RawLisp):

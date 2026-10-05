@@ -51,7 +51,7 @@ pub struct MicrogridSampleSnapshot {
 pub struct MicrogridState {
     pub microgrid: RwLock<Option<Microgrid>>,
     /// Latest sample seen per stream name. Forwarders overwrite on
-    /// each recv; the `microgrid/latest` endpoint snapshots the
+    /// each recv; the `metrics/latest` endpoint snapshots the
     /// whole map on each call. `parking_lot::RwLock` because writes
     /// are non-async (no await between lock + drop) and contention
     /// is tiny (one writer per stream at 1 Hz). A rebuild prunes it
@@ -61,7 +61,7 @@ pub struct MicrogridState {
     pub latest: RwLock<HashMap<&'static str, MicrogridSampleSnapshot>>,
     /// Rolling history per stream (timestamp + value), ring-buffered
     /// to 1000 entries — 15 minutes at the 1 Hz forwarder cadence
-    /// with a little slack. Feeds `microgrid/history` so the
+    /// with a little slack. Feeds `metrics/history` so the
     /// Dashboard tile sparklines can backfill on page load instead
     /// of starting empty. Pruned and cleared on rebuilds like
     /// `latest`.
@@ -121,7 +121,7 @@ pub(super) const MICROGRID_HISTORY_CAP: usize = 1000;
 /// per-stream cache.
 ///
 /// `BTreeMap` keeps the entries ordered by id so the UI's
-/// Microgrids list and `/api/mg/{id}/microgrid/latest` lookups
+/// Microgrids list and `/api/mg/{id}/metrics/latest` lookups
 /// stay deterministic. Behind an `Arc<RwLock>` so handlers can
 /// take a read lock for lookups without blocking new-microgrid
 /// inserts coming from the create-microgrid endpoint.

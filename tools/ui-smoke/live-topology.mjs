@@ -797,9 +797,10 @@ check("e2e: hover card hides on blur", hiddenCard.visible === false);
 // A sick setpoints endpoint must not be re-polled by every 1 s card
 // re-render. Failures are cached for 10 s, so once a card is open on
 // a component nobody has hovered yet, a 4 s window adds no requests.
-// The glob matches the per-mg route (/api/mg/{id}/setpoints) the
-// card actually fetches; the open-hit check below fails loudly if
-// the interception ever stops matching the SPA's URL again.
+// The glob matches the per-mg route
+// (/api/mg/{id}/component/{cid}/setpoints) the card actually
+// fetches; the open-hit check below fails loudly if the
+// interception ever stops matching the SPA's URL again.
 let setpointHits = 0;
 await page.route("**/setpoints**", (route) => {
   setpointHits++;
@@ -2282,11 +2283,17 @@ check("e2e: a loaded microgrid selection restores", await page.evaluate(() => do
 // the server counts: a failing poll must not bounce a live
 // microgrid, a fresh list without it must — with no reload anywhere
 // in this block, so it is provably the poll that acted.
+// The collection URL also takes POST (create), so every handler on it
+// only sees GETs and lets any other method through.
+const onlyGet = (handler) => (route) => (route.request().method() === "GET" ? handler(route) : route.continue());
 const downAt = [];
-await page.route("**/api/microgrids", (route) => {
-  downAt.push(Date.now());
-  route.fulfill({ status: 500, body: "down" });
-});
+await page.route(
+  "**/api/microgrids",
+  onlyGet((route) => {
+    downAt.push(Date.now());
+    route.fulfill({ status: 500, body: "down" });
+  }),
+);
 // Wait on the interceptions, not the clock, and demand two of them a
 // poll interval apart: the poll re-arms on every refresh, and a WS
 // reconnect's refresh would also hit this route, so only the cadence
@@ -2300,7 +2307,10 @@ check(
   await page.evaluate(() => `${document.body.dataset.mgView} ${localStorage.getItem("macrocosim-selected-mg")}`),
 );
 await page.unroute("**/api/microgrids");
-await page.route("**/api/microgrids", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "[]" }));
+await page.route(
+  "**/api/microgrids",
+  onlyGet((route) => route.fulfill({ status: 200, contentType: "application/json", body: "[]" })),
+);
 const polledOut = await waitFor(async () => {
   const s = await page.evaluate(() => ({ view: document.body.dataset.mgView, stored: localStorage.getItem("macrocosim-selected-mg"), toast: [...document.querySelectorAll(".toast")].some((t) => /2200/.test(t.textContent)) }));
   return s.view === "list" ? s : null;
@@ -2321,16 +2331,19 @@ let heldWasFirst = false; // the held request came before any pass-through after
 let heldDelayMs = null; // arming → held: a poll cannot land that soon after the one just seen
 let passedThrough = 0;
 let armedAt = 0;
-await page.route("**/api/microgrids", (route) => {
-  if (holding && heldRoute === null) {
-    heldRoute = route;
-    heldWasFirst = passedThrough === 0;
-    heldDelayMs = Date.now() - armedAt;
-  } else {
-    passedThrough += 1;
-    route.continue();
-  }
-});
+await page.route(
+  "**/api/microgrids",
+  onlyGet((route) => {
+    if (holding && heldRoute === null) {
+      heldRoute = route;
+      heldWasFirst = passedThrough === 0;
+      heldDelayMs = Date.now() - armedAt;
+    } else {
+      passedThrough += 1;
+      route.continue();
+    }
+  }),
+);
 const pollSeen = await waitFor(async () => passedThrough >= 1, 10000).catch(() => false);
 passedThrough = 0;
 armedAt = Date.now();
@@ -2358,15 +2371,18 @@ heldRoute = null;
 heldDelayMs = null;
 let answered500 = 0;
 let clickedAt = 0;
-await page.route("**/api/microgrids", (route) => {
-  if (heldRoute === null) {
-    heldRoute = route;
-    heldDelayMs = Date.now() - clickedAt;
-  } else {
-    answered500 += 1;
-    route.fulfill({ status: 500, body: "down" });
-  }
-});
+await page.route(
+  "**/api/microgrids",
+  onlyGet((route) => {
+    if (heldRoute === null) {
+      heldRoute = route;
+      heldDelayMs = Date.now() - clickedAt;
+    } else {
+      answered500 += 1;
+      route.fulfill({ status: 500, body: "down" });
+    }
+  }),
+);
 clickedAt = Date.now();
 await page.click("#mg-back");
 await waitFor(async () => heldRoute !== null && answered500 >= 1, 15000).catch(() => null);
@@ -2386,13 +2402,16 @@ check(
 await page.unroute("**/api/microgrids");
 heldRoute = null;
 let failedAfterHold = 0;
-await page.route("**/api/microgrids", (route) => {
-  if (heldRoute === null) heldRoute = route;
-  else {
-    failedAfterHold += 1;
-    route.abort();
-  }
-});
+await page.route(
+  "**/api/microgrids",
+  onlyGet((route) => {
+    if (heldRoute === null) heldRoute = route;
+    else {
+      failedAfterHold += 1;
+      route.abort();
+    }
+  }),
+);
 await waitFor(async () => heldRoute !== null, 10000).catch(() => null);
 await waitFor(async () => (await page.locator(DEMO_CARD).count()) > 0, 5000).catch(() => null);
 await page.click(DEMO_CARD);
@@ -2425,7 +2444,10 @@ check(
 );
 await page.unroute("**/api/microgrids");
 check("e2e: the cards return once the list fetch succeeds again", Boolean(await waitFor(async () => (await page.locator(DEMO_CARD).count()) > 0, 10000).catch(() => null)));
-await page.route("**/api/microgrids", (route) => route.abort());
+await page.route(
+  "**/api/microgrids",
+  onlyGet((route) => route.abort()),
+);
 await page.click(DEMO_CARD);
 const blankedList = await waitFor(async () => {
   const n = await page.evaluate(() => window.__mgPanelCache?.length ?? -1);

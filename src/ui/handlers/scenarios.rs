@@ -3,7 +3,7 @@
 //! stage-mutation endpoints (next/prev/jump) are gone with the
 //! day-stage model.
 
-use axum::{body::Body, extract::State, response::Response};
+use axum::{body::Body, extract::State, http::StatusCode, response::Response};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
@@ -23,13 +23,13 @@ pub(in crate::ui) async fn scenarios_list(
 pub(in crate::ui) async fn scenarios_start(
     State(config): State<Config>,
     Path(name): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     let res = super::blocking(move || {
         crate::sim::scenarios::start(&config.interpreter(), &config.scenarios(), &name)
     })
     .await?;
     res.map_err(ApiError::bad_request)?;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Stop the running scenario (whichever the journal currently holds) —
@@ -37,10 +37,10 @@ pub(in crate::ui) async fn scenarios_start(
 /// report + flushes any CSV sinks via the `scenario-stop` defun.
 pub(in crate::ui) async fn scenarios_stop(
     State(config): State<Config>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     let res = super::blocking(move || config.eval("(scenario-stop)").map(|_| ())).await?;
     res.map_err(ApiError::bad_request)?;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Snapshot of the running scenario's lifecycle. Empty (`name:

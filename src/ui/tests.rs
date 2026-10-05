@@ -60,7 +60,7 @@ static UNIQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0)
 
 /// One-shot a request and return (status, body). axum's `oneshot`
 /// avoids binding a real port. The runtimes are inert, so nothing is
-/// started and every loopback slot is empty: `microgrid/status`
+/// started and every loopback slot is empty: `metrics/status`
 /// answers "not connected" without a real gRPC server. Tests that
 /// want a populated handle would have to spin up the gRPC server
 /// too.
@@ -236,14 +236,14 @@ async fn every_microgrid_route_shares_the_unregistered_404() {
         "topology",
         "formula?metric=grid",
         "weather",
-        "microgrid/status",
-        "microgrid/latest",
-        "microgrid/history",
-        "microgrid/formulas",
-        "component?id=1",
-        "history?id=1&metric=active_power",
-        "setpoints?id=1",
-        "ev/1",
+        "metrics/status",
+        "metrics/latest",
+        "metrics/history",
+        "metrics/formulas",
+        "component/1",
+        "component/1/history?metric=active_power",
+        "component/1/setpoints",
+        "component/1/ev",
         "undo",
         "snapshots",
         "dispatches",
@@ -265,8 +265,10 @@ async fn every_microgrid_route_shares_the_unregistered_404() {
         ("adopt", ""),
         ("undo", ""),
         ("redo", ""),
-        ("snapshots/save", r#"{"name":"x"}"#),
+        ("snapshots", r#"{"name":"x"}"#),
         ("snapshots/load", r#"{"name":"x"}"#),
+        ("dispatches", "{}"),
+        ("dispatches/1/active", "{}"),
     ];
     for (suffix, body) in posts {
         let req = Request::builder()
@@ -283,6 +285,13 @@ async fn every_microgrid_route_shares_the_unregistered_404() {
             "POST {suffix}"
         );
     }
+    let (status, resp) = call(cfg.clone(), delete_req("/api/mg/9999/dispatches/1")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "DELETE dispatches/1");
+    assert_eq!(
+        error_of(&resp),
+        "microgrid 9999 not registered",
+        "DELETE dispatches/1"
+    );
     let (status, body) = call(cfg, get("/api/mg/abc/topology")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(error_of(&body), "invalid microgrid id: \"abc\"");
@@ -302,10 +311,20 @@ async fn unscoped_microgrid_routes_are_gone() {
         "/api/microgrid/latest",
         "/api/microgrid/history",
         "/api/microgrid/formulas",
+        "/api/mg/2200/microgrid/status",
+        "/api/mg/2200/component?id=1",
+        "/api/mg/2200/history?id=1&metric=active_power",
+        "/api/mg/2200/setpoints?id=1",
+        "/api/mg/2200/ev/1",
     ] {
         let (status, body) = call(cfg.clone(), get(path)).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
         assert!(error_of(&body).starts_with("no route for GET"), "{path}");
+    }
+    for path in ["/api/microgrids/create", "/api/mg/2200/snapshots/save"] {
+        let (status, body) = call(cfg.clone(), post_json(path, "{}")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "POST {path}");
+        assert!(error_of(&body).starts_with("no route for POST"), "{path}");
     }
 }
 
@@ -314,7 +333,7 @@ async fn unscoped_microgrid_routes_are_gone() {
 #[tokio::test]
 async fn metrics_for_a_microgrid_without_a_loopback_are_not_connected() {
     let cfg = config_with("").await;
-    let (status, body) = call(cfg, get("/api/mg/2200/microgrid/status")).await;
+    let (status, body) = call(cfg, get("/api/mg/2200/metrics/status")).await;
     assert_ne!(
         status,
         StatusCode::NOT_FOUND,
@@ -323,6 +342,72 @@ async fn metrics_for_a_microgrid_without_a_loopback_are_not_connected() {
     );
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["connected"], false);
+}
+
+/// Success bodies carry no `ok`; actions with nothing to return are
+/// 204; metrics without a client report "not connected".
+#[tokio::test]
+async fn success_bodies_are_plain() {
+    let cfg = config_with("(%make-grid-connection-point :id 1)").await;
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/mg/2200/component/1/status")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"health":"ok"}"#))
+        .unwrap();
+    let (status, body) = call(cfg.clone(), req).await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert!(body.is_empty());
+
+    let (status, body) = call(cfg.clone(), get("/api/mg/2200/undo")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v.get("ok").is_none(), "{v}");
+    assert!(v.get("undo_depth").is_some(), "{v}");
+
+    let (status, body) = call(cfg.clone(), get("/api/mg/2200/metrics/status")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({"connected": false, "component_count": null})
+    );
+
+    let (status, body) = call(cfg.clone(), get("/api/mg/2200/metrics/latest")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+        serde_json::json!({})
+    );
+
+    let (status, body) = call(cfg, get("/api/mg/2200/metrics/formulas")).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error_of(&body), "metrics client not connected");
+}
+
+/// Creating a microgrid is a POST to the collection, answering 201.
+#[tokio::test]
+async fn creating_a_microgrid_answers_201() {
+    let cfg = config_with("").await;
+    let (status, body) = call(
+        cfg,
+        post_json("/api/microgrids", r#"{"name":"b","id":2301}"#),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["id"], 2301);
 }
 
 /// The whole-site eval can create a microgrid: site-level Lisp still
@@ -398,7 +483,7 @@ async fn history_endpoint_returns_recent_samples() {
 
     let (status, body) = call(
         cfg,
-        get("/api/mg/2200/history?id=1000&metric=soc_pct&window_s=10"),
+        get("/api/mg/2200/component/1000/history?metric=soc_pct&window_s=10"),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -414,7 +499,7 @@ async fn history_endpoint_returns_recent_samples() {
 #[tokio::test]
 async fn history_endpoint_rejects_unknown_metric() {
     let cfg = config_with("").await;
-    let (status, body) = call(cfg, get("/api/mg/2200/history?id=1&metric=foo")).await;
+    let (status, body) = call(cfg, get("/api/mg/2200/component/1/history?metric=foo")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(error_of(&body).contains("unknown metric"));
 }
@@ -424,7 +509,7 @@ async fn history_endpoint_returns_empty_for_unknown_component() {
     let cfg = config_with("").await;
     let (status, body) = call(
         cfg,
-        get("/api/mg/2200/history?id=999&metric=active_power_w"),
+        get("/api/mg/2200/component/999/history?metric=active_power_w"),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -775,7 +860,7 @@ async fn control_drive_sets_meter_power() {
         post_json("/api/mg/2200/component/7/drive", r#"{"power_w": 1234.5}"#),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
     cfg.refresh_once();
     let m = cfg.site().get(7).unwrap();
     assert!((m.aggregate_power_w(&cfg.site()) - 1234.5).abs() < 1e-3);
@@ -812,7 +897,7 @@ async fn drive_op_accepts_reactive_var_and_power_factor() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
     let m = cfg.site().get(7).unwrap();
     assert!((m.aggregate_reactive_var(&cfg.site()) - 500.0).abs() < 1e-3);
 
@@ -825,7 +910,7 @@ async fn drive_op_accepts_reactive_var_and_power_factor() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
     assert!((m.aggregate_reactive_var(&cfg.site()) - -6_000.0).abs() < 1.0);
 
     // A non-meter rejects both new fields.
@@ -887,7 +972,7 @@ async fn drive_op_rejects_reactive_var_with_power_factor() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     let (status, body) = call(
         cfg.clone(),
@@ -918,7 +1003,7 @@ async fn control_status_flips_health_and_rejects_bad_values() {
         post_json("/api/mg/2200/component/7/status", r#"{"health": "error"}"#),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(
         cfg.site().runtime_of(7).health,
         crate::sim::runtime::Health::Error
@@ -1002,7 +1087,7 @@ async fn control_drive_sets_battery_soc() {
         post_json("/api/mg/2200/component/4/drive", r#"{"soc_pct": 11.5}"#),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
     let site = cfg.site();
     let soc = site.get(4).unwrap().telemetry(&site).soc_pct.unwrap();
     assert!((soc - 11.5).abs() < 1e-3, "{soc}");
@@ -1013,7 +1098,7 @@ async fn control_drive_sets_battery_soc() {
         post_json("/api/mg/2200/component/4/drive", r#"{"soc_pct": 250.0}"#),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
     let soc = site.get(4).unwrap().telemetry(&site).soc_pct.unwrap();
     assert!((soc - 100.0).abs() < 1e-3, "{soc}");
 }
@@ -1059,7 +1144,7 @@ async fn control_drive_rejects_wrong_category() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // An unknown field name is a client error too
     // (deny_unknown_fields -> axum's 422 naming the field), not a
@@ -1234,10 +1319,10 @@ async fn ui_created_microgrid_survives_a_restart() {
     // Create via the endpoint, add components via scoped eval.
     let (st, body) = call(
         config.clone(),
-        post_json("/api/microgrids/create", r#"{"name":"persist me"}"#),
+        post_json("/api/microgrids", r#"{"name":"persist me"}"#),
     )
     .await;
-    assert_eq!(st, StatusCode::OK);
+    assert_eq!(st, StatusCode::CREATED);
     let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let id = created["id"].as_u64().unwrap();
     let (st, _) = call(
@@ -1533,12 +1618,12 @@ async fn snapshot_load_as_waits_for_a_create_in_flight() {
         config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     call(
         config.clone(),
-        post_json("/api/microgrids/create", r#"{"name":"s","id":46}"#),
+        post_json("/api/microgrids", r#"{"name":"s","id":46}"#),
     )
     .await;
     let (st, _) = call(
         config.clone(),
-        post_json("/api/mg/46/snapshots/save", r#"{"name":"one"}"#),
+        post_json("/api/mg/46/snapshots", r#"{"name":"one"}"#),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
@@ -1604,10 +1689,15 @@ async fn undo_reverts_the_last_structural_edit() {
         config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     let (st, body) = call(
         config.clone(),
-        post_json("/api/microgrids/create", r#"{"name":"u","id":30}"#),
+        post_json("/api/microgrids", r#"{"name":"u","id":30}"#),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
     call(
         config.clone(),
         post("/api/mg/30/eval", "(%make-meter :id 500)"),
@@ -1640,7 +1730,7 @@ async fn snapshots_are_per_microgrid() {
         config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     call(
         config.clone(),
-        post_json("/api/microgrids/create", r#"{"name":"s","id":31}"#),
+        post_json("/api/microgrids", r#"{"name":"s","id":31}"#),
     )
     .await;
     call(
@@ -1648,24 +1738,30 @@ async fn snapshots_are_per_microgrid() {
         post("/api/mg/31/eval", "(%make-meter :id 600)"),
     )
     .await;
-    let (st, _) = call(
+    let (st, body) = call(
         config.clone(),
-        post_json("/api/mg/31/snapshots/save", r#"{"name":"one"}"#),
+        post_json("/api/mg/31/snapshots", r#"{"name":"one"}"#),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v["path"].is_string(), "{v}");
+    assert!(v.get("ok").is_none(), "{v}");
     assert!(dir.join("snapshots/31/one.lisp").exists());
     call(
         config.clone(),
         post("/api/mg/31/eval", "(remove-component 600)"),
     )
     .await;
-    let (st, _) = call(
+    let (st, body) = call(
         config.clone(),
         post_json("/api/mg/31/snapshots/load", r#"{"name":"one"}"#),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["id"], 31, "{v}");
+    assert!(v.get("ok").is_none(), "{v}");
     let site = config.microgrids().lock().get(&31).unwrap().site.clone();
     assert!(site.get(600).is_some(), "restore brings the meter back");
     // The ambient endpoint is gone.
@@ -1737,15 +1833,25 @@ async fn concurrent_creates_get_distinct_microgrids() {
     let (a, b) = tokio::join!(
         call(
             config.clone(),
-            post_json("/api/microgrids/create", r#"{"name":"a"}"#)
+            post_json("/api/microgrids", r#"{"name":"a"}"#)
         ),
         call(
             config.clone(),
-            post_json("/api/microgrids/create", r#"{"name":"b"}"#)
+            post_json("/api/microgrids", r#"{"name":"b"}"#)
         ),
     );
-    assert_eq!(a.0, StatusCode::OK, "{}", String::from_utf8_lossy(&a.1));
-    assert_eq!(b.0, StatusCode::OK, "{}", String::from_utf8_lossy(&b.1));
+    assert_eq!(
+        a.0,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&a.1)
+    );
+    assert_eq!(
+        b.0,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&b.1)
+    );
     let id_of = |body: &[u8]| {
         serde_json::from_slice::<serde_json::Value>(body).unwrap()["id"]
             .as_u64()
@@ -1766,7 +1872,7 @@ async fn create_refuses_a_reserved_port() {
         let (st, body) = call(
             config.clone(),
             post_json(
-                "/api/microgrids/create",
+                "/api/microgrids",
                 &format!(r#"{{"name":"r","grpc_port":{port}}}"#),
             ),
         )
@@ -1787,12 +1893,17 @@ async fn create_refuses_a_taken_id_or_port() {
     let (st, body) = call(
         config.clone(),
         post_json(
-            "/api/microgrids/create",
+            "/api/microgrids",
             r#"{"name":"pinned","id":40,"grpc_port":8899}"#,
         ),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["id"], 40);
     assert_eq!(v["grpc_port"], 8899);
@@ -1800,16 +1911,13 @@ async fn create_refuses_a_taken_id_or_port() {
 
     let (st, _) = call(
         config.clone(),
-        post_json("/api/microgrids/create", r#"{"name":"again","id":40}"#),
+        post_json("/api/microgrids", r#"{"name":"again","id":40}"#),
     )
     .await;
     assert_eq!(st, StatusCode::CONFLICT, "id 40 is taken");
     let (st, _) = call(
         config.clone(),
-        post_json(
-            "/api/microgrids/create",
-            r#"{"name":"again","grpc_port":8899}"#,
-        ),
+        post_json("/api/microgrids", r#"{"name":"again","grpc_port":8899}"#),
     )
     .await;
     assert_eq!(st, StatusCode::CONFLICT, "port 8899 is taken");
@@ -1863,10 +1971,15 @@ async fn create_reports_the_bound_address() {
     let (st, body) = call_with(
         config.clone(),
         runtimes.clone(),
-        post_json("/api/microgrids/create", r#"{"name":"r","id":61}"#),
+        post_json("/api/microgrids", r#"{"name":"r","id":61}"#),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["runtime"]["status"], "running");
     let addr = v["runtime"]["grpc_addr"].as_str().unwrap().to_string();
@@ -1878,7 +1991,7 @@ async fn create_reports_the_bound_address() {
     assert_eq!(entry["runtime"]["grpc_addr"], addr.as_str());
 }
 
-/// A create whose port is held answers 200 with the failure, and the
+/// A create whose port is held answers 201 with the failure, and the
 /// list shows it failed.
 #[tokio::test]
 async fn create_on_a_held_port_reports_a_failed_runtime() {
@@ -1890,12 +2003,17 @@ async fn create_on_a_held_port_reports_a_failed_runtime() {
         config.clone(),
         runtimes.clone(),
         post_json(
-            "/api/microgrids/create",
+            "/api/microgrids",
             &format!(r#"{{"name":"h","id":62,"grpc_port":{port}}}"#),
         ),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["runtime"]["status"], "failed");
     let entry = listed(config, runtimes, 62).await;
@@ -1930,7 +2048,7 @@ async fn undo_depths_track_edits() {
         config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     call(
         config.clone(),
-        post_json("/api/microgrids/create", r#"{"name":"d","id":32}"#),
+        post_json("/api/microgrids", r#"{"name":"d","id":32}"#),
     )
     .await;
     let (st, body) = call(config.clone(), get("/api/mg/32/undo")).await;
@@ -2078,7 +2196,7 @@ async fn setpoints_resolve_per_microgrid() {
         config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     call(
         config.clone(),
-        post_json("/api/microgrids/create", r#"{"name":"s","id":31}"#),
+        post_json("/api/microgrids", r#"{"name":"s","id":31}"#),
     )
     .await;
     // Plant one event per microgrid, each under its own component id,
@@ -2115,11 +2233,11 @@ async fn setpoints_resolve_per_microgrid() {
             v["events"].as_array().unwrap().len()
         }
     };
-    assert_eq!(events_at("/api/mg/31/setpoints?id=600").await, 1);
-    assert_eq!(events_at("/api/mg/9/setpoints?id=600").await, 0);
-    assert_eq!(events_at("/api/mg/9/setpoints?id=500").await, 1);
-    assert_eq!(events_at("/api/mg/31/setpoints?id=500").await, 0);
-    let (st, _) = call(config, get("/api/mg/9999/setpoints?id=600")).await;
+    assert_eq!(events_at("/api/mg/31/component/600/setpoints").await, 1);
+    assert_eq!(events_at("/api/mg/9/component/600/setpoints").await, 0);
+    assert_eq!(events_at("/api/mg/9/component/500/setpoints").await, 1);
+    assert_eq!(events_at("/api/mg/31/component/500/setpoints").await, 0);
+    let (st, _) = call(config, get("/api/mg/9999/component/600/setpoints")).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 }
 
@@ -2137,7 +2255,7 @@ async fn component_snapshot_reads_meter_knobs_and_envelope() {
         post("/api/eval", "(set-meter-power-factor 7 0.9 t)"),
     )
     .await;
-    let (status, body) = call(cfg, get("/api/mg/2200/component?id=7")).await;
+    let (status, body) = call(cfg, get("/api/mg/2200/component/7")).await;
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["id"], 7);
@@ -2168,7 +2286,7 @@ async fn component_snapshot_prints_expression_sources() {
     .await;
     assert_eq!(status, StatusCode::OK);
     cfg.refresh_once();
-    let (_s, body) = call(cfg, get("/api/mg/2200/component?id=7")).await;
+    let (_s, body) = call(cfg, get("/api/mg/2200/component/7")).await;
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let power = v["knobs"]
         .as_array()
@@ -2199,7 +2317,7 @@ async fn component_snapshot_ships_raw_compiled_defun_expr() {
     .await;
     assert_eq!(status, StatusCode::OK);
     cfg.refresh_once();
-    let (_s, body) = call(cfg, get("/api/mg/2200/component?id=7")).await;
+    let (_s, body) = call(cfg, get("/api/mg/2200/component/7")).await;
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let power = v["knobs"]
         .as_array()
@@ -2219,9 +2337,9 @@ async fn component_snapshot_ships_raw_compiled_defun_expr() {
 #[tokio::test]
 async fn component_snapshot_404s_unknown_ids() {
     let cfg = config_with("(%make-meter :id 7)").await;
-    let (status, _b) = call(cfg.clone(), get("/api/mg/2200/component?id=99")).await;
+    let (status, _b) = call(cfg.clone(), get("/api/mg/2200/component/99")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _b) = call(cfg, get("/api/mg/9999/component?id=7")).await;
+    let (status, _b) = call(cfg, get("/api/mg/9999/component/7")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -2248,7 +2366,7 @@ async fn component_snapshot_inverter_knobs_and_reactive_envelope() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, body) = call(cfg, get("/api/mg/2200/component?id=4")).await;
+    let (status, body) = call(cfg, get("/api/mg/2200/component/4")).await;
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let knobs = v["knobs"].as_array().unwrap();
@@ -2301,7 +2419,7 @@ async fn component_snapshot_reactive_envelope_falls_back_to_own_bounds() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, body) = call(cfg, get("/api/mg/2200/component?id=3")).await;
+    let (status, body) = call(cfg, get("/api/mg/2200/component/3")).await;
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let reactive = &v["envelope"]["reactive"];
@@ -2344,7 +2462,7 @@ async fn component_snapshot_reports_remaining_ms_for_a_timed_setpoint() {
             },
         },
     );
-    let (status, body) = call(cfg, get("/api/mg/2200/component?id=4")).await;
+    let (status, body) = call(cfg, get("/api/mg/2200/component/4")).await;
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let sp = v["setpoints"]
@@ -2375,7 +2493,7 @@ async fn component_snapshot_reads_reactive_var_knob() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, body) = call(cfg, get("/api/mg/2200/component?id=7")).await;
+    let (status, body) = call(cfg, get("/api/mg/2200/component/7")).await;
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let reactive = v["knobs"]
@@ -2406,7 +2524,7 @@ async fn control_drive_broadcasts_knob_changed() {
         post_json("/api/mg/2200/component/7/drive", r#"{"power_w": 1234.5}"#),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     let mut seen = Vec::new();
     while let Ok(ev) = rx.try_recv() {
@@ -2452,7 +2570,7 @@ async fn control_drive_clear_sunlight_broadcasts_weather_marker() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     let mut seen = Vec::new();
     while let Ok(ev) = rx.try_recv() {
@@ -2493,7 +2611,7 @@ async fn drive_clear_sunlight_inside_a_scenario_restores_on_stop() {
             .clone()
     };
 
-    let (_, body) = call(cfg.clone(), get("/api/mg/2200/component?id=8")).await;
+    let (_, body) = call(cfg.clone(), get("/api/mg/2200/component/8")).await;
     let before = knob(body);
     assert_eq!(before["value"], 40.0, "{before}");
     assert!(before["expr"].is_null(), "constructed Manual: {before}");
@@ -2511,9 +2629,9 @@ async fn drive_clear_sunlight_inside_a_scenario_restores_on_stop() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
-    let (_, body) = call(cfg.clone(), get("/api/mg/2200/component?id=8")).await;
+    let (_, body) = call(cfg.clone(), get("/api/mg/2200/component/8")).await;
     let during = knob(body);
     assert_eq!(
         during["expr"], "weather",
@@ -2521,7 +2639,7 @@ async fn drive_clear_sunlight_inside_a_scenario_restores_on_stop() {
     );
 
     call(cfg.clone(), post("/api/eval", "(scenario-stop)")).await;
-    let (_, body) = call(cfg, get("/api/mg/2200/component?id=8")).await;
+    let (_, body) = call(cfg, get("/api/mg/2200/component/8")).await;
     let after = knob(body);
     assert_eq!(after["value"], 40.0, "{after}");
     assert!(
@@ -2539,7 +2657,7 @@ async fn component_snapshot_boiler_knobs_and_pressure_target() {
     assert_eq!(status, StatusCode::OK);
     let (status, _) = call(cfg.clone(), post("/api/eval", "(set-boiler-pressure 6 9)")).await;
     assert_eq!(status, StatusCode::OK);
-    let (status, body) = call(cfg, get("/api/mg/2200/component?id=6")).await;
+    let (status, body) = call(cfg, get("/api/mg/2200/component/6")).await;
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let knobs = v["knobs"].as_array().unwrap();
@@ -2583,8 +2701,7 @@ async fn component_snapshot_lists_exactly_the_knobs_each_kind_has() {
         (7, &[]),
     ];
     for (id, names) in want {
-        let (status, body) =
-            call(cfg.clone(), get(&format!("/api/mg/2200/component?id={id}"))).await;
+        let (status, body) = call(cfg.clone(), get(&format!("/api/mg/2200/component/{id}"))).await;
         assert_eq!(status, StatusCode::OK, "component {id}");
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let got: Vec<&str> = v["knobs"]

@@ -1,5 +1,6 @@
-//! `/api/mg/{mg}/history` and `/api/mg/{mg}/setpoints`: one
-//! component's sample history and setpoint event log.
+//! `/api/mg/{mg}/component/{id}/history` and
+//! `/api/mg/{mg}/component/{id}/setpoints`: one component's sample
+//! history and setpoint event log.
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
@@ -7,12 +8,10 @@ use serde::{Deserialize, Serialize};
 use crate::sim::history::Metric;
 use crate::sim::setpoints::SetpointEvent;
 
-use crate::ui::api::{ApiError, Json, Mg, Query};
+use crate::ui::api::{ApiError, Json, Mg, Path, Query};
 
 #[derive(Deserialize)]
 pub(in crate::ui) struct HistoryQuery {
-    /// Component id to fetch history for. Required.
-    id: u64,
     /// Metric name (one of `History::Metric::as_str` strings).
     /// Required.
     metric: String,
@@ -40,13 +39,15 @@ pub(in crate::ui) struct HistoryResponse {
 
 pub(in crate::ui) async fn history(
     mg: Mg,
+    Path((_, id)): Path<(u64, u64)>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<HistoryResponse>, ApiError> {
-    history_body(&mg.site, q)
+    history_body(&mg.site, id, q)
 }
 
 fn history_body(
     site: &crate::sim::MicrogridSite,
+    id: u64,
     q: HistoryQuery,
 ) -> Result<Json<HistoryResponse>, ApiError> {
     let metric: Metric = q
@@ -59,13 +60,13 @@ fn history_body(
     let window = ChronoDuration::seconds(q.window_s.unwrap_or(600).clamp(0, 31_536_000));
     let since: DateTime<Utc> = Utc::now() - window;
     let samples = site
-        .history_window(q.id, metric, since)
+        .history_window(id, metric, since)
         .unwrap_or_default()
         .into_iter()
         .map(|s| (s.ts.timestamp_millis(), s.value))
         .collect();
     Ok(Json(HistoryResponse {
-        id: q.id,
+        id,
         metric: q.metric,
         quantity: metric.quantity(),
         unit: metric.unit(),
@@ -75,7 +76,6 @@ fn history_body(
 
 #[derive(Deserialize)]
 pub(in crate::ui) struct SetpointsQuery {
-    id: u64,
     /// Window length in seconds. Optional; defaults to the full
     /// 1000-event capacity of the ring (which at typical control-app
     /// rates covers several minutes).
@@ -90,16 +90,21 @@ pub(in crate::ui) struct SetpointsResponse {
 
 pub(in crate::ui) async fn setpoints(
     mg: Mg,
+    Path((_, id)): Path<(u64, u64)>,
     Query(q): Query<SetpointsQuery>,
 ) -> Json<SetpointsResponse> {
-    setpoints_body(&mg.site, q)
+    setpoints_body(&mg.site, id, q)
 }
 
-fn setpoints_body(site: &crate::sim::MicrogridSite, q: SetpointsQuery) -> Json<SetpointsResponse> {
+fn setpoints_body(
+    site: &crate::sim::MicrogridSite,
+    id: u64,
+    q: SetpointsQuery,
+) -> Json<SetpointsResponse> {
     // Same clamp as history_body: keep a hostile window_s from
     // panicking chrono.
     let window = ChronoDuration::seconds(q.window_s.unwrap_or(600).clamp(0, 31_536_000));
     let since = Utc::now() - window;
-    let events = site.setpoints_window(q.id, since);
-    Json(SetpointsResponse { id: q.id, events })
+    let events = site.setpoints_window(id, since);
+    Json(SetpointsResponse { id, events })
 }

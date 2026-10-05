@@ -198,7 +198,7 @@ async fn main() {
 
     // Emit the resolved endpoints once everything is bound — the
     // machine-readable readiness signal. Boot-time microgrids only;
-    // runtime-created ones (POST /api/microgrids/create) aren't listed.
+    // runtime-created ones (POST /api/microgrids) aren't listed.
     if let Some(target) = &args.emit_endpoints {
         let json = serde_json::json!({
             "ui": ui_addr.to_string(),

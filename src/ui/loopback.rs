@@ -680,7 +680,7 @@ impl SiteShape {
 /// Drop the cached `latest` sample and history ring of every stream
 /// the rebuilt graph no longer publishes — a topology that lost its
 /// last PV must not keep serving `pv_power` via
-/// `/api/mg/{id}/microgrid/history` forever — and keep the rest, so
+/// `/api/mg/{id}/metrics/history` forever — and keep the rest, so
 /// the surviving charts don't restart from empty on every rebuild. An
 /// energy total belongs to its power stream: it stays while that
 /// stream is live (its forwarder keeps advancing it) and goes with it

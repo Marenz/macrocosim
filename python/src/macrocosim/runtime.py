@@ -234,7 +234,7 @@ class Site:
     def latest(self, mg_id: int | None = None) -> dict[str, Any]:
         """Latest sample per formula/component stream, keyed by name."""
         mg = self._resolve_mg(mg_id)
-        return self._http.get_json(f"/api/mg/{mg}/microgrid/latest")
+        return self._http.get_json(f"/api/mg/{mg}/metrics/latest")
 
     def formula(self, name: str, mg_id: int | None = None) -> float | None:
         """Raw value of one formula stream (e.g. ``"grid_power"``), or None."""
@@ -341,7 +341,7 @@ class Site:
         """The car plugged into ``component_id``: ``{"plugged": False}`` or the
         fields, plus ``presets`` (the catalog) either way."""
         mg = self._resolve_mg(mg_id)
-        return self._http.get_json(f"/api/mg/{mg}/ev/{component_id}")
+        return self._http.get_json(f"/api/mg/{mg}/component/{component_id}/ev")
 
     def control_component(
         self,

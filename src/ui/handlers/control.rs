@@ -4,10 +4,9 @@
 //! `POST /api/mg/{mg}/component/{id}/drive` give programmatic clients
 //! a structured way to inject faults and drive the environment.
 //! Validation errors come back as HTTP 400 with a JSON error body,
-//! and an unknown component or microgrid is 404 — no `ok: false`
-//! payload the caller must remember to check. Eval remains the
-//! escape hatch for dynamic (lambda / symbol) drive sources and
-//! everything else Lisp.
+//! and an unknown component or microgrid is 404; success is 204 with
+//! no body. Eval remains the escape hatch for dynamic (lambda /
+//! symbol) drive sources and everything else Lisp.
 
 use axum::http::StatusCode;
 use serde::Deserialize;
@@ -72,10 +71,11 @@ pub(in crate::ui) struct DriveRequest {
     clear_sunlight: bool,
 }
 
-/// Empty JSON on success.
-type ControlResult = Result<Json<serde_json::Value>, ApiError>;
-
-fn apply_status(site: &MicrogridSite, id: u64, req: &StatusRequest) -> ControlResult {
+fn apply_status(
+    site: &MicrogridSite,
+    id: u64,
+    req: &StatusRequest,
+) -> Result<StatusCode, ApiError> {
     if site.get(id).is_none() {
         return Err(ApiError::not_found(format!("component {id} not found")));
     }
@@ -123,7 +123,7 @@ fn apply_status(site: &MicrogridSite, id: u64, req: &StatusRequest) -> ControlRe
         site.set_telemetry_mode(id, m)
             .map_err(ApiError::bad_request)?;
     }
-    Ok(Json(serde_json::json!({})))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn parse_enum<T: std::str::FromStr>(
@@ -154,7 +154,7 @@ fn soc_rejection(id: u64, no_car_status: StatusCode, refusal: SocRefusal) -> Api
     }
 }
 
-fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResult {
+fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> Result<StatusCode, ApiError> {
     let Some(component) = site.get(id) else {
         return Err(ApiError::not_found(format!("component {id} not found")));
     };
@@ -404,14 +404,14 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
         boiler.set_pressure_bar(bar as f32);
         site.note_knob_changed(id, "boiler-pressure", Some(bar as f32), None, None);
     }
-    Ok(Json(serde_json::json!({})))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(in crate::ui) async fn component_status(
     mg: Mg,
     Path((_, id)): Path<(u64, u64)>,
     Json(req): Json<StatusRequest>,
-) -> ControlResult {
+) -> Result<StatusCode, ApiError> {
     apply_status(&mg.site, id, &req)
 }
 
@@ -419,7 +419,7 @@ pub(in crate::ui) async fn component_drive(
     mg: Mg,
     Path((_, id)): Path<(u64, u64)>,
     Json(req): Json<DriveRequest>,
-) -> ControlResult {
+) -> Result<StatusCode, ApiError> {
     apply_drive(&mg.site, id, &req)
 }
 

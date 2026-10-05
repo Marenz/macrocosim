@@ -796,7 +796,7 @@ async fn build_pool_line(
     json: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let latest: serde_json::Value = checked(
-        http.get(format!("{ui_addr}/api/mg/{mg_id}/microgrid/latest"))
+        http.get(format!("{ui_addr}/api/mg/{mg_id}/metrics/latest"))
             .send()
             .await?,
     )
@@ -847,9 +847,9 @@ async fn build_pool_line(
     }
 }
 
-/// Polls /api/topology + /api/microgrid/latest at `interval`
-/// seconds and prints a one-line pulse summary per tick. With
-/// `tail=false` (single snapshot mode) the loop runs once and
+/// Polls /api/mg/{id}/topology + /api/mg/{id}/metrics/latest at
+/// `interval` seconds and prints a one-line pulse summary per tick.
+/// With `tail=false` (single snapshot mode) the loop runs once and
 /// exits, matching `macroctl dashboard` without a flag.
 async fn run_dashboard(
     ui_addr: &str,
@@ -890,7 +890,7 @@ async fn build_dashboard_line(
     .json()
     .await?;
     let latest: serde_json::Value = checked(
-        http.get(format!("{ui_addr}/api/mg/{mg_id}/microgrid/latest"))
+        http.get(format!("{ui_addr}/api/mg/{mg_id}/metrics/latest"))
             .send()
             .await?,
     )
@@ -913,9 +913,9 @@ async fn build_dashboard_line(
             None => {}
         }
         if c.get("category").and_then(|v| v.as_str()) == Some("battery") {
-            // SoC isn't on /api/topology; the histogram column lands
-            // when J5's pool stream gets folded in. Keep the field
-            // for forward compatibility.
+            // SoC isn't on the topology route; the histogram
+            // column lands when J5's pool stream gets folded in.
+            // Keep the field for forward compatibility.
             if let Some(soc) = c.get("soc").and_then(|v| v.as_f64()) {
                 bat_socs.push(soc);
             }
@@ -1215,7 +1215,7 @@ async fn run_snapshot(
     match cmd {
         SnapshotCmd::Save { name } => {
             let resp: serde_json::Value = checked(
-                http.post(format!("{ui_addr}/api/mg/{mg}/snapshots/save"))
+                http.post(format!("{ui_addr}/api/mg/{mg}/snapshots"))
                     .json(&serde_json::json!({ "name": name }))
                     .send()
                     .await?,
@@ -1343,7 +1343,7 @@ fn lisp_string(s: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-/// `latest[stream].value` as f64 from an `/api/.../microgrid/latest`
+/// `latest[stream].value` as f64 from an `/api/.../metrics/latest`
 /// map — shared by the pool and dashboard line builders.
 fn latest_value(latest: &serde_json::Value, stream: &str) -> Option<f64> {
     latest
