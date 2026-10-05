@@ -195,7 +195,9 @@ impl<'a> Gateway<'a> {
                 self.gate_locked(&st, id, axis, value)?;
                 value
             }
-            Mode::Clamp => clamp_into(value, self.setpoint_envelope_locked(&st, id, axis)),
+            Mode::Clamp => self
+                .setpoint_envelope_locked(&st, id, axis)
+                .map_or(value, |env| env.clamp_or_park(value)),
         };
         let Some(ax) = st.axes.get_mut(&(id, axis)) else {
             return Err(GatewayError::NoAxis { id, axis });
@@ -478,15 +480,6 @@ fn log_expired(expired: &[(u64, SetpointAxis)]) {
     }
 }
 
-/// `value` pulled into `envelope`; 0 and a missing envelope leave it
-/// alone.
-fn clamp_into(value: f32, envelope: Option<VecBounds>) -> f32 {
-    if value == 0.0 {
-        return value;
-    }
-    envelope.map_or(value, |env| env.clamp(value))
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -665,6 +658,69 @@ mod tests {
             )
             .unwrap();
         assert_eq!(applied.value, 0.0);
+    }
+
+    /// When the component's own envelope and its children's envelope
+    /// exclude each other, `Reject` refuses a nonzero value and
+    /// `Clamp` applies 0: no stored command waits for the envelope to
+    /// reopen.
+    #[test]
+    fn clamp_parks_on_an_empty_combined_envelope() {
+        let site = inverter_over_battery(1_000.0);
+        let gw = site.gateway();
+        let g = site.run_generation();
+        gw.augment(
+            2,
+            g,
+            SetpointAxis::Active,
+            VecBounds::single(2_000.0, 5_000.0),
+            HOUR,
+        )
+        .unwrap();
+        let e = gw
+            .set_power(SetpointAxis::Active, 2, g, 3_000.0, HOUR, Mode::Reject)
+            .unwrap_err();
+        assert!(matches!(e, GatewayError::OutOfEnvelope(_)), "{e}");
+        let applied = gw
+            .set_power(SetpointAxis::Active, 2, g, 3_000.0, HOUR, Mode::Clamp)
+            .unwrap();
+        assert_eq!(applied.value, 0.0);
+    }
+
+    /// On a childless component whose bounds follow its physical
+    /// band, `Reject` judges the validation envelope, band left out,
+    /// while `Clamp` clamps into the reported bounds, band included,
+    /// and parks at 0 when they are empty.
+    #[test]
+    fn reject_leaves_the_physical_band_out_and_clamp_takes_it() {
+        let site = MicrogridSite::new();
+        let hw = put(
+            &site,
+            Arc::new(Hw {
+                follows_physical: true,
+                ..Hw::new(2)
+            }),
+        );
+        *hw.physical.lock() = Some(VecBounds::single(0.0, 600.0));
+        let gw = site.gateway();
+        let g = site.run_generation();
+        gw.augment(
+            2,
+            g,
+            SetpointAxis::Active,
+            VecBounds::single(500.0, 1_000.0),
+            HOUR,
+        )
+        .unwrap();
+        let set = |value, mode| {
+            gw.set_power(SetpointAxis::Active, 2, g, value, HOUR, mode)
+                .unwrap()
+                .value
+        };
+        assert_eq!(set(900.0, Mode::Reject), 900.0);
+        assert_eq!(set(900.0, Mode::Clamp), 600.0);
+        *hw.physical.lock() = Some(VecBounds::single(0.0, 200.0));
+        assert_eq!(set(700.0, Mode::Clamp), 0.0);
     }
 
     /// An accepted augmentation reports its deadline on the site

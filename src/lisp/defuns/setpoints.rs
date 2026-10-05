@@ -82,10 +82,11 @@ fn set_power(
 ///
 /// `CLAMP` (default nil) — when non-nil, a value outside the setpoint
 /// envelope (the component's own bounds intersected with its
-/// children's) is clamped into it and applied instead of refused: the
-/// primitive an in-sim controller scripted with `(every …)` uses to
-/// command "max within whatever cap the limiter allows" each tick. 0
-/// W (the fail-safe park) is applied as-is either way.
+/// children's) is clamped into it and applied instead of refused, and
+/// an empty envelope clamps to 0: the primitive an in-sim controller
+/// scripted with `(every …)` uses to command "max within whatever cap
+/// the limiter allows" each tick. 0 W (the fail-safe park) is applied
+/// as-is either way.
 ///
 /// `(set-reactive-power ID VARS &OPTIONAL LIFETIME-MS CLAMP)` — the
 /// same on the reactive axis, in VAr, against the reactive envelope:
