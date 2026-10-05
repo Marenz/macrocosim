@@ -37,7 +37,7 @@ impl Gateway<'_> {
     /// the gateway lock from start to end.
     pub fn step(&self, now: DateTime<Utc>, dt: Duration) {
         let mut st = self.gw.state.lock();
-        let expired = self.expire_locked(&st, now);
+        let expired = self.expire_locked(&mut st, now);
         for ax in st.axes.values_mut() {
             ax.drop_expired(now);
         }
@@ -46,7 +46,7 @@ impl Gateway<'_> {
                 w.refresh(soc);
             }
         }
-        let planned = self.plan_locked(&st, now, dt);
+        let planned = self.plan_locked(&mut st, now, dt);
         let pushes = self.window_pushes(&st, &planned);
         let shares = window::shares(&pushes, |battery| {
             self.bounds_of_locked(&st, battery, SetpointAxis::Active)
@@ -73,9 +73,12 @@ impl Gateway<'_> {
     /// snaps to 0, the command and its lifetime go unless the
     /// component keeps them, and 0 is handed — and target every
     /// other, reading its validation base and physical band.
-    fn plan_locked(&self, st: &GatewayState, now: DateTime<Utc>, dt: Duration) -> Vec<Planned> {
+    fn plan_locked(&self, st: &mut GatewayState, now: DateTime<Utc>, dt: Duration) -> Vec<Planned> {
+        let GatewayState {
+            axes, lifetimes, ..
+        } = st;
         let mut planned = Vec::new();
-        for (&(id, axis), ax) in &st.axes {
+        for (&(id, axis), ax) in axes.iter() {
             let Some(c) = self.site.get(id) else {
                 continue;
             };
@@ -83,7 +86,7 @@ impl Gateway<'_> {
                 let keep = c.keeps_command_through_fault(axis);
                 ax.trip(keep);
                 if !keep {
-                    st.lifetimes.remove(id, axis);
+                    lifetimes.remove(id, axis);
                 }
                 c.set_command(axis, 0.0);
                 continue;

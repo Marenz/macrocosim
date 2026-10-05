@@ -212,7 +212,7 @@ impl<'a> Gateway<'a> {
         lifetime: Duration,
         mode: Mode,
     ) -> Result<Applied, GatewayError> {
-        let st = self.gw.state.lock();
+        let mut st = self.gw.state.lock();
         if self.site.run_generation() != generation {
             return Err(GatewayError::SiteReset);
         }
@@ -234,10 +234,8 @@ impl<'a> Gateway<'a> {
         let base = self.base_of(c.as_ref(), axis);
         ax.check(value, &base, now)
             .map_err(|e| GatewayError::OutOfEnvelope(e.to_string()))?;
-        let deadline = st.lifetimes.actuate_and_arm(id, axis, now, lifetime, || {
-            ax.accept(value);
-            Ok::<(), GatewayError>(())
-        })?;
+        ax.accept(value);
+        let deadline = st.lifetimes.arm(id, axis, now, lifetime);
         Ok(Applied { value, deadline })
     }
 
@@ -278,7 +276,7 @@ impl<'a> Gateway<'a> {
 
     /// Clear `id`'s `axis` command and lifetime and park the axis.
     pub fn reset(&self, id: u64, axis: SetpointAxis) {
-        let st = self.gw.state.lock();
+        let mut st = self.gw.state.lock();
         st.lifetimes.remove(id, axis);
         if let (Some(ax), Some(c)) = (st.axes.get(&(id, axis)), self.site.get(id)) {
             ax.reset(c.park_value(axis));
@@ -295,14 +293,13 @@ impl<'a> Gateway<'a> {
     /// Expire every lifetime at or before `now`: its axis ramps to
     /// the component's park value. Returns what expired, for logging
     /// once the lock is released.
-    fn expire_locked(&self, st: &GatewayState, now: DateTime<Utc>) -> Vec<(u64, SetpointAxis)> {
-        let mut expired = Vec::new();
-        st.lifetimes.reset_expired_with(now, |id, axis| {
+    fn expire_locked(&self, st: &mut GatewayState, now: DateTime<Utc>) -> Vec<(u64, SetpointAxis)> {
+        let expired = st.lifetimes.drain_expired(now);
+        for &(id, axis) in &expired {
             if let (Some(ax), Some(c)) = (st.axes.get(&(id, axis)), self.site.get(id)) {
                 ax.reset(c.park_value(axis));
             }
-            expired.push((id, axis));
-        });
+        }
         expired
     }
 
