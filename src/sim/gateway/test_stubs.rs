@@ -37,8 +37,7 @@ pub(crate) struct Hw {
     pub idle: Option<f32>,
     pub initial: f32,
     pub keeps: bool,
-    pub checks_physical: bool,
-    pub advertises: bool,
+    pub follows_physical: bool,
     pub settings: GatewaySettings,
 }
 
@@ -51,8 +50,7 @@ impl Hw {
             idle: None,
             initial: 0.0,
             keeps: false,
-            checks_physical: false,
-            advertises: false,
+            follows_physical: false,
             settings: GatewaySettings::default(),
         }
     }
@@ -118,11 +116,8 @@ impl SimulatedComponent for Hw {
     fn keeps_command_through_fault(&self, _: SetpointAxis) -> bool {
         self.keeps
     }
-    fn advertises_physical_band(&self, _: SetpointAxis) -> bool {
-        self.advertises
-    }
-    fn augment_checks_physical_band(&self, _: SetpointAxis) -> bool {
-        self.checks_physical
+    fn bounds_follow_physical_band(&self, axis: SetpointAxis) -> bool {
+        axis == SetpointAxis::Active && self.follows_physical
     }
     fn gateway_settings(&self) -> Option<GatewaySettings> {
         Some(self.settings)

@@ -104,7 +104,7 @@ impl GatewayAxis {
     /// possibly empty when the axis is already boxed in.
     ///
     /// `physical` is the component's physical band where its
-    /// emptiness check includes it (`augment_checks_physical_band`),
+    /// emptiness check includes it (`bounds_follow_physical_band`),
     /// else `None`. A later move of the live P or of the physical
     /// band can still empty the envelope after an `Ok`.
     pub fn try_augment(

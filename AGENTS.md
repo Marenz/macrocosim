@@ -385,9 +385,9 @@ so construction + validation stay identical.
    controllable component answers the hardware facts the gateway reads
    (`has_axis`, `set_command`, `physical_band`, `idle_value`,
    `initial_value`, `keeps_command_through_fault`,
-   `advertises_physical_band`, `augment_checks_physical_band`,
-   `gateway_settings`) and keeps one `DeviceAxis` per axis; the
-   gateway supplies validation, lifetimes, augmentations and the ramp.
+   `bounds_follow_physical_band`, `gateway_settings`) and keeps one
+   `DeviceAxis` per axis; the gateway supplies validation, lifetimes,
+   augmentations and the ramp.
 2. Add to `src/sim/mod.rs` re-exports.
 3. Add a `%make-foo` defun in `src/lisp/make.rs` with `AsPlist!`-derived
    args, calling `site.register(...)`. Note the leading `%` —

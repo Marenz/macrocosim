@@ -260,7 +260,7 @@ impl<'a> Gateway<'a> {
             .map_err(AugmentError::Malformed)?;
         let now = self.site.now();
         let base = self.base_of(c.as_ref(), axis);
-        let physical = if c.augment_checks_physical_band(axis) {
+        let physical = if c.bounds_follow_physical_band(axis) {
             c.physical_band(axis, self.site.physics_tick())
         } else {
             None
@@ -346,14 +346,13 @@ impl<'a> Gateway<'a> {
     ) -> Option<VecBounds> {
         let c = self.site.get(id)?;
         if let Some(ax) = st.axes.get(&(id, axis)) {
-            let env = ax.validation_envelope(&self.base_of(c.as_ref(), axis), self.site.now());
+            let mut env = ax.validation_envelope(&self.base_of(c.as_ref(), axis), self.site.now());
+            if c.bounds_follow_physical_band(axis)
+                && let Some(p) = c.physical_band(axis, self.site.physics_tick())
+            {
+                env = env.intersect(&p);
+            }
             return Some(match axis {
-                SetpointAxis::Active if c.advertises_physical_band(axis) => {
-                    match c.physical_band(axis, self.site.physics_tick()) {
-                        Some(p) => env.intersect(&p),
-                        None => env,
-                    }
-                }
                 SetpointAxis::Active => env,
                 // Zero headroom is a present (0, 0) band to a reader,
                 // not an absent one.
@@ -953,7 +952,7 @@ mod tests {
         let boiler = put(
             &site,
             Arc::new(Hw {
-                checks_physical: true,
+                follows_physical: true,
                 ..Hw::new(2)
             }),
         );
@@ -983,16 +982,16 @@ mod tests {
     }
 
     /// `bounds_of` includes the physical band only where the
-    /// component advertises it.
+    /// component's bounds follow it.
     #[test]
-    fn bounds_of_includes_the_physical_band_only_when_advertised() {
+    fn bounds_of_includes_the_physical_band_only_when_asked() {
         let site = MicrogridSite::new();
         let quiet = put(&site, Arc::new(Hw::new(1)));
         *quiet.physical.lock() = Some(VecBounds::single(0.0, 200.0));
         let loud = put(
             &site,
             Arc::new(Hw {
-                advertises: true,
+                follows_physical: true,
                 ..Hw::new(2)
             }),
         );

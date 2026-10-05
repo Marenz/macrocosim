@@ -306,15 +306,11 @@ impl SimulatedComponent for SteamBoiler {
         Some(0.0)
     }
 
-    /// The need is part of the reported bounds.
-    fn advertises_physical_band(&self, _axis: SetpointAxis) -> bool {
-        true
-    }
-
-    /// An augmentation disjoint from the need would park the heater
-    /// at 0 W for its whole lifetime, so it is refused.
-    fn augment_checks_physical_band(&self, _axis: SetpointAxis) -> bool {
-        true
+    /// On the active axis the need is part of the reported bounds,
+    /// and an augmentation disjoint from it would park the heater at
+    /// 0 W for its whole lifetime, so it is refused.
+    fn bounds_follow_physical_band(&self, axis: SetpointAxis) -> bool {
+        axis == SetpointAxis::Active
     }
 
     fn gateway_settings(&self) -> Option<GatewaySettings> {

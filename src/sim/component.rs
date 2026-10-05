@@ -434,10 +434,9 @@ pub enum KnobSnapshot {
 ///   - **Lifecycle**: stream_interval, stream_jitter_pct, tick, telemetry.
 ///   - **Hardware facts the gateway reads**: has_axis, set_command,
 ///     physical_band, idle_value, initial_value,
-///     keeps_command_through_fault, advertises_physical_band,
-///     augment_checks_physical_band, gateway_settings, soc_window,
-///     soc_pct. The Microgrid API rules themselves live in
-///     `sim::gateway`, never here.
+///     keeps_command_through_fault, bounds_follow_physical_band,
+///     gateway_settings, soc_window, soc_pct. The Microgrid API rules
+///     themselves live in `sim::gateway`, never here.
 ///   - **Stimuli**: set_active_power_override, set_soc_pct, plug_ev,
 ///     …
 ///   - **Bounds**: rated_active_bounds, reactive_capability,
@@ -566,15 +565,11 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         false
     }
 
-    /// Whether the bounds reported for `axis` include the physical
-    /// band.
-    fn advertises_physical_band(&self, _axis: SetpointAxis) -> bool {
-        false
-    }
-
-    /// Whether an augmentation on `axis` must overlap the physical
-    /// band to be accepted.
-    fn augment_checks_physical_band(&self, _axis: SetpointAxis) -> bool {
+    /// Whether `axis`'s bounds follow the physical band: the bounds
+    /// reported for it include the band, and an augmentation on it
+    /// must overlap the band. Answered per axis, so a component can
+    /// opt in one axis only.
+    fn bounds_follow_physical_band(&self, _axis: SetpointAxis) -> bool {
         false
     }
 
