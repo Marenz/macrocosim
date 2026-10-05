@@ -1159,3 +1159,62 @@ async fn telemetry_stream_emits_samples_for_a_component() {
     assert!(take.is_ok(), "stream timed out before 2 samples");
     assert!(got >= 2, "expected ≥2 samples, got {got}");
 }
+
+/// A battery's DC power sample carries the SoC-throttled bounds: at
+/// 85 % with the default 90 % `:soc-upper` and 10 % margin, the
+/// charge side is tapered and the discharge side is rated.
+#[tokio::test(flavor = "multi_thread")]
+async fn battery_telemetry_carries_the_throttled_bounds() {
+    use macrocosim::sim::decay::{SocProtect, soc_protected_bounds};
+    let s = TestServer::start(
+        r#"
+(%make-grid-connection-point :id 1
+            :successors
+            (list (%make-battery-inverter
+                   :id 4
+                   :rated-lower -5000.0
+                   :rated-upper  5000.0
+                   :successors
+                   (list (%make-battery
+                          :id 3
+                          :initial-soc 85.0
+                          :rated-lower -5000.0
+                          :rated-upper  5000.0)))))
+"#,
+    )
+    .await;
+    let mut c = connect(&s).await;
+    let mut stream = c
+        .receive_electrical_component_telemetry_stream(
+            ReceiveElectricalComponentTelemetryStreamRequest {
+                electrical_component_id: 3,
+                filter: None,
+            },
+        )
+        .await
+        .expect("subscribe")
+        .into_inner();
+    let bounds = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Ok(Some(msg)) = stream.message().await {
+            let dc = msg.telemetry.as_ref().and_then(|t| {
+                t.metric_samples
+                    .iter()
+                    .find(|s| s.metric == Metric::DcPower as i32)
+            });
+            if let Some(dc) = dc
+                && !dc.bounds.is_empty()
+            {
+                return Some(dc.bounds.clone());
+            }
+        }
+        None
+    })
+    .await
+    .expect("telemetry stream timed out")
+    .expect("a DC power sample carrying bounds");
+    let (lo, hi) = soc_protected_bounds(-5_000.0, 5_000.0, 85.0, SocProtect::new(10.0, 90.0, 10.0));
+    assert!(hi > 0.0 && hi < 5_000.0, "the test needs a taper, got {hi}");
+    assert_eq!(bounds.len(), 1);
+    assert_eq!(bounds[0].lower, Some(lo));
+    assert_eq!(bounds[0].upper, Some(hi));
+}

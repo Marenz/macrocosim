@@ -1,9 +1,46 @@
-//! The SoC window: each battery inverter's share of the room its
-//! batteries' throttled bounds leave.
+//! The SoC window: each battery's throttled bounds, and each battery
+//! inverter's share of the room they leave.
 
 use std::collections::HashMap;
 
-use crate::{proto::common::metrics::Bounds, sim::bounds::VecBounds};
+use crate::{
+    proto::common::metrics::Bounds,
+    sim::{
+        bounds::VecBounds,
+        decay::{SocProtect, soc_protected_bounds},
+    },
+};
+
+/// One battery's SoC window: its usable band and taper, and the
+/// throttled bounds they give at the battery's last SoC.
+pub(super) struct BatteryWindow {
+    protect: SocProtect,
+    rated: (f32, f32),
+    throttled: (f32, f32),
+}
+
+impl BatteryWindow {
+    pub(super) fn new(protect: SocProtect, rated: (f32, f32), soc: f32) -> Self {
+        let mut w = Self {
+            protect,
+            rated,
+            throttled: rated,
+        };
+        w.refresh(soc);
+        w
+    }
+
+    /// Recompute the throttled bounds at `soc` (taper base 1.2, floor
+    /// 0.3, closing at the window's limits).
+    pub(super) fn refresh(&mut self, soc: f32) {
+        self.throttled = soc_protected_bounds(self.rated.0, self.rated.1, soc, self.protect);
+    }
+
+    /// The throttled bounds.
+    pub(super) fn bounds(&self) -> VecBounds {
+        VecBounds::single(self.throttled.0, self.throttled.1)
+    }
+}
 
 /// One inverter's push into one battery this tick: its step-1 target
 /// split equally across its healthy batteries.
@@ -189,5 +226,25 @@ mod tests {
         assert_eq!(band(&d, 1), "[-2000, *]");
         let open = shares(&[push(1, 8, 3_000.0)], |_| None);
         assert!(open.is_empty());
+    }
+
+    /// The window throttles with today's taper and closes at the
+    /// limits.
+    #[test]
+    fn the_window_throttles_with_todays_taper() {
+        use crate::sim::decay::SocProtect;
+        let mut w = BatteryWindow::new(
+            SocProtect::new(10.0, 90.0, 10.0),
+            (-30_000.0, 30_000.0),
+            50.0,
+        );
+        assert_eq!(w.bounds().to_string(), "[-30000, 30000]");
+        w.refresh(85.0);
+        let hi = w.bounds().0[0].upper.unwrap();
+        assert!(hi > 0.0 && hi < 30_000.0, "tapered, got {hi}");
+        w.refresh(90.0);
+        assert_eq!(w.bounds().0[0].upper, Some(0.0));
+        w.refresh(10.0);
+        assert_eq!(w.bounds().0[0].lower, Some(0.0));
     }
 }

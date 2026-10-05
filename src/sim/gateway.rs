@@ -102,6 +102,8 @@ struct GatewayState {
     lifetimes: TimeoutTracker,
     /// One axis per controllable component and axis.
     axes: HashMap<(u64, SetpointAxis), GatewayAxis>,
+    /// The SoC window of every battery.
+    batteries: HashMap<u64, window::BatteryWindow>,
 }
 
 impl GatewayState {
@@ -109,6 +111,7 @@ impl GatewayState {
     fn forget(&mut self, id: u64) {
         self.lifetimes.remove_component(id);
         self.axes.retain(|(cid, _), _| *cid != id);
+        self.batteries.remove(&id);
     }
 }
 
@@ -122,12 +125,14 @@ impl MicrogridGateway {
         let mut st = self.state.lock();
         st.lifetimes.clear();
         st.axes.clear();
+        st.batteries.clear();
     }
 
     /// Set up a component that has just been (re-)registered: drop
     /// whatever an earlier occupant of its id left, then create an
     /// axis for every axis it takes a command on, its ramp starting
-    /// at the component's initial value.
+    /// at the component's initial value, and for a battery its SoC
+    /// window at its initial SoC.
     pub(crate) fn on_register(&self, c: &dyn SimulatedComponent) {
         let id = c.id();
         let mut st = self.state.lock();
@@ -145,6 +150,13 @@ impl MicrogridGateway {
                     }),
                 );
             }
+        }
+        if let (Some(protect), Some(rated), Some(soc)) =
+            (c.soc_window(), c.rated_active_bounds(), c.soc_pct())
+        {
+            protect.warn_if_overwide(&format!("battery {id}"));
+            st.batteries
+                .insert(id, window::BatteryWindow::new(protect, rated, soc));
         }
     }
 
@@ -383,6 +395,11 @@ impl<'a> Gateway<'a> {
                 // not an absent one.
                 SetpointAxis::Reactive => env.or_zero_band(),
             });
+        }
+        if axis == SetpointAxis::Active
+            && let Some(w) = st.batteries.get(&id)
+        {
+            return Some(w.bounds());
         }
         match axis {
             SetpointAxis::Active => c.effective_active_bounds(),
@@ -1136,5 +1153,33 @@ mod tests {
         put(&site, Arc::new(Hw::new(1)));
         assert!(!gw.augmented(1, SetpointAxis::Active));
         assert_eq!(gw.remaining_lifetime(1, SetpointAxis::Active), None);
+    }
+
+    /// A battery's bounds are the gateway's throttled window, there
+    /// from registration and following a SoC change on the next step.
+    #[test]
+    fn a_batterys_bounds_are_its_throttled_window() {
+        use crate::sim::{Battery, battery::BatteryConfig};
+        let site = MicrogridSite::new();
+        site.register(Battery::new(
+            1,
+            Duration::from_secs(1),
+            BatteryConfig {
+                initial_soc_pct: 95.0,
+                soc_upper_pct: 90.0,
+                ..Default::default()
+            },
+        ));
+        assert_eq!(
+            site.bounds_of(1, SetpointAxis::Active).unwrap().0[0].upper,
+            Some(0.0)
+        );
+        assert!(site.get(1).unwrap().set_soc_pct(50.0));
+        site.tick_n(1, Duration::from_millis(100));
+        assert_eq!(
+            site.bounds_of(1, SetpointAxis::Active).unwrap().0[0].upper,
+            Some(30_000.0)
+        );
+        assert!(site.bounds_of(1, SetpointAxis::Reactive).is_none());
     }
 }

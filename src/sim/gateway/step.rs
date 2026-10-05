@@ -1,9 +1,9 @@
 //! `Gateway::step`: one physics tick of the API rules. Expire request
-//! lifetimes and augmentations at `now`, then for every gateway-owned
-//! axis: trip it when its component is unhealthy, else target it,
-//! share out the batteries' room between the inverters pushing into
-//! them, clamp and ramp each axis, and hand the result to its
-//! component.
+//! lifetimes and augmentations at `now`, refresh each battery's SoC
+//! window from its SoC, then for every gateway-owned axis: trip it
+//! when its component is unhealthy, else target it, share out the
+//! batteries' room between the inverters pushing into them, clamp and
+//! ramp each axis, and hand the result to its component.
 
 use std::{sync::Arc, time::Duration};
 
@@ -40,6 +40,11 @@ impl Gateway<'_> {
         let expired = self.expire_locked(&st, now);
         for ax in st.axes.values_mut() {
             ax.drop_expired(now);
+        }
+        for (id, w) in st.batteries.iter_mut() {
+            if let Some(soc) = self.site.get(*id).and_then(|c| c.soc_pct()) {
+                w.refresh(soc);
+            }
         }
         let planned = self.plan_locked(&st, now, dt);
         let pushes = self.window_pushes(&st, &planned);
@@ -445,6 +450,48 @@ mod tests {
         );
     }
 
+    /// With the default 100 ms device delay in the path, the window
+    /// is exceeded by at most the tick the last command inside it
+    /// runs for plus one device delay: 3.6 kW for 100 ms into 1 kWh
+    /// is 0.01 % each.
+    #[test]
+    fn the_window_holds_within_one_device_delay() {
+        let site = MicrogridSite::new();
+        site.register(Battery::new(
+            1,
+            Duration::from_secs(1),
+            BatteryConfig {
+                capacity_wh: 1_000.0,
+                initial_soc_pct: 89.5,
+                soc_upper_pct: 90.0,
+                soc_protect_margin_pct: 0.0,
+                rated_lower_w: -5_000.0,
+                rated_upper_w: 5_000.0,
+                ..Default::default()
+            },
+        ));
+        site.register(BatteryInverter::new(
+            2,
+            Duration::from_secs(1),
+            BatteryInverterConfig {
+                rated_lower_w: -10_000.0,
+                rated_upper_w: 10_000.0,
+                ..Default::default()
+            },
+        ));
+        site.connect(2, 1);
+        site.gateway().command(2, Active, 3_600.0).unwrap();
+        let bat = site.get(1).unwrap();
+        let mut peak: f32 = 0.0;
+        for _ in 0..200 {
+            site.tick_n(1, DT);
+            peak = peak.max(bat.telemetry(&site).soc_pct.unwrap());
+        }
+        assert!(peak >= 89.99, "it charged up to the window, got {peak}");
+        assert!(peak <= 90.0 + 0.02 + 1e-3, "past the allowance, got {peak}");
+        assert!(site.get(2).unwrap().aggregate_power_w(&site).abs() < 1.0);
+    }
+
     /// Two inverters on one battery share its shrinking room in
     /// proportion to their pushes, and the second, starting from 0,
     /// still gets its part.
@@ -642,10 +689,10 @@ mod tests {
 
         let bat = site.get(1).unwrap();
         assert!(bat.set_soc_pct(89.5));
-        // One tick for the battery to see its new SoC, one for the
-        // gateway to read the narrowed room and hand it, one for the
-        // battery to report what it accepted of it.
-        site.tick_n(3, DT);
+        // The gateway reads the new SoC on its next step and cuts the
+        // output in that same step; at 1 kW/s the ramp alone could
+        // not have come down by more than 100 W.
+        site.tick_n(1, DT);
         let room = charge_room(&site, 1);
         assert!(room < 2_000.0, "the test needs the room short, got {room}");
         let out = inv.aggregate_power_w(&site);
@@ -656,6 +703,39 @@ mod tests {
         assert!(
             (bat.dc_accept_ratio() - 1.0).abs() < 1e-3,
             "the battery no longer clips"
+        );
+    }
+
+    /// With no gateway in the path, the hardware charges a battery
+    /// all the way to 100 % and stops there.
+    #[test]
+    fn the_hardware_alone_charges_a_battery_to_full() {
+        let site = MicrogridSite::new();
+        site.register(Battery::new(
+            1,
+            Duration::from_secs(1),
+            BatteryConfig {
+                capacity_wh: 1_000.0,
+                initial_soc_pct: 95.0,
+                ..Default::default()
+            },
+        ));
+        site.register(instant_inverter(2));
+        site.connect(2, 1);
+        let inv = site.get(2).unwrap();
+        let mut now = site.now();
+        for _ in 0..1_000 {
+            now += chrono::Duration::milliseconds(100);
+            inv.set_command(Active, 3_600.0);
+            for c in site.components().iter() {
+                c.tick(&site, now, DT);
+            }
+        }
+        let bat = site.get(1).unwrap();
+        assert!((bat.telemetry(&site).soc_pct.unwrap() - 100.0).abs() < 1e-3);
+        assert!(
+            bat.aggregate_power_w(&site).abs() < 1.0,
+            "a full pack takes nothing"
         );
     }
 }

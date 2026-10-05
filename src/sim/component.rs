@@ -919,10 +919,8 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     }
 
     /// Current effective active-power envelope (W) — for batteries
-    /// this is DC, for inverters AC. Differs from rated when the
-    /// component derates dynamically (SoC-protective ramp on a
-    /// battery, augmentations on an inverter). Default falls through
-    /// to `rated_active_bounds` so simple components get the obvious
+    /// this is DC, for inverters AC. Default falls through to
+    /// `rated_active_bounds` so simple components get the obvious
     /// behaviour for free.
     fn effective_active_bounds(&self) -> Option<VecBounds> {
         self.rated_active_bounds()
@@ -1067,7 +1065,7 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// Share of last tick's pushed DC power this child accepted, in
     /// [0, 1]: `accepted / pushed`. A parent multiplies its own push
     /// by this to report what actually flowed, so a battery clipping
-    /// at its SoC envelope pulls every inverter on its bus down in
+    /// at its hardware limits pulls every inverter on its bus down in
     /// proportion. One tick stale by construction: on the tick a
     /// parent changes its push, its report still uses the ratio of
     /// the previous mix. 1.0 for children that never clip (the

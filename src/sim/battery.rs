@@ -5,10 +5,7 @@ use parking_lot::Mutex;
 
 use crate::sim::{
     Category, MicrogridSite, SimulatedComponent, Telemetry,
-    bounds::VecBounds,
-    decay::{
-        SocProtect, integrate_soc_pct, sanitize_soc_pct, soc_protected_bounds as decay_soc_bounds,
-    },
+    decay::{SocProtect, integrate_soc_pct, sanitize_soc_pct},
 };
 
 /// Tunables exposed via `(make-battery :soc-protect-margin 10.0 …)`.
@@ -21,11 +18,12 @@ pub struct BatteryConfig {
     pub voltage_v: f32,
     pub rated_lower_w: f32,
     pub rated_upper_w: f32,
-    /// Width of the SoC band (in % points) where the rated DC bound is
-    /// tapered toward zero. With margin = 10 and `soc_upper_pct = 90`,
-    /// the charge bound starts decaying at SoC=80% and reaches 0 at
-    /// SoC=90%. Same on the discharge side near `soc_lower_pct`. Set to
-    /// `0.0` to disable.
+    /// Width (in % points) of the band inside the gateway's SoC
+    /// window where the throttled bound tapers toward zero. With
+    /// margin = 10 and `soc_upper_pct = 90`, the charge bound starts
+    /// decaying at SoC=80% and reaches 0 at SoC=90%. Same on the
+    /// discharge side near `soc_lower_pct`. `0.0` disables the taper;
+    /// the window still closes at its limits.
     pub soc_protect_margin_pct: f32,
     pub stream_jitter_pct: f32,
 }
@@ -66,27 +64,18 @@ struct BatteryState {
     /// having the last writer win.
     pending_p: f32,
     /// `power_w / pushed total` from the last tick — how much of what
-    /// the inverters pushed the SoC envelope let through. 1.0 when
+    /// the inverters pushed the hardware limits let through. 1.0 when
     /// nothing was pushed. Read back by the inverters for their own
     /// published power (see `SimulatedComponent::dc_accept_ratio`).
     accept_ratio: f32,
-    /// State of charge in % [0, 100]. Updated each tick from
-    /// `power_w * dt`. Clamped at the boundaries — the SoC bounds
-    /// close at the limits, but a tick's step can still overshoot
-    /// one, and an unclamped surplus would need "discharging" before
-    /// SoC moved back.
+    /// State of charge in % [0, 100], updated each tick from
+    /// `power_w * dt` and clamped at the boundaries.
     soc_pct: f32,
-    /// Cached effective DC bounds — recomputed every tick from SoC,
-    /// then read by `effective_active_bounds` and the inverter.
-    effective_lower_w: f32,
-    effective_upper_w: f32,
 }
 
 impl Battery {
     pub fn new(id: u64, interval: Duration, cfg: BatteryConfig) -> Self {
-        protect(&cfg).warn_if_overwide(&format!("battery {id}"));
         let init_soc = cfg.initial_soc_pct;
-        let (l, u) = soc_protected_bounds(&cfg, init_soc);
         Self {
             id,
             name: format!("bat-{id}"),
@@ -97,23 +86,25 @@ impl Battery {
                 pending_p: 0.0,
                 accept_ratio: 1.0,
                 soc_pct: init_soc,
-                effective_lower_w: l,
-                effective_upper_w: u,
             }),
         }
     }
-}
 
-fn protect(cfg: &BatteryConfig) -> SocProtect {
-    SocProtect::new(
-        cfg.soc_lower_pct,
-        cfg.soc_upper_pct,
-        cfg.soc_protect_margin_pct,
-    )
-}
-
-fn soc_protected_bounds(cfg: &BatteryConfig, soc: f32) -> (f32, f32) {
-    decay_soc_bounds(cfg.rated_lower_w, cfg.rated_upper_w, soc, protect(cfg))
+    /// The hardware limits at `soc`: the rated band, with charging
+    /// refused at a full pack and discharging at an empty one.
+    fn hardware_bounds(&self, soc: f32) -> (f32, f32) {
+        let lower = if soc <= 0.0 {
+            0.0
+        } else {
+            self.cfg.rated_lower_w
+        };
+        let upper = if soc >= 100.0 {
+            0.0
+        } else {
+            self.cfg.rated_upper_w
+        };
+        (lower, upper)
+    }
 }
 
 impl fmt::Display for Battery {
@@ -140,8 +131,8 @@ impl SimulatedComponent for Battery {
     }
 
     fn set_soc_pct(&self, pct: f32) -> bool {
-        // The next tick re-derives the SoC-protected bounds from the
-        // new value, so no other state needs touching here.
+        // The gateway re-derives the throttled bounds from the new
+        // value on its next step.
         if let Some(pct) = sanitize_soc_pct("Battery::set_soc_pct", pct) {
             self.state.lock().soc_pct = pct;
         }
@@ -155,28 +146,19 @@ impl SimulatedComponent for Battery {
     fn tick(&self, _world: &MicrogridSite, _now: DateTime<Utc>, dt: Duration) {
         let mut s = self.state.lock();
 
-        // 1. Refresh SoC-derated bounds from current SoC.
-        let (l, u) = soc_protected_bounds(&self.cfg, s.soc_pct);
-        s.effective_lower_w = l;
-        s.effective_upper_w = u;
-
-        // 2. Drain the per-tick accumulator and clamp the active sum
-        //    against the freshly-computed envelope. With one inverter
-        //    this is identical to "store-then-clamp"; with N inverters
-        //    sharing the bus, the clamp applies to the *total* push,
-        //    not just the last writer.
+        // 1. Drain the per-tick accumulator and clamp the summed push
+        //    against the hardware limits: with N inverters sharing
+        //    the bus, the clamp applies to the total, not the last
+        //    writer. min/max keeps a NaN config bound from panicking.
+        let (lower, upper) = self.hardware_bounds(s.soc_pct);
         let total_p = s.pending_p;
         s.pending_p = 0.0;
-        // NaN-safe clamp: std `f32::clamp` panics on a NaN bound, and
-        // the bounds derive from config-supplied rated values with no
-        // finiteness guarantee — a panic here kills this microgrid's
-        // physics task permanently while gRPC keeps serving stale
-        // telemetry. min/max propagate the finite side instead.
-        s.power_w = total_p.min(s.effective_upper_w).max(s.effective_lower_w);
-        // Inside a sane envelope (lower ≤ 0 ≤ upper) the clip keeps the
-        // sign and never grows the magnitude, so the ratio is already in
-        // [0, 1]; the clamp only guards a config whose envelope excludes
-        // zero.
+        s.power_w = total_p.min(upper).max(lower);
+
+        // 2. The accept ratio. Inside sane limits (lower ≤ 0 ≤ upper)
+        //    the clip keeps the sign and never grows the magnitude,
+        //    so the ratio is already in [0, 1]; the clamp only guards
+        //    a config whose limits exclude zero.
         s.accept_ratio = if total_p != 0.0 && s.power_w.is_finite() {
             (s.power_w / total_p).clamp(0.0, 1.0)
         } else {
@@ -213,7 +195,6 @@ impl SimulatedComponent for Battery {
             } else {
                 0.0
             }),
-            active_power_bounds: Some(VecBounds::single(s.effective_lower_w, s.effective_upper_w)),
             component_state: Some(crate::sim::component::power_state(s.power_w)),
             relay_state: Some("relay-closed"),
             ..Default::default()
@@ -233,9 +214,9 @@ impl SimulatedComponent for Battery {
         true
     }
 
-    /// Add an inverter's active push to this tick's accumulator.
-    /// The actual `power_w` value is the *total* across all parents
-    /// after `tick()` clamps the accumulated sum to the SoC envelope.
+    /// Add an inverter's active push to this tick's accumulator. The
+    /// actual `power_w` value is the *total* across all parents after
+    /// `tick()` clamps the accumulated sum to the hardware limits.
     fn set_dc_power(&self, p: f32) {
         self.state.lock().pending_p += p;
     }
@@ -248,9 +229,16 @@ impl SimulatedComponent for Battery {
         Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
     }
 
-    fn effective_active_bounds(&self) -> Option<VecBounds> {
-        let s = self.state.lock();
-        Some(VecBounds::single(s.effective_lower_w, s.effective_upper_w))
+    fn soc_window(&self) -> Option<SocProtect> {
+        Some(SocProtect::new(
+            self.cfg.soc_lower_pct,
+            self.cfg.soc_upper_pct,
+            self.cfg.soc_protect_margin_pct,
+        ))
+    }
+
+    fn soc_pct(&self) -> Option<f32> {
+        Some(self.state.lock().soc_pct)
     }
 
     fn make_fn(&self) -> &'static str {
@@ -385,5 +373,46 @@ mod tests {
         assert!(s.contains(":initial-soc 20.0"));
         assert!(s.contains(":interval 500"));
         assert!(s.contains(":rated-lower -30000.0"));
+    }
+
+    /// The pack takes up to its rating anywhere between empty and
+    /// full, refuses charge at 100 % and discharge at 0 %.
+    #[test]
+    fn the_hardware_refuses_charge_at_full_and_discharge_at_empty() {
+        let w = MicrogridSite::new();
+        let tick = |b: &Battery, p: f32| {
+            b.set_dc_power(p);
+            b.tick(&w, Utc::now(), Duration::from_millis(100));
+            b.aggregate_power_w(&w)
+        };
+        let full = Battery::new(
+            1,
+            Duration::from_secs(1),
+            BatteryConfig {
+                initial_soc_pct: 100.0,
+                ..Default::default()
+            },
+        );
+        assert_eq!(tick(&full, 5_000.0), 0.0);
+        assert_eq!(tick(&full, -5_000.0), -5_000.0);
+        let empty = Battery::new(
+            2,
+            Duration::from_secs(1),
+            BatteryConfig {
+                initial_soc_pct: 0.0,
+                ..Default::default()
+            },
+        );
+        assert_eq!(tick(&empty, -5_000.0), 0.0);
+        assert_eq!(tick(&empty, 5_000.0), 5_000.0);
+        let near_top = Battery::new(
+            3,
+            Duration::from_secs(1),
+            BatteryConfig {
+                initial_soc_pct: 95.0,
+                ..Default::default()
+            },
+        );
+        assert_eq!(tick(&near_top, 40_000.0), 30_000.0, "rated, not the window");
     }
 }
