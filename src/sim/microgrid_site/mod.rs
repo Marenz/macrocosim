@@ -115,15 +115,37 @@ impl MicrogridSite {
     /// ride the power value they bound, so a snapshot with neither an
     /// AC nor a DC power value is left as the component built it.
     pub fn telemetry_of(&self, c: &dyn SimulatedComponent) -> crate::sim::Telemetry {
-        use crate::timeout_tracker::SetpointAxis;
         let mut t = c.telemetry(self);
-        if t.active_power_w.is_some() || t.dc_power_w.is_some() {
-            let gw = self.gateway();
-            t.active_power_bounds = gw.bounds_of(c.id(), SetpointAxis::Active);
-            t.reactive_power_bounds = gw.bounds_of(c.id(), SetpointAxis::Reactive);
+        if carries_power(&t) {
+            (t.active_power_bounds, t.reactive_power_bounds) = self.gateway().bounds_pair(c.id());
         }
         t
     }
+
+    /// `telemetry_of(c)` together with `c`'s (active, reactive)
+    /// bounds, which the caller gets whether or not the snapshot
+    /// carries a power value. One gateway read serves both.
+    pub(crate) fn telemetry_and_bounds(
+        &self,
+        c: &dyn SimulatedComponent,
+    ) -> (
+        crate::sim::Telemetry,
+        Option<crate::sim::bounds::VecBounds>,
+        Option<crate::sim::bounds::VecBounds>,
+    ) {
+        let mut t = c.telemetry(self);
+        let (active, reactive) = self.gateway().bounds_pair(c.id());
+        if carries_power(&t) {
+            t.active_power_bounds = active.clone();
+            t.reactive_power_bounds = reactive.clone();
+        }
+        (t, active, reactive)
+    }
+}
+
+/// Whether `t` has an AC or a DC power value for bounds to ride.
+fn carries_power(t: &crate::sim::Telemetry) -> bool {
+    t.active_power_w.is_some() || t.dc_power_w.is_some()
 }
 
 struct MicrogridSiteInner {

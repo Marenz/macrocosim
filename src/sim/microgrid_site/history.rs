@@ -65,10 +65,7 @@ impl MicrogridSite {
         let snapshots: Vec<_> = components
             .iter()
             .map(|c| {
-                use crate::timeout_tracker::SetpointAxis;
-                let snap = self.telemetry_of(c.as_ref());
-                let bounds = self.bounds_of(c.id(), SetpointAxis::Active);
-                let reactive_bounds = self.bounds_of(c.id(), SetpointAxis::Reactive);
+                let (snap, bounds, reactive_bounds) = self.telemetry_and_bounds(c.as_ref());
                 (c, snap, bounds, reactive_bounds)
             })
             .collect();

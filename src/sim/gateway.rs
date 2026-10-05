@@ -288,6 +288,19 @@ impl<'a> Gateway<'a> {
         self.bounds_of_locked(&st, id, axis)
     }
 
+    /// `bounds_of` for both axes, as (active, reactive), under one
+    /// lock and one component lookup.
+    pub fn bounds_pair(&self, id: u64) -> (Option<VecBounds>, Option<VecBounds>) {
+        let st = self.gw.state.lock();
+        let Some(c) = self.site.get(id) else {
+            return (None, None);
+        };
+        (
+            self.component_bounds_locked(&st, c.as_ref(), SetpointAxis::Active),
+            self.component_bounds_locked(&st, c.as_ref(), SetpointAxis::Reactive),
+        )
+    }
+
     /// The envelope a setpoint for `id` on `axis` must respect: its
     /// own bounds ∩ the summed bounds of every child that reports
     /// them (each divided by its parent count), or its own bounds
@@ -320,8 +333,19 @@ impl<'a> Gateway<'a> {
         axis: SetpointAxis,
     ) -> Option<VecBounds> {
         let c = self.site.get(id)?;
+        self.component_bounds_locked(st, c.as_ref(), axis)
+    }
+
+    /// `bounds_of_locked` for a component already looked up.
+    fn component_bounds_locked(
+        &self,
+        st: &GatewayState,
+        c: &dyn SimulatedComponent,
+        axis: SetpointAxis,
+    ) -> Option<VecBounds> {
+        let id = c.id();
         if let Some(ax) = st.axes.get(&(id, axis)) {
-            let mut env = ax.validation_envelope(&self.base_of(c.as_ref(), axis), self.site.now());
+            let mut env = ax.validation_envelope(&self.base_of(c, axis), self.site.now());
             if c.bounds_follow_physical_band(axis)
                 && let Some(p) = c.physical_band(axis, self.site.physics_tick())
             {
