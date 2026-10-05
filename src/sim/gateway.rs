@@ -694,13 +694,7 @@ mod tests {
     #[test]
     fn reject_leaves_the_physical_band_out_and_clamp_takes_it() {
         let site = MicrogridSite::new();
-        let hw = put(
-            &site,
-            Arc::new(Hw {
-                follows_physical: true,
-                ..Hw::new(2)
-            }),
-        );
+        let hw = put(&site, Arc::new(Hw::following_physical(2)));
         *hw.physical.lock() = Some(VecBounds::single(0.0, 600.0));
         let gw = site.gateway();
         let g = site.run_generation();
@@ -1058,13 +1052,7 @@ mod tests {
         let site = MicrogridSite::new();
         let pv = put(&site, Arc::new(Hw::new(1)));
         *pv.physical.lock() = Some(VecBounds::single(0.0, 200.0));
-        let boiler = put(
-            &site,
-            Arc::new(Hw {
-                follows_physical: true,
-                ..Hw::new(2)
-            }),
-        );
+        let boiler = put(&site, Arc::new(Hw::following_physical(2)));
         *boiler.physical.lock() = Some(VecBounds::single(0.0, 200.0));
         let gw = site.gateway();
         let g = site.run_generation();
@@ -1097,13 +1085,7 @@ mod tests {
         let site = MicrogridSite::new();
         let quiet = put(&site, Arc::new(Hw::new(1)));
         *quiet.physical.lock() = Some(VecBounds::single(0.0, 200.0));
-        let loud = put(
-            &site,
-            Arc::new(Hw {
-                follows_physical: true,
-                ..Hw::new(2)
-            }),
-        );
+        let loud = put(&site, Arc::new(Hw::following_physical(2)));
         *loud.physical.lock() = Some(VecBounds::single(0.0, 200.0));
         assert_eq!(
             site.bounds_of(1, SetpointAxis::Active).unwrap().to_string(),

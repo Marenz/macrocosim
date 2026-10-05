@@ -674,32 +674,38 @@ mod tests {
     }
 
     /// A `nearly_full_pack` (1) under a `ramping_inverter` (2)
-    /// settled at 5 kW, its SoC put back to 89.9 %: about seven ticks
-    /// short of the 90 % `:soc-upper`.
-    fn charging_at_the_edge() -> MicrogridSite {
+    /// settled at `power_w`, its SoC then put to `soc_pct`. At ±5 kW
+    /// and 89.9 % or 10.1 % that is about seven ticks short of the
+    /// window's edge.
+    fn settled_at_the_edge(power_w: f32, soc_pct: f32) -> MicrogridSite {
         let site = MicrogridSite::new();
         site.register(nearly_full_pack(1));
         site.register(ramping_inverter(2));
         site.connect(2, 1);
         let bat = site.get(1).unwrap();
         assert!(bat.set_soc_pct(50.0));
-        site.gateway().command(2, Active, 5_000.0).unwrap();
+        site.gateway().command(2, Active, power_w).unwrap();
         site.tick_n(60, DT);
         let out = site.get(2).unwrap().aggregate_power_w(&site);
-        assert!((out - 5_000.0).abs() < 1.0, "settled, got {out}");
-        assert!(bat.set_soc_pct(89.9));
+        assert!((out - power_w).abs() < 1.0, "settled, got {out}");
+        assert!(bat.set_soc_pct(soc_pct));
         site
+    }
+
+    /// Battery 1's SoC after each of the next `ticks` ticks.
+    fn soc_trace(site: &MicrogridSite, ticks: usize) -> Vec<f32> {
+        let bat = site.get(1).unwrap();
+        (0..ticks)
+            .map(|_| {
+                site.tick_n(1, DT);
+                bat.telemetry(site).soc_pct.unwrap()
+            })
+            .collect()
     }
 
     /// The peak SoC of battery 1 over the next `ticks` ticks.
     fn peak_soc(site: &MicrogridSite, ticks: usize) -> f32 {
-        let bat = site.get(1).unwrap();
-        let mut peak: f32 = 0.0;
-        for _ in 0..ticks {
-            site.tick_n(1, DT);
-            peak = peak.max(bat.telemetry(site).soc_pct.unwrap());
-        }
-        peak
+        soc_trace(site, ticks).into_iter().fold(0.0, f32::max)
     }
 
     /// A 0 command on a charging inverter still holds the window
@@ -707,28 +713,10 @@ mod tests {
     /// would put 0.35 % into the 1 kWh pack.
     #[test]
     fn a_zero_command_holds_the_window_while_the_output_ramps_down() {
-        let site = charging_at_the_edge();
+        let site = settled_at_the_edge(5_000.0, 89.9);
         site.gateway().command(2, Active, 0.0).unwrap();
         let peak = peak_soc(&site, 80);
         assert!(peak <= 90.02, "past the window, got {peak}");
-    }
-
-    /// A `nearly_full_pack` (1) under a `ramping_inverter` (2)
-    /// settled at -5 kW, its SoC put back to 10.1 %: about seven
-    /// ticks short of the 10 % `:soc-lower`.
-    fn discharging_at_the_edge() -> MicrogridSite {
-        let site = MicrogridSite::new();
-        site.register(nearly_full_pack(1));
-        site.register(ramping_inverter(2));
-        site.connect(2, 1);
-        let bat = site.get(1).unwrap();
-        assert!(bat.set_soc_pct(50.0));
-        site.gateway().command(2, Active, -5_000.0).unwrap();
-        site.tick_n(60, DT);
-        let out = site.get(2).unwrap().aggregate_power_w(&site);
-        assert!((out + 5_000.0).abs() < 1.0, "settled, got {out}");
-        assert!(bat.set_soc_pct(10.1));
-        site
     }
 
     /// The discharge side of
@@ -737,14 +725,9 @@ mod tests {
     /// `:soc-lower` while the output ramps up to 0.
     #[test]
     fn a_zero_command_holds_the_lower_window_while_the_output_ramps_up() {
-        let site = discharging_at_the_edge();
+        let site = settled_at_the_edge(-5_000.0, 10.1);
         site.gateway().command(2, Active, 0.0).unwrap();
-        let bat = site.get(1).unwrap();
-        let mut lowest: f32 = 100.0;
-        for _ in 0..80 {
-            site.tick_n(1, DT);
-            lowest = lowest.min(bat.telemetry(&site).soc_pct.unwrap());
-        }
+        let lowest = soc_trace(&site, 80).into_iter().fold(100.0, f32::min);
         assert!(lowest >= 9.98, "past the window, got {lowest}");
     }
 
@@ -753,7 +736,7 @@ mod tests {
     /// side comes from the ramp output, not the discharge target.
     #[test]
     fn a_reversed_command_holds_the_window_while_the_output_ramps_down() {
-        let site = charging_at_the_edge();
+        let site = settled_at_the_edge(5_000.0, 89.9);
         site.gateway().command(2, Active, -5_000.0).unwrap();
         let peak = peak_soc(&site, 80);
         assert!(peak <= 90.02, "past the window, got {peak}");
@@ -805,7 +788,7 @@ mod tests {
     /// its idle value; the window still holds the output on the way.
     #[test]
     fn an_expiry_near_the_window_edge_holds_the_window() {
-        let site = charging_at_the_edge();
+        let site = settled_at_the_edge(5_000.0, 89.9);
         site.gateway()
             .set_power(
                 2,

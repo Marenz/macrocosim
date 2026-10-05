@@ -105,6 +105,14 @@ impl Hw {
         }
     }
 
+    /// A stub whose active-axis bounds follow its physical band.
+    pub fn following_physical(id: u64) -> Self {
+        Self {
+            follows_physical: true,
+            ..Self::new(id)
+        }
+    }
+
     /// The last command handed in.
     pub fn last(&self) -> Option<f32> {
         self.commands.lock().last().copied()
