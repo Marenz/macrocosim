@@ -42,8 +42,9 @@ impl BatteryWindow {
     }
 }
 
-/// One inverter's push into one battery this tick: its step-1 target
-/// split equally across its healthy batteries.
+/// One inverter's push into one battery on one side this tick: the
+/// farther from 0 of its clamped target and its ramp output on that
+/// side, split equally across its healthy batteries.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Push {
     pub inverter: u64,

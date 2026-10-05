@@ -65,6 +65,24 @@ impl GatewayAxis {
         }
     }
 
+    /// The validation envelope at `now` ∩ `physical`. The step passes
+    /// the component's physical band, giving what a command may reach
+    /// before any window share; the reported bounds and the
+    /// augmentation check pass the band only where the component's
+    /// bounds follow it.
+    pub fn envelope_with_physical(
+        &self,
+        base: &VecBounds,
+        physical: Option<&VecBounds>,
+        now: DateTime<Utc>,
+    ) -> VecBounds {
+        let env = self.validation_envelope(base, now);
+        match physical {
+            Some(p) => env.intersect(p),
+            None => env,
+        }
+    }
+
     /// NaN is refused; 0 is always accepted; any other value must lie
     /// inside the validation envelope. An empty envelope rejects
     /// every nonzero value. On `Err` the payload is the validation
@@ -102,10 +120,7 @@ impl GatewayAxis {
         bounds: VecBounds,
         lifetime: Duration,
     ) -> Result<(), VecBounds> {
-        let mut current = self.validation_envelope(base, ts);
-        if let Some(p) = physical {
-            current = current.intersect(p);
-        }
+        let current = self.envelope_with_physical(base, physical, ts);
         if current.intersect(&bounds).0.is_empty() {
             return Err(current);
         }
@@ -159,9 +174,9 @@ impl GatewayAxis {
         ctx: &AdvanceCtx<'_>,
     ) -> f32 {
         if let Some(v) = target {
-            let mut env = self.validation_envelope(ctx.base, now);
-            for band in [ctx.physical, ctx.share].into_iter().flatten() {
-                env = env.intersect(band);
+            let mut env = self.envelope_with_physical(ctx.base, ctx.physical, now);
+            if let Some(share) = ctx.share {
+                env = env.intersect(share);
             }
             self.ramp.set_target(env.clamp_or_park(v));
         }
@@ -193,14 +208,26 @@ impl GatewayAxis {
     }
 
     /// The ramp's current value.
-    #[cfg(test)]
     pub fn actual(&self) -> f32 {
         self.ramp.actual()
     }
 
-    /// The ramp's current target (what a held axis keeps aiming at).
-    pub fn ramp_target(&self) -> f32 {
-        self.ramp.target()
+    /// What `advance` aims at before any window share: `target`
+    /// clamped to the envelope with the physical band, or the ramp's
+    /// current target while the axis holds.
+    pub fn clamped_target(
+        &self,
+        target: Option<f32>,
+        base: &VecBounds,
+        physical: Option<&VecBounds>,
+        now: DateTime<Utc>,
+    ) -> f32 {
+        match target {
+            Some(v) => self
+                .envelope_with_physical(base, physical, now)
+                .clamp_or_park(v),
+            None => self.ramp.target(),
+        }
     }
 }
 

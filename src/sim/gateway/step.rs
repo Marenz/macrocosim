@@ -47,7 +47,7 @@ impl Gateway<'_> {
             }
         }
         let planned = self.plan_locked(&mut st, now, dt);
-        let pushes = self.window_pushes(&st, &planned);
+        let pushes = self.window_pushes(&st, &planned, now);
         let shares = window::shares(&pushes, |battery| {
             self.bounds_of_locked(&st, battery, SetpointAxis::Active)
                 .and_then(|b| b.outer_edges())
@@ -110,10 +110,22 @@ impl Gateway<'_> {
         planned
     }
 
-    /// Each planned active axis's step-1 target — or its ramp target
-    /// while it holds — split equally across its component's healthy
-    /// DC children. An axis with none pushes nothing.
-    fn window_pushes(&self, st: &GatewayState, planned: &[Planned]) -> Vec<window::Push> {
+    /// Each planned active axis's pushes, split equally across its
+    /// component's healthy DC children. On each side the push is the
+    /// farther from 0 of the clamped target and last tick's ramp
+    /// output, so an output still ramping down toward a lower target
+    /// stays inside the room. The clamped target is the step-1 target
+    /// clamped to the axis's validation envelope ∩ physical band,
+    /// what the ramp aims for before the share, or the ramp target
+    /// while the axis holds. A side where both are 0 or on the other
+    /// sign pushes nothing; an axis with no healthy DC child pushes
+    /// nothing.
+    fn window_pushes(
+        &self,
+        st: &GatewayState,
+        planned: &[Planned],
+        now: DateTime<Utc>,
+    ) -> Vec<window::Push> {
         let mut pushes = Vec::new();
         for p in planned.iter().filter(|p| p.axis == SetpointAxis::Active) {
             let batteries: Vec<u64> = self
@@ -125,15 +137,18 @@ impl Gateway<'_> {
             if batteries.is_empty() {
                 continue;
             }
-            let target = p
-                .target
-                .unwrap_or_else(|| st.axes[&(p.id, p.axis)].ramp_target());
-            let each = target / batteries.len() as f32;
-            pushes.extend(batteries.into_iter().map(|battery| window::Push {
-                inverter: p.id,
-                battery,
-                watts: each,
-            }));
+            let ax = &st.axes[&(p.id, p.axis)];
+            let target = ax.clamped_target(p.target, &p.base, p.physical.as_ref(), now);
+            let actual = ax.actual();
+            let n = batteries.len() as f32;
+            let sides = [target.max(actual).max(0.0), target.min(actual).min(0.0)];
+            for side in sides.into_iter().filter(|w| *w != 0.0) {
+                pushes.extend(batteries.iter().map(|&battery| window::Push {
+                    inverter: p.id,
+                    battery,
+                    watts: side / n,
+                }));
+            }
         }
         pushes
     }
@@ -444,12 +459,7 @@ mod tests {
         ));
         site.connect(2, 1);
         site.gateway().command(2, Active, 3_600.0).unwrap();
-        let bat = site.get(1).unwrap();
-        let mut peak: f32 = 0.0;
-        for _ in 0..200 {
-            site.tick_n(1, DT);
-            peak = peak.max(bat.telemetry(&site).soc_pct.unwrap());
-        }
+        let peak = peak_soc(&site, 200);
         assert!(peak >= 89.99, "it charged up to the window, got {peak}");
         assert!(peak <= 90.0 + 0.02 + 1e-3, "past the allowance, got {peak}");
         assert!(site.get(2).unwrap().aggregate_power_w(&site).abs() < 1.0);
@@ -598,16 +608,23 @@ mod tests {
         soc_protected_bounds(-5_000.0, 5_000.0, soc, SocProtect::new(10.0, 90.0, 10.0)).1
     }
 
-    /// An inverter on two batteries splits its output equally, so the
-    /// nearly full one sets its output: neither battery clips.
-    #[test]
-    fn an_inverter_on_two_batteries_overloads_neither() {
+    /// An `instant_inverter` (2) over two `tapering_battery`s: 1 at
+    /// 89 %, short of room, and 3 at 50 %.
+    fn two_tapering_batteries() -> MicrogridSite {
         let site = MicrogridSite::new();
         site.register(tapering_battery(1, 89.0));
         site.register(tapering_battery(3, 50.0));
         site.register(instant_inverter(2));
         site.connect(2, 1);
         site.connect(2, 3);
+        site
+    }
+
+    /// An inverter on two batteries splits its output equally, so the
+    /// nearly full one sets its output: neither battery clips.
+    #[test]
+    fn an_inverter_on_two_batteries_overloads_neither() {
+        let site = two_tapering_batteries();
         site.gateway().command(2, Active, 6_000.0).unwrap();
         site.tick_n(10, DT);
 
@@ -653,6 +670,208 @@ mod tests {
         assert!(
             (bat.dc_accept_ratio() - 1.0).abs() < 1e-3,
             "the battery no longer clips"
+        );
+    }
+
+    /// A `nearly_full_pack` (1) under a `ramping_inverter` (2)
+    /// settled at 5 kW, its SoC put back to 89.9 %: about seven ticks
+    /// short of the 90 % `:soc-upper`.
+    fn charging_at_the_edge() -> MicrogridSite {
+        let site = MicrogridSite::new();
+        site.register(nearly_full_pack(1));
+        site.register(ramping_inverter(2));
+        site.connect(2, 1);
+        let bat = site.get(1).unwrap();
+        assert!(bat.set_soc_pct(50.0));
+        site.gateway().command(2, Active, 5_000.0).unwrap();
+        site.tick_n(60, DT);
+        let out = site.get(2).unwrap().aggregate_power_w(&site);
+        assert!((out - 5_000.0).abs() < 1.0, "settled, got {out}");
+        assert!(bat.set_soc_pct(89.9));
+        site
+    }
+
+    /// The peak SoC of battery 1 over the next `ticks` ticks.
+    fn peak_soc(site: &MicrogridSite, ticks: usize) -> f32 {
+        let bat = site.get(1).unwrap();
+        let mut peak: f32 = 0.0;
+        for _ in 0..ticks {
+            site.tick_n(1, DT);
+            peak = peak.max(bat.telemetry(site).soc_pct.unwrap());
+        }
+        peak
+    }
+
+    /// A 0 command on a charging inverter still holds the window
+    /// while the output ramps down to it: 5 kW ramping down at 1 kW/s
+    /// would put 0.35 % into the 1 kWh pack.
+    #[test]
+    fn a_zero_command_holds_the_window_while_the_output_ramps_down() {
+        let site = charging_at_the_edge();
+        site.gateway()
+            .set_power(
+                Active,
+                2,
+                site.run_generation(),
+                0.0,
+                Duration::from_secs(60),
+                Mode::Reject,
+            )
+            .unwrap();
+        let peak = peak_soc(&site, 80);
+        assert!(peak <= 90.02, "past the window, got {peak}");
+    }
+
+    /// A `nearly_full_pack` (1) under a `ramping_inverter` (2)
+    /// settled at -5 kW, its SoC put back to 10.1 %: about seven
+    /// ticks short of the 10 % `:soc-lower`.
+    fn discharging_at_the_edge() -> MicrogridSite {
+        let site = MicrogridSite::new();
+        site.register(nearly_full_pack(1));
+        site.register(ramping_inverter(2));
+        site.connect(2, 1);
+        let bat = site.get(1).unwrap();
+        assert!(bat.set_soc_pct(50.0));
+        site.gateway().command(2, Active, -5_000.0).unwrap();
+        site.tick_n(60, DT);
+        let out = site.get(2).unwrap().aggregate_power_w(&site);
+        assert!((out + 5_000.0).abs() < 1.0, "settled, got {out}");
+        assert!(bat.set_soc_pct(10.1));
+        site
+    }
+
+    /// The discharge side of
+    /// `a_zero_command_holds_the_window_while_the_output_ramps_down`:
+    /// a 0 command on a discharging inverter holds the window at
+    /// `:soc-lower` while the output ramps up to 0.
+    #[test]
+    fn a_zero_command_holds_the_lower_window_while_the_output_ramps_up() {
+        let site = discharging_at_the_edge();
+        site.gateway().command(2, Active, 0.0).unwrap();
+        let bat = site.get(1).unwrap();
+        let mut lowest: f32 = 100.0;
+        for _ in 0..80 {
+            site.tick_n(1, DT);
+            lowest = lowest.min(bat.telemetry(&site).soc_pct.unwrap());
+        }
+        assert!(lowest >= 9.98, "past the window, got {lowest}");
+    }
+
+    /// A command across 0 on a charging inverter holds the window
+    /// while the output ramps down through 0: the push on the charge
+    /// side comes from the ramp output, not the discharge target.
+    #[test]
+    fn a_reversed_command_holds_the_window_while_the_output_ramps_down() {
+        let site = charging_at_the_edge();
+        site.gateway().command(2, Active, -5_000.0).unwrap();
+        let peak = peak_soc(&site, 80);
+        assert!(peak <= 90.02, "past the window, got {peak}");
+    }
+
+    /// An augmentation that leaves 0 out pulls a small command up to
+    /// its edge; the share judges that pulled-up target, so a battery
+    /// short of room parks the output at 0 on every tick instead of
+    /// letting the edge through on every other tick.
+    #[test]
+    fn an_augmentation_pulling_the_target_up_still_holds_the_window() {
+        for cmd in [200.0_f32, -200.0] {
+            let site = MicrogridSite::new();
+            site.register(tapering_battery(1, 89.0));
+            site.register(instant_inverter(2));
+            site.connect(2, 1);
+            let gw = site.gateway();
+            gw.command(2, Active, cmd).unwrap();
+            site.tick_n(3, DT);
+            gw.augment(
+                2,
+                site.run_generation(),
+                Active,
+                VecBounds::single(3_000.0, 5_000.0),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+            let inv = site.get(2).unwrap();
+            let mut outs = Vec::new();
+            for _ in 0..20 {
+                site.tick_n(1, DT);
+                let room = charge_room(&site, 1);
+                assert!(room < 3_000.0, "the test needs the room short, got {room}");
+                outs.push(inv.aggregate_power_w(&site));
+            }
+            let room = charge_room(&site, 1);
+            assert!(
+                outs.iter().all(|o| *o <= room + 1.0),
+                "{cmd}: past the room {room}: {outs:?}"
+            );
+            assert!(
+                outs.windows(2).all(|w| w[0] == w[1]),
+                "{cmd}: alternates: {outs:?}"
+            );
+        }
+    }
+
+    /// A lifetime that runs out near `:soc-upper` sends the axis to
+    /// its idle value; the window still holds the output on the way.
+    #[test]
+    fn an_expiry_near_the_window_edge_holds_the_window() {
+        let site = charging_at_the_edge();
+        site.gateway()
+            .set_power(
+                Active,
+                2,
+                site.run_generation(),
+                5_000.0,
+                Duration::from_millis(300),
+                Mode::Reject,
+            )
+            .unwrap();
+        let peak = peak_soc(&site, 80);
+        assert_eq!(site.gateway().remaining_lifetime(2, Active), None);
+        assert!(peak <= 90.02, "past the window, got {peak}");
+    }
+
+    /// A lowered command whose target lies inside a tapering room,
+    /// while the output is still above that room, is cut to the room
+    /// on the next tick instead of ramping down through it.
+    #[test]
+    fn a_lowered_command_inside_the_room_cuts_the_output_to_it() {
+        let site = MicrogridSite::new();
+        site.register(tapering_battery(1, 50.0));
+        site.register(ramping_inverter(2));
+        site.connect(2, 1);
+        let inv = site.get(2).unwrap();
+        site.gateway().command(2, Active, 4_000.0).unwrap();
+        site.tick_n(50, DT);
+        assert!((inv.aggregate_power_w(&site) - 4_000.0).abs() < 1.0);
+
+        assert!(site.get(1).unwrap().set_soc_pct(89.7));
+        site.gateway().command(2, Active, 200.0).unwrap();
+        site.tick_n(1, DT);
+        let room = charge_room(&site, 1);
+        assert!(room < 3_000.0, "the test needs the room short, got {room}");
+        let out = inv.aggregate_power_w(&site);
+        assert!(out <= room + 5.0, "cut to the room {room}, got {out}");
+    }
+
+    /// An inverter over two batteries, one of them faulted, pushes
+    /// everything into the healthy one; its window share follows, so
+    /// the healthy battery stays within its throttled bound.
+    #[test]
+    fn a_faulted_battery_leaves_the_whole_room_to_the_healthy_one() {
+        let site = two_tapering_batteries();
+        site.set_health(3, Health::Error).unwrap();
+        site.gateway().command(2, Active, 6_000.0).unwrap();
+        site.tick_n(10, DT);
+
+        let room = charge_room(&site, 1);
+        assert!(room < 3_000.0, "the test needs battery 1 short, got {room}");
+        let bat = site.get(1).unwrap();
+        let took = bat.aggregate_power_w(&site);
+        assert!(took <= room + 5.0, "over the room {room}, got {took}");
+        assert!(took > room - 5.0, "it fills the room {room}, got {took}");
+        assert!(
+            (bat.dc_accept_ratio() - 1.0).abs() < 1e-3,
+            "the healthy battery clips"
         );
     }
 

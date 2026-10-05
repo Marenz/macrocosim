@@ -234,11 +234,7 @@ impl<'a> Gateway<'a> {
             .map_err(AugmentError::Malformed)?;
         let now = self.site.now();
         let base = self.base_of(c.as_ref(), axis);
-        let physical = if c.bounds_follow_physical_band(axis) {
-            c.physical_band(axis, self.site.physics_tick())
-        } else {
-            None
-        };
+        let physical = self.followed_physical_band(c.as_ref(), axis);
         let ax = st
             .axes
             .get_mut(&(id, axis))
@@ -336,6 +332,18 @@ impl<'a> Gateway<'a> {
         self.component_bounds_locked(st, c.as_ref(), axis)
     }
 
+    /// `c`'s physical band on `axis` when its bounds follow it
+    /// (`bounds_follow_physical_band`), else `None`.
+    fn followed_physical_band(
+        &self,
+        c: &dyn SimulatedComponent,
+        axis: SetpointAxis,
+    ) -> Option<VecBounds> {
+        c.bounds_follow_physical_band(axis)
+            .then(|| c.physical_band(axis, self.site.physics_tick()))
+            .flatten()
+    }
+
     /// `bounds_of_locked` for a component already looked up.
     fn component_bounds_locked(
         &self,
@@ -345,12 +353,11 @@ impl<'a> Gateway<'a> {
     ) -> Option<VecBounds> {
         let id = c.id();
         if let Some(ax) = st.axes.get(&(id, axis)) {
-            let mut env = ax.validation_envelope(&self.base_of(c, axis), self.site.now());
-            if c.bounds_follow_physical_band(axis)
-                && let Some(p) = c.physical_band(axis, self.site.physics_tick())
-            {
-                env = env.intersect(&p);
-            }
+            let env = ax.envelope_with_physical(
+                &self.base_of(c, axis),
+                self.followed_physical_band(c, axis).as_ref(),
+                self.site.now(),
+            );
             return Some(match axis {
                 SetpointAxis::Active => env,
                 // Zero headroom is a present (0, 0) band to a reader,
