@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::lisp::Config;
 use crate::sim::component::KnobKind;
-use crate::sim::microgrid_site::MicrogridSite;
+use crate::sim::microgrid_site::{MicrogridSite, SocRefusal};
 use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
 
 #[derive(Deserialize)]
@@ -186,6 +186,24 @@ fn parse_enum<T: std::str::FromStr>(
     }
 }
 
+/// The answer to a refused SoC write. A charger with no car gets
+/// `no_car_status`: a 400 when validation finds it, a 409 when the
+/// car left between validation and the write. A component with no
+/// SoC is always a 400.
+fn soc_rejection(
+    id: u64,
+    no_car_status: StatusCode,
+    refusal: SocRefusal,
+) -> (StatusCode, Json<ControlError>) {
+    match refusal {
+        SocRefusal::NoCar => reject(no_car_status, format!("charger {id} has no EV plugged in")),
+        SocRefusal::NoStorage => reject(
+            StatusCode::BAD_REQUEST,
+            format!("component {id} does not take soc_pct (not a battery)"),
+        ),
+    }
+}
+
 fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResult {
     let Some(component) = site.get(id) else {
         return Err(reject(
@@ -217,25 +235,14 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
     }
     // A charger takes soc_pct exactly while a car is plugged in —
     // the SoC is the car's.
-    let ev_port = component.ev_port();
-    let storage = component.dc_storage();
-    if req.soc_pct.is_some() {
-        if ev_port.is_some_and(|e| e.ev_info().is_none()) {
-            return Err(reject(
-                StatusCode::BAD_REQUEST,
-                format!("charger {id} has no EV plugged in"),
-            ));
-        }
-        if ev_port.is_none() && storage.is_none() {
-            return Err(reject(
-                StatusCode::BAD_REQUEST,
-                format!("component {id} does not take soc_pct (not a battery)"),
-            ));
-        }
+    if req.soc_pct.is_some()
+        && let Some(refusal) = SocRefusal::of(&*component)
+    {
+        return Err(soc_rejection(id, StatusCode::BAD_REQUEST, refusal));
     }
-    // reactive_var and power_factor are both Q stimuli of the meter
-    // drive, the group set-meter-reactive-power /
-    // set-meter-power-factor drive in Lisp.
+    // reactive_var and power_factor both drive the meter's Q, through
+    // the same `MeterDrive` methods `set-meter-reactive-power` /
+    // `set-meter-power-factor` call in Lisp.
     if req.reactive_var.is_some() && meter.is_none() {
         return Err(reject(
             StatusCode::BAD_REQUEST,
@@ -433,26 +440,12 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
         sun.set_sunlight_pct(pct as f32);
         site.note_knob_changed(id, "solar-sunlight", Some(pct as f32), None, None);
     }
-    if let Some(pct) = req.soc_pct {
-        if let Some(port) = ev_port {
-            // On a charger this writes the CAR, so it takes the plug
-            // knob's snapshot, exactly as `set-battery-soc` in Lisp
-            // does (src/lisp/defuns/load_drivers.rs) — teardown then
-            // puts the car back as it was however a run ordered its
-            // SoC writes and its plugs.
-            site.scenario_snapshot_knob(id, KnobKind::Ev);
-            // An unplug landing between the check above and here is a
-            // real race, so the write can still find no car.
-            if !port.set_ev_soc_pct(pct as f32) {
-                return Err(reject(
-                    StatusCode::CONFLICT,
-                    format!("charger {id} has no EV plugged in"),
-                ));
-            }
-        } else if let Some(store) = storage {
-            // A battery's SoC has no snapshot on any door.
-            store.set_soc_pct(pct as f32);
-        }
+    // Validation already ran the same check, so a refusal here is an
+    // unplug that raced this request.
+    if let Some(pct) = req.soc_pct
+        && let Err(refusal) = site.set_soc_pct(&*component, pct as f32)
+    {
+        return Err(soc_rejection(id, StatusCode::CONFLICT, refusal));
     }
     if let Some(vars) = req.reactive_var
         && let Some(m) = meter

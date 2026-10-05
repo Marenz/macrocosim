@@ -18,6 +18,7 @@ use crate::lisp::make::preset_from_lisp;
 use crate::lisp::value::LispValue;
 use crate::sim::component::KnobKind;
 use crate::sim::ev_presets::{ConnectedEv, EvOverrides, PRESETS};
+use crate::sim::microgrid_site::SocRefusal;
 use crate::sim::microgrids::SharedSiteRouter;
 
 // `%plug-ev`'s kwargs: the charger to plug into, the catalog car,
@@ -252,28 +253,15 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                     "set-battery-soc: component {id} not found"
                 )));
             };
-            if let Some(port) = c.ev_port() {
+            match w.set_soc_pct(&*c, pct as f32) {
                 // A charger's SoC is the plugged car's; with no car
                 // there is nothing to move, and silently doing
                 // nothing would hide a scenario's ordering bug.
-                if port.ev_info().is_none() {
-                    return Err(Error::invalid_argument(format!(
-                        "set-battery-soc: charger {id} has no EV plugged in"
-                    )));
-                }
-                // Past that guard the charger has a car, and this IS
-                // a write to the car — so it takes the plug knob's
-                // snapshot, like `plug-ev` and `unplug-ev` do. The
-                // `Ev` baseline holds the whole car, SoC included, so
-                // teardown puts it back exactly as it was whatever
-                // order a run did its plugging and its SoC writes in.
-                w.scenario_snapshot_knob(id as u64, KnobKind::Ev);
-                let _ = port.set_ev_soc_pct(pct as f32);
-            } else if let Some(store) = c.dc_storage() {
-                // A battery's SoC has no snapshot on any door.
-                store.set_soc_pct(pct as f32);
+                Err(SocRefusal::NoCar) => Err(Error::invalid_argument(format!(
+                    "set-battery-soc: charger {id} has no EV plugged in"
+                ))),
+                Ok(()) | Err(SocRefusal::NoStorage) => Ok(true),
             }
-            Ok(true)
         },
     );
 
@@ -633,6 +621,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
 #[cfg(test)]
 mod tests {
     use super::super::super::test_support::{assert_lenient_noop, config_with, err_line};
+    use crate::lisp::Config;
     use crate::sim::component::ReactiveReading;
     use crate::sim::events::SiteEvent;
 
@@ -1814,10 +1803,10 @@ mod tests {
         cfg.eval("(scenario-start \"ev\")").unwrap();
         // Rejected: the charger is occupied.
         assert!(cfg.eval("(plug-ev 7 'sedan)").is_err());
-        // Move the car through the trait setter rather than
-        // `set-battery-soc`: every Lisp/HTTP door onto a charger's SoC
-        // now takes the plug snapshot itself, so a door here would
-        // seed the very baseline this test is trying to prove absent.
+        // Move the car with `EvPort::set_ev_soc_pct`, which takes no
+        // snapshot. `set-battery-soc` and the HTTP drive go through
+        // `MicrogridSite::set_soc_pct`, which takes the `Ev` snapshot
+        // and would seed the very baseline this test proves absent.
         assert!(ev.ev_port().unwrap().set_ev_soc_pct(77.0));
         cfg.eval("(scenario-stop)").unwrap();
         let info = ev
@@ -1924,15 +1913,33 @@ mod tests {
     /// displaced, and announce it with a knob event nobody asked for.
     #[test]
     fn unplug_ev_on_an_empty_charger_does_not_seed_the_scenario_baseline() {
+        assert_no_ev_baseline_seeded(|cfg| {
+            assert_eq!(
+                cfg.eval("(unplug-ev 7)").unwrap(),
+                "nil",
+                "there was no car to take away"
+            );
+        });
+    }
+
+    /// `set-battery-soc` on an empty charger is refused before it
+    /// takes the plug knob's baseline, for the same reason as the
+    /// empty unplug above.
+    #[test]
+    fn set_battery_soc_on_an_empty_charger_does_not_seed_the_scenario_baseline() {
+        assert_no_ev_baseline_seeded(|cfg| {
+            assert!(cfg.eval("(set-battery-soc 7 50)").is_err());
+        });
+    }
+
+    /// Run `act` on an empty charger 7 inside a scenario, and check
+    /// that teardown restores no plug knob: the scenario never
+    /// displaced one.
+    fn assert_no_ev_baseline_seeded(act: impl FnOnce(&Config)) {
         let (cfg, _dir) = config_with("(%make-ev-charger :id 7)");
-        let site = cfg.site();
-        let mut rx = site.subscribe_events();
+        let mut rx = cfg.site().subscribe_events();
         cfg.eval("(scenario-start \"ev\")").unwrap();
-        assert_eq!(
-            cfg.eval("(unplug-ev 7)").unwrap(),
-            "nil",
-            "there was no car to take away"
-        );
+        act(&cfg);
         cfg.eval("(scenario-stop)").unwrap();
         let mut seen = Vec::new();
         while let Ok(ev) = rx.try_recv() {

@@ -29,8 +29,7 @@ pub trait DcStorage: Send + Sync {
     fn soc_window(&self) -> SocProtect;
 
     /// Teleport the state of charge to `pct` (clamped to 0..=100; a
-    /// non-finite value is ignored). Lets a test arrange a
-    /// precondition (a nearly-empty or nearly-full pool) without
-    /// simulating hours of charging.
+    /// non-finite value is ignored). `MicrogridSite::set_soc_pct`
+    /// calls it for `set-battery-soc` and the HTTP `soc_pct` drive.
     fn set_soc_pct(&self, pct: f32);
 }

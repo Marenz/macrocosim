@@ -74,6 +74,26 @@ impl Default for GridState {
     }
 }
 
+/// Why [`MicrogridSite::set_soc_pct`] wrote nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SocRefusal {
+    /// A charger with no car plugged in: its SoC is the car's.
+    NoCar,
+    /// Neither a charger nor a battery.
+    NoStorage,
+}
+
+impl SocRefusal {
+    /// Why [`MicrogridSite::set_soc_pct`] would refuse `c` right now,
+    /// or `None` when it would write. Reads only.
+    pub(crate) fn of(c: &dyn SimulatedComponent) -> Option<Self> {
+        match c.ev_port() {
+            Some(port) => port.ev_info().is_none().then_some(Self::NoCar),
+            None => c.dc_storage().is_none().then_some(Self::NoStorage),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct MicrogridSite {
     inner: Arc<MicrogridSiteInner>,
@@ -981,6 +1001,34 @@ impl MicrogridSite {
             .read()
             .get(&id)
             .map(|c| c.name().to_string())
+    }
+
+    /// Set `c`'s state of charge. On a charger this writes the
+    /// plugged car, and first takes the `Ev` knob snapshot: that
+    /// baseline holds the whole car, so a running scenario's teardown
+    /// puts it back as it was, whatever order the run did its plugs
+    /// and its SoC writes in. A battery's SoC has no snapshot.
+    pub(crate) fn set_soc_pct(
+        &self,
+        c: &dyn SimulatedComponent,
+        pct: f32,
+    ) -> Result<(), SocRefusal> {
+        if let Some(refusal) = SocRefusal::of(c) {
+            return Err(refusal);
+        }
+        if let Some(port) = c.ev_port() {
+            self.scenario_snapshot_knob(c.id(), KnobKind::Ev);
+            // An unplug can still land between the check and the
+            // write.
+            if !port.set_ev_soc_pct(pct) {
+                return Err(SocRefusal::NoCar);
+            }
+        } else if let Some(store) = c.dc_storage() {
+            store.set_soc_pct(pct);
+        } else {
+            return Err(SocRefusal::NoStorage);
+        }
+        Ok(())
     }
 
     // ─── Per-component runtime modes ─────────────────────────────────
