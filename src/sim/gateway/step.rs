@@ -42,8 +42,10 @@ impl Gateway<'_> {
             ax.drop_expired(now);
         }
         for (id, w) in st.batteries.iter_mut() {
-            if let Some(soc) = self.site.get(*id).and_then(|c| c.soc_pct()) {
-                w.refresh(soc);
+            if let Some(c) = self.site.get(*id)
+                && let Some(store) = c.dc_storage()
+            {
+                w.refresh(store.soc_pct());
             }
         }
         let planned = self.plan_locked(&mut st, now, dt);
@@ -365,7 +367,7 @@ mod tests {
         assert!(soc <= 90.03, "the window holds within one delay, got {soc}");
         assert!(soc >= 89.9, "it charged up to the window, got {soc}");
         assert!(
-            (bat.dc_accept_ratio() - 1.0).abs() < 1e-6,
+            (bat.dc_storage().unwrap().dc_accept_ratio() - 1.0).abs() < 1e-6,
             "nothing to clip"
         );
         assert!(site.get(2).unwrap().aggregate_power_w(&site).abs() < 1.0);
@@ -426,7 +428,7 @@ mod tests {
         site.gateway().command(2, Active, 2_400.0).unwrap();
         site.tick_n(3, DT);
         let bat = site.get(1).unwrap();
-        assert!(bat.set_soc_pct(89.0));
+        bat.dc_storage().unwrap().set_soc_pct(89.0);
         site.tick_n(3, DT);
         site.gateway().command(3, Active, 1_200.0).unwrap();
         site.tick_n(5, DT);
@@ -450,7 +452,7 @@ mod tests {
             "the inverter that started at 0 got its part: {b}"
         );
         assert!(
-            (bat.dc_accept_ratio() - 1.0).abs() < 1e-3,
+            (bat.dc_storage().unwrap().dc_accept_ratio() - 1.0).abs() < 1e-3,
             "nothing to clip"
         );
     }
@@ -566,7 +568,7 @@ mod tests {
         let room = charge_room(&site, 1);
         assert!(room < 3_000.0, "the test needs battery 1 short, got {room}");
         for b in [1, 3] {
-            let ratio = site.get(b).unwrap().dc_accept_ratio();
+            let ratio = site.get(b).unwrap().dc_storage().unwrap().dc_accept_ratio();
             assert!((ratio - 1.0).abs() < 1e-3, "battery {b} clips: {ratio}");
         }
         let out = site.get(2).unwrap().aggregate_power_w(&site);
@@ -590,7 +592,7 @@ mod tests {
         assert!((inv.aggregate_power_w(&site) - 3_000.0).abs() < 1.0);
 
         let bat = site.get(1).unwrap();
-        assert!(bat.set_soc_pct(89.5));
+        bat.dc_storage().unwrap().set_soc_pct(89.5);
         // The gateway reads the new SoC on its next step and cuts the
         // output in that same step; at 1 kW/s the ramp alone could
         // not have come down by more than 100 W.
@@ -603,7 +605,7 @@ mod tests {
             "cut to the room {room}, got {out}"
         );
         assert!(
-            (bat.dc_accept_ratio() - 1.0).abs() < 1e-3,
+            (bat.dc_storage().unwrap().dc_accept_ratio() - 1.0).abs() < 1e-3,
             "the battery no longer clips"
         );
     }
@@ -618,12 +620,12 @@ mod tests {
         site.register(ramping_inverter(2));
         site.connect(2, 1);
         let bat = site.get(1).unwrap();
-        assert!(bat.set_soc_pct(50.0));
+        bat.dc_storage().unwrap().set_soc_pct(50.0);
         site.gateway().command(2, Active, power_w).unwrap();
         site.tick_n(60, DT);
         let out = site.get(2).unwrap().aggregate_power_w(&site);
         assert!((out - power_w).abs() < 1.0, "settled, got {out}");
-        assert!(bat.set_soc_pct(soc_pct));
+        bat.dc_storage().unwrap().set_soc_pct(soc_pct);
         site
     }
 
@@ -753,7 +755,7 @@ mod tests {
         site.tick_n(50, DT);
         assert!((inv.aggregate_power_w(&site) - 4_000.0).abs() < 1.0);
 
-        assert!(site.get(1).unwrap().set_soc_pct(89.7));
+        site.get(1).unwrap().dc_storage().unwrap().set_soc_pct(89.7);
         site.gateway().command(2, Active, 200.0).unwrap();
         site.tick_n(1, DT);
         let room = charge_room(&site, 1);
@@ -779,7 +781,7 @@ mod tests {
         assert!(took <= room + 5.0, "over the room {room}, got {took}");
         assert!(took > room - 5.0, "it fills the room {room}, got {took}");
         assert!(
-            (bat.dc_accept_ratio() - 1.0).abs() < 1e-3,
+            (bat.dc_storage().unwrap().dc_accept_ratio() - 1.0).abs() < 1e-3,
             "the healthy battery clips"
         );
     }
@@ -850,7 +852,7 @@ mod tests {
         gw.command(2, Active, 2_400.0).unwrap();
         gw.command(3, Active, 2_500.0).unwrap();
         site.tick_n(5, DT);
-        assert!(site.get(1).unwrap().set_soc_pct(89.0));
+        site.get(1).unwrap().dc_storage().unwrap().set_soc_pct(89.0);
         let mut outs = Vec::new();
         for _ in 0..20 {
             site.tick_n(1, DT);

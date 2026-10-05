@@ -12,10 +12,12 @@ use crate::sim::{
 };
 
 mod controllable;
+mod dc_storage;
 mod knobs;
 mod reactive_limits;
 
 pub use controllable::{Controllable, GatewaySettings};
+pub use dc_storage::DcStorage;
 pub use knobs::{EvPort, MeterDrive, SteamDrive, SunlightDrive};
 pub use reactive_limits::ReactiveLimits;
 
@@ -367,17 +369,13 @@ pub enum KnobSnapshot {
 ///   - **Capability groups**: controllable ([`Controllable`]),
 ///     reactive_limits ([`ReactiveLimits`]), meter_drive
 ///     ([`MeterDrive`]), sunlight_drive ([`SunlightDrive`]),
-///     steam_drive ([`SteamDrive`]), ev_port ([`EvPort`]). Each
-///     accessor answers `Some` on the components that have the group.
-///   - **Hardware facts the gateway reads**: soc_window, soc_pct. The
-///     Microgrid API rules themselves live in `sim::gateway`, never
-///     here.
-///   - **Stimuli**: set_soc_pct, …
+///     steam_drive ([`SteamDrive`]), ev_port ([`EvPort`]),
+///     dc_storage ([`DcStorage`]). Each accessor answers `Some` on
+///     the components that have the group. The Microgrid API rules
+///     themselves live in `sim::gateway`, never here.
 ///   - **Bounds**: rated_active_bounds, rated_fuse_current.
 ///   - **Aggregation** (parent → child): aggregate_power_w,
 ///     aggregate_reactive_var.
-///   - **Inverter → child wiring**: set_dc_power (active only — Q
-///     terminates at the inverter and never reaches a DC-side child).
 ///
 /// Every method except the required ones (`id`, `category`, `name`,
 /// `stream_interval`, `tick`, `telemetry`, `make_fn`,
@@ -495,34 +493,10 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         None
     }
 
-    // ── hardware facts the gateway reads ─────────────────────────────
-
-    /// A battery's usable SoC window (`:soc-lower`, `:soc-upper`,
-    /// `:soc-protect-margin`); `None` for everything else.
-    fn soc_window(&self) -> Option<crate::sim::decay::SocProtect> {
+    /// The battery side of the DC bus: `Some` on a battery. A battery
+    /// inverter pushes only into children that answer `Some`.
+    fn dc_storage(&self) -> Option<&dyn DcStorage> {
         None
-    }
-
-    /// A battery's state of charge in %; `None` for everything else.
-    fn soc_pct(&self) -> Option<f32> {
-        None
-    }
-
-    /// Teleport a battery's state of charge to `pct` (clamped to
-    /// 0..=100). Lets a test arrange a precondition (a nearly-empty or
-    /// nearly-full pool) without simulating hours of charging. Returns
-    /// whether the component carries charge (the typed control API
-    /// rejects a `false`); the default is an unsupported no-op.
-    fn set_soc_pct(&self, _pct: f32) -> bool {
-        false
-    }
-
-    /// Whether [`Self::set_soc_pct`] applies to this component. The
-    /// typed control API checks every field of a drive request with
-    /// these predicates before applying any of them, so a rejected
-    /// request changes nothing.
-    fn takes_soc_pct(&self) -> bool {
-        false
     }
 
     // ── scenario teardown (snapshot / restore) ───────────────────────
@@ -585,35 +559,6 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// Total reactive power flowing at this component.
     fn aggregate_reactive_var(&self, _world: &MicrogridSite) -> f32 {
         0.0
-    }
-
-    // ── inverter → child push (DC bus) ───────────────────────────────
-
-    /// Whether this component sits on a DC bus and takes
-    /// [`Self::set_dc_power`] pushes. An inverter only counts
-    /// children answering `true` when it splits its commanded power —
-    /// a mis-wired AC child (say a meter connected under an inverter
-    /// from the UI) must not inflate the divisor and silently swallow
-    /// a share the inverter then reports as delivered. Default
-    /// `false`; batteries override.
-    fn takes_dc_power(&self) -> bool {
-        false
-    }
-
-    /// Push DC active power onto a child. Inverters call this on each
-    /// of their batteries every tick. Default no-op.
-    fn set_dc_power(&self, _p: f32) {}
-
-    /// Share of last tick's pushed DC power this child accepted, in
-    /// [0, 1]: `accepted / pushed`. A parent multiplies its own push
-    /// by this to report what actually flowed, so a battery clipping
-    /// at its hardware limits pulls every inverter on its bus down in
-    /// proportion. One tick stale by construction: on the tick a
-    /// parent changes its push, its report still uses the ratio of
-    /// the previous mix. 1.0 for children that never clip (the
-    /// default).
-    fn dc_accept_ratio(&self) -> f32 {
-        1.0
     }
 
     // ── microgrid-file rendering ──────────────────────────────────────
@@ -703,6 +648,7 @@ mod tests {
         ("sunlight_drive", |c| c.sunlight_drive().is_some()),
         ("steam_drive", |c| c.steam_drive().is_some()),
         ("ev_port", |c| c.ev_port().is_some()),
+        ("dc_storage", |c| c.dc_storage().is_some()),
     ];
 
     /// The names of the groups `c` has, in `GROUPS` order.
@@ -736,7 +682,10 @@ mod tests {
                 &["meter_drive"],
             ),
             (Box::new(Marker::new(3, Category::Chp, 0.0)), &[]),
-            (Box::new(Battery::new(4, sec, Default::default())), &[]),
+            (
+                Box::new(Battery::new(4, sec, Default::default())),
+                &["dc_storage"],
+            ),
             (
                 Box::new(BatteryInverter::new(5, sec, Default::default())),
                 &["controllable", "reactive_limits"],

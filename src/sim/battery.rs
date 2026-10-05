@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    Category, MicrogridSite, SimulatedComponent, Telemetry,
+    Category, DcStorage, MicrogridSite, SimulatedComponent, Telemetry,
     decay::{SocProtect, integrate_soc_pct, sanitize_soc_pct},
 };
 
@@ -66,7 +66,7 @@ struct BatteryState {
     /// `power_w / pushed total` from the last tick — how much of what
     /// the inverters pushed the hardware limits let through. 1.0 when
     /// nothing was pushed. Read back by the inverters for their own
-    /// published power (see `SimulatedComponent::dc_accept_ratio`).
+    /// published power (see `DcStorage::dc_accept_ratio`).
     accept_ratio: f32,
     /// State of charge in % [0, 100], updated each tick from
     /// `power_w * dt` and clamped at the boundaries.
@@ -130,17 +130,8 @@ impl SimulatedComponent for Battery {
         self.cfg.stream_jitter_pct
     }
 
-    fn set_soc_pct(&self, pct: f32) -> bool {
-        // The gateway re-derives the throttled bounds from the new
-        // value on its next step.
-        if let Some(pct) = sanitize_soc_pct("Battery::set_soc_pct", pct) {
-            self.state.lock().soc_pct = pct;
-        }
-        true
-    }
-
-    fn takes_soc_pct(&self) -> bool {
-        true
+    fn dc_storage(&self) -> Option<&dyn DcStorage> {
+        Some(self)
     }
 
     fn tick(&self, _world: &MicrogridSite, _now: DateTime<Utc>, dt: Duration) {
@@ -210,35 +201,8 @@ impl SimulatedComponent for Battery {
         self.state.lock().power_w
     }
 
-    fn takes_dc_power(&self) -> bool {
-        true
-    }
-
-    /// Add an inverter's active push to this tick's accumulator. The
-    /// actual `power_w` value is the *total* across all parents after
-    /// `tick()` clamps the accumulated sum to the hardware limits.
-    fn set_dc_power(&self, p: f32) {
-        self.state.lock().pending_p += p;
-    }
-
-    fn dc_accept_ratio(&self) -> f32 {
-        self.state.lock().accept_ratio
-    }
-
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
         Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
-    }
-
-    fn soc_window(&self) -> Option<SocProtect> {
-        Some(SocProtect::new(
-            self.cfg.soc_lower_pct,
-            self.cfg.soc_upper_pct,
-            self.cfg.soc_protect_margin_pct,
-        ))
-    }
-
-    fn soc_pct(&self) -> Option<f32> {
-        Some(self.state.lock().soc_pct)
     }
 
     fn make_fn(&self) -> &'static str {
@@ -264,6 +228,39 @@ impl SimulatedComponent for Battery {
             kw.push((":stream-jitter-pct", lf(self.cfg.stream_jitter_pct)));
         }
         kw
+    }
+}
+
+impl DcStorage for Battery {
+    /// Add an inverter's active push to this tick's accumulator. The
+    /// actual `power_w` value is the *total* across all parents after
+    /// `tick()` clamps the accumulated sum to the hardware limits.
+    fn set_dc_power(&self, p: f32) {
+        self.state.lock().pending_p += p;
+    }
+
+    fn dc_accept_ratio(&self) -> f32 {
+        self.state.lock().accept_ratio
+    }
+
+    fn soc_pct(&self) -> f32 {
+        self.state.lock().soc_pct
+    }
+
+    fn soc_window(&self) -> SocProtect {
+        SocProtect::new(
+            self.cfg.soc_lower_pct,
+            self.cfg.soc_upper_pct,
+            self.cfg.soc_protect_margin_pct,
+        )
+    }
+
+    fn set_soc_pct(&self, pct: f32) {
+        // The gateway re-derives the throttled bounds from the new
+        // value on its next step.
+        if let Some(pct) = sanitize_soc_pct("Battery::set_soc_pct", pct) {
+            self.state.lock().soc_pct = pct;
+        }
     }
 }
 

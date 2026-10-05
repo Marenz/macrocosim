@@ -269,9 +269,9 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                 // order a run did its plugging and its SoC writes in.
                 w.scenario_snapshot_knob(id as u64, KnobKind::Ev);
                 let _ = port.set_ev_soc_pct(pct as f32);
-            } else {
+            } else if let Some(store) = c.dc_storage() {
                 // A battery's SoC has no snapshot on any door.
-                let _ = c.set_soc_pct(pct as f32);
+                store.set_soc_pct(pct as f32);
             }
             Ok(true)
         },

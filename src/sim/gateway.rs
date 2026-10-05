@@ -145,12 +145,13 @@ impl MicrogridGateway {
                 }
             }
         }
-        if let (Some(protect), Some(rated), Some(soc)) =
-            (c.soc_window(), c.rated_active_bounds(), c.soc_pct())
-        {
+        if let (Some(store), Some(rated)) = (c.dc_storage(), c.rated_active_bounds()) {
+            let protect = store.soc_window();
             protect.warn_if_overwide(&format!("battery {id}"));
-            st.batteries
-                .insert(id, window::BatteryWindow::new(protect, rated, soc));
+            st.batteries.insert(
+                id,
+                window::BatteryWindow::new(protect, rated, store.soc_pct()),
+            );
         }
     }
 
@@ -1182,7 +1183,7 @@ mod tests {
             site.bounds_of(1, SetpointAxis::Active).unwrap().0[0].upper,
             Some(0.0)
         );
-        assert!(site.get(1).unwrap().set_soc_pct(50.0));
+        site.get(1).unwrap().dc_storage().unwrap().set_soc_pct(50.0);
         site.tick_n(1, Duration::from_millis(100));
         assert_eq!(
             site.bounds_of(1, SetpointAxis::Active).unwrap().0[0].upper,

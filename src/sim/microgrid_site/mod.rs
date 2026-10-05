@@ -739,7 +739,7 @@ impl MicrogridSite {
             .into_iter()
             .filter(|id| self.runtime_of(*id).health == Health::Ok)
             .filter_map(|id| self.get(id))
-            .filter(|c| c.takes_dc_power())
+            .filter(|c| c.dc_storage().is_some())
             .collect()
     }
 

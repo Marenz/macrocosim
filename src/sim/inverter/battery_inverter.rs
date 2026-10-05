@@ -161,9 +161,9 @@ impl SimulatedComponent for BatteryInverter {
             // tick first): the published value lags one tick. Q never
             // reaches a battery; it ends here, on the AC side.
             let mut accepted_p = 0.0;
-            for child in &healthy {
-                child.set_dc_power(p_share);
-                accepted_p += p_share * child.dc_accept_ratio();
+            for store in healthy.iter().filter_map(|c| c.dc_storage()) {
+                store.set_dc_power(p_share);
+                accepted_p += p_share * store.dc_accept_ratio();
             }
             *self.measured_w.lock() = accepted_p;
             *self.measured_var.lock() = commanded_q;

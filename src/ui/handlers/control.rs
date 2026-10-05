@@ -218,6 +218,7 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
     // A charger takes soc_pct exactly while a car is plugged in —
     // the SoC is the car's.
     let ev_port = component.ev_port();
+    let storage = component.dc_storage();
     if req.soc_pct.is_some() {
         if ev_port.is_some_and(|e| e.ev_info().is_none()) {
             return Err(reject(
@@ -225,7 +226,7 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
                 format!("charger {id} has no EV plugged in"),
             ));
         }
-        if ev_port.is_none() && !component.takes_soc_pct() {
+        if ev_port.is_none() && storage.is_none() {
             return Err(reject(
                 StatusCode::BAD_REQUEST,
                 format!("component {id} does not take soc_pct (not a battery)"),
@@ -448,9 +449,9 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> ControlResu
                     format!("charger {id} has no EV plugged in"),
                 ));
             }
-        } else {
+        } else if let Some(store) = storage {
             // A battery's SoC has no snapshot on any door.
-            let _ = component.set_soc_pct(pct as f32);
+            store.set_soc_pct(pct as f32);
         }
     }
     if let Some(vars) = req.reactive_var
