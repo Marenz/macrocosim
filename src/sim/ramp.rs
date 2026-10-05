@@ -11,7 +11,6 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use parking_lot::Mutex;
 
 /// Holds a pending set-point that becomes "armed" only after `delay`
 /// has elapsed on the tick clock.
@@ -32,7 +31,7 @@ use parking_lot::Mutex;
 /// forever.
 #[derive(Debug)]
 pub struct CommandDelay {
-    state: Mutex<State>,
+    state: State,
     delay: Duration,
     /// `delay` converted once — `poll` runs every tick for every
     /// delayed component, so the conversion must not repeat per call.
@@ -81,11 +80,11 @@ impl State {
 impl CommandDelay {
     pub fn new(delay: Duration) -> Self {
         Self {
-            state: Mutex::new(State {
+            state: State {
                 executing: None,
                 waiting: None,
                 armed: None,
-            }),
+            },
             delay,
             // Saturate UP on overflow: an absurd :command-delay
             // means commands never arm — falling back to zero
@@ -94,8 +93,8 @@ impl CommandDelay {
         }
     }
 
-    pub fn set_target(&self, value: f32) {
-        let mut s = self.state.lock();
+    pub fn set_target(&mut self, value: f32) {
+        let s = &mut self.state;
         if self.delay.is_zero() {
             s.armed = Some(value);
             s.executing = None;
@@ -111,14 +110,13 @@ impl CommandDelay {
 
     /// Stamp and promote finished commands, then return the currently
     /// armed value (None until the first command finishes executing).
-    pub fn poll(&self, now: DateTime<Utc>) -> Option<f32> {
-        let mut s = self.state.lock();
-        s.promote(now, self.delay_chrono);
-        s.armed
+    pub fn poll(&mut self, now: DateTime<Utc>) -> Option<f32> {
+        self.state.promote(now, self.delay_chrono);
+        self.state.armed
     }
 
-    pub fn reset(&self) {
-        let mut s = self.state.lock();
+    pub fn reset(&mut self) {
+        let s = &mut self.state;
         s.armed = None;
         s.executing = None;
         s.waiting = None;
@@ -126,7 +124,7 @@ impl CommandDelay {
 
     /// Inspect the armed value without advancing the delay clock.
     pub fn armed(&self) -> Option<f32> {
-        self.state.lock().armed
+        self.state.armed
     }
 }
 
@@ -137,7 +135,7 @@ impl CommandDelay {
 /// behaviour of microsim's inverters today).
 #[derive(Debug)]
 pub struct Ramp {
-    state: Mutex<RampState>,
+    state: RampState,
     rate_w_per_s: f32,
 }
 
@@ -150,15 +148,15 @@ struct RampState {
 impl Ramp {
     pub fn new(rate_w_per_s: f32, initial: f32) -> Self {
         Self {
-            state: Mutex::new(RampState {
+            state: RampState {
                 actual: initial,
                 target: initial,
-            }),
+            },
             rate_w_per_s,
         }
     }
 
-    pub fn set_target(&self, target: f32) {
+    pub fn set_target(&mut self, target: f32) {
         // NaN propagating through the slew math poisons `actual`
         // permanently; reject it at the door. ±∞ is left through —
         // a target of f32::INFINITY combined with a finite rate still
@@ -167,42 +165,41 @@ impl Ramp {
             log::warn!("Ramp::set_target ignored NaN");
             return;
         }
-        self.state.lock().target = target;
+        self.state.target = target;
     }
 
-    pub fn snap_to(&self, value: f32) {
+    pub fn snap_to(&mut self, value: f32) {
         // Same hazard as `set_target`: a NaN here poisons `actual`
         // permanently, since every later slew step propagates it.
         if value.is_nan() {
             log::warn!("Ramp::snap_to ignored NaN");
             return;
         }
-        let mut s = self.state.lock();
-        s.target = value;
-        s.actual = value;
+        self.state.target = value;
+        self.state.actual = value;
     }
 
     /// Move `actual` without touching the target, for an output a
     /// physical limit has cut short of where the slew put it.
-    pub fn set_actual(&self, value: f32) {
+    pub fn set_actual(&mut self, value: f32) {
         if value.is_nan() {
             log::warn!("Ramp::set_actual ignored NaN");
             return;
         }
-        self.state.lock().actual = value;
+        self.state.actual = value;
     }
 
     pub fn actual(&self) -> f32 {
-        self.state.lock().actual
+        self.state.actual
     }
 
     pub fn target(&self) -> f32 {
-        self.state.lock().target
+        self.state.target
     }
 
     /// Advance `actual` by the most it is allowed to move in `dt`.
-    pub fn advance(&self, dt: Duration) -> f32 {
-        let mut s = self.state.lock();
+    pub fn advance(&mut self, dt: Duration) -> f32 {
+        let s = &mut self.state;
         if !self.rate_w_per_s.is_finite() {
             s.actual = s.target;
             return s.actual;
@@ -224,7 +221,7 @@ mod tests {
 
     #[test]
     fn command_delay_zero_arms_immediately() {
-        let cd = CommandDelay::new(Duration::ZERO);
+        let mut cd = CommandDelay::new(Duration::ZERO);
         cd.set_target(5000.0);
         assert_eq!(cd.armed(), Some(5000.0));
     }
@@ -232,7 +229,7 @@ mod tests {
     #[test]
     fn command_delay_blocks_until_due() {
         let t0 = Utc::now();
-        let cd = CommandDelay::new(Duration::from_secs(2));
+        let mut cd = CommandDelay::new(Duration::from_secs(2));
         cd.set_target(5000.0);
         assert_eq!(cd.poll(t0), None); // first poll stamps the command
         assert_eq!(cd.poll(t0 + chrono::Duration::seconds(1)), None);
@@ -244,7 +241,7 @@ mod tests {
     #[test]
     fn command_delay_follows_the_tick_clock() {
         let sim0 = chrono::TimeZone::with_ymd_and_hms(&Utc, 2020, 1, 1, 0, 0, 0).unwrap();
-        let cd = CommandDelay::new(Duration::from_secs(1));
+        let mut cd = CommandDelay::new(Duration::from_secs(1));
         cd.set_target(500.0);
         assert_eq!(cd.poll(sim0), None);
         assert_eq!(cd.poll(sim0 + chrono::Duration::seconds(1)), Some(500.0));
@@ -256,7 +253,7 @@ mod tests {
     #[test]
     fn command_delay_survives_fast_resend_cadence() {
         let t0 = Utc::now();
-        let cd = CommandDelay::new(Duration::from_millis(1500));
+        let mut cd = CommandDelay::new(Duration::from_millis(1500));
         // One command every 500 ms, values ramping 1000, 2000, …,
         // with the tick clock polling every 100 ms like the physics
         // loop.
@@ -284,7 +281,7 @@ mod tests {
     #[test]
     fn command_delay_survives_a_backward_clock_step() {
         let t0 = Utc::now();
-        let cd = CommandDelay::new(Duration::from_secs(1));
+        let mut cd = CommandDelay::new(Duration::from_secs(1));
         cd.set_target(1000.0);
         assert_eq!(cd.poll(t0), None);
         cd.set_target(2000.0);
@@ -308,7 +305,7 @@ mod tests {
     #[test]
     fn command_delay_newest_waiting_command_wins() {
         let t0 = Utc::now();
-        let cd = CommandDelay::new(Duration::from_secs(2));
+        let mut cd = CommandDelay::new(Duration::from_secs(2));
         cd.set_target(1000.0);
         assert_eq!(cd.poll(t0), None); // stamps 1000 at t0
         cd.set_target(2000.0);
@@ -330,7 +327,7 @@ mod tests {
 
     #[test]
     fn ramp_step_limit() {
-        let r = Ramp::new(1000.0, 0.0);
+        let mut r = Ramp::new(1000.0, 0.0);
         r.set_target(5000.0);
         assert_eq!(r.advance(Duration::from_secs(1)), 1000.0);
         assert_eq!(r.advance(Duration::from_secs(1)), 2000.0);
@@ -340,14 +337,14 @@ mod tests {
 
     #[test]
     fn ramp_pass_through_when_infinite() {
-        let r = Ramp::new(f32::INFINITY, 0.0);
+        let mut r = Ramp::new(f32::INFINITY, 0.0);
         r.set_target(5000.0);
         assert_eq!(r.advance(Duration::from_millis(1)), 5000.0);
     }
 
     #[test]
     fn ramp_ignores_nan_target() {
-        let r = Ramp::new(1000.0, 0.0);
+        let mut r = Ramp::new(1000.0, 0.0);
         r.set_target(5000.0);
         r.advance(Duration::from_secs(1)); // → 1000
         r.set_target(f32::NAN); // no-op, target stays at 5000

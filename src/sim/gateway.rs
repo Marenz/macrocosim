@@ -227,7 +227,7 @@ impl<'a> Gateway<'a> {
             }
             Mode::Clamp => clamp_into(value, self.setpoint_envelope_locked(&st, id, axis)),
         };
-        let Some(ax) = st.axes.get(&(id, axis)) else {
+        let Some(ax) = st.axes.get_mut(&(id, axis)) else {
             return Err(GatewayError::NoAxis { id, axis });
         };
         let now = self.site.now();
@@ -278,7 +278,7 @@ impl<'a> Gateway<'a> {
     pub fn reset(&self, id: u64, axis: SetpointAxis) {
         let mut st = self.gw.state.lock();
         st.lifetimes.remove(id, axis);
-        if let (Some(ax), Some(c)) = (st.axes.get(&(id, axis)), self.site.get(id)) {
+        if let (Some(ax), Some(c)) = (st.axes.get_mut(&(id, axis)), self.site.get(id)) {
             ax.reset(c.park_value(axis));
         }
     }
@@ -296,7 +296,7 @@ impl<'a> Gateway<'a> {
     fn expire_locked(&self, st: &mut GatewayState, now: DateTime<Utc>) -> Vec<(u64, SetpointAxis)> {
         let expired = st.lifetimes.drain_expired(now);
         for &(id, axis) in &expired {
-            if let (Some(ax), Some(c)) = (st.axes.get(&(id, axis)), self.site.get(id)) {
+            if let (Some(ax), Some(c)) = (st.axes.get_mut(&(id, axis)), self.site.get(id)) {
                 ax.reset(c.park_value(axis));
             }
         }

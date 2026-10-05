@@ -92,7 +92,7 @@ impl GatewayAxis {
 
     /// Arm `value` behind the gateway delay. The caller has checked
     /// it.
-    pub fn accept(&self, value: f32) {
+    pub fn accept(&mut self, value: f32) {
         self.delay.set_target(value);
     }
 
@@ -144,7 +144,7 @@ impl GatewayAxis {
 
     /// Step 1 of a tick: the armed command (promoted by the gateway
     /// delay at `now`), else `idle`, else `None` (hold).
-    pub fn target(&self, now: DateTime<Utc>, idle: Option<f32>) -> Option<f32> {
+    pub fn target(&mut self, now: DateTime<Utc>, idle: Option<f32>) -> Option<f32> {
         if let Some(armed) = self.delay.poll(now) {
             return Some(armed);
         }
@@ -165,7 +165,7 @@ impl GatewayAxis {
     /// a narrowing is followed at once, a widening is climbed at the
     /// ramp rate. Returns the command to hand to the component.
     pub fn advance(
-        &self,
+        &mut self,
         target: Option<f32>,
         now: DateTime<Utc>,
         dt: Duration,
@@ -190,7 +190,7 @@ impl GatewayAxis {
 
     /// Expiry or explicit reset: clear the command and ramp toward
     /// `park` at the ramp rate.
-    pub fn reset(&self, park: f32) {
+    pub fn reset(&mut self, park: f32) {
         self.delay.reset();
         self.ramp.set_target(park);
     }
@@ -198,7 +198,7 @@ impl GatewayAxis {
     /// Health trip: the ramp snaps to 0; the command is cleared
     /// unless `keep_command`, in which case it is ramped back to on
     /// recovery.
-    pub fn trip(&self, keep_command: bool) {
+    pub fn trip(&mut self, keep_command: bool) {
         if !keep_command {
             self.delay.reset();
         }
@@ -478,7 +478,7 @@ mod tests {
     /// `accept` arms the value behind the gateway delay.
     #[test]
     fn accept_arms_the_value() {
-        let ax = axis("W");
+        let mut ax = axis("W");
         ax.accept(1_500.0);
         assert_eq!(ax.armed(), Some(1_500.0));
     }
@@ -493,7 +493,7 @@ mod tests {
     }
 
     fn step(
-        ax: &GatewayAxis,
+        ax: &mut GatewayAxis,
         now: DateTime<Utc>,
         dt: Duration,
         idle: Option<f32>,
@@ -520,7 +520,7 @@ mod tests {
         let t0 = Utc::now();
         ax.accept(8_000.0);
         let dt = Duration::from_secs(1);
-        assert_eq!(step(&ax, t0, dt, None, &plain(&rated)), 8_000.0);
+        assert_eq!(step(&mut ax, t0, dt, None, &plain(&rated)), 8_000.0);
         ax.try_augment(
             &rated,
             None,
@@ -530,9 +530,9 @@ mod tests {
         )
         .unwrap();
         let t1 = t0 + chrono::Duration::seconds(1);
-        assert_eq!(step(&ax, t1, dt, None, &plain(&rated)), 3_000.0);
+        assert_eq!(step(&mut ax, t1, dt, None, &plain(&rated)), 3_000.0);
         let t3 = t0 + chrono::Duration::seconds(3);
-        assert_eq!(step(&ax, t3, dt, None, &plain(&rated)), 8_000.0);
+        assert_eq!(step(&mut ax, t3, dt, None, &plain(&rated)), 8_000.0);
     }
 
     /// 0 holds inside an exclusion gap; nonzero values are pulled to
@@ -555,11 +555,11 @@ mod tests {
         ax.try_augment(&rated, None, t0, gap, Duration::from_secs(60))
             .unwrap();
         let dt = Duration::from_secs(1);
-        assert_eq!(step(&ax, t0, dt, Some(0.0), &plain(&rated)), 0.0);
+        assert_eq!(step(&mut ax, t0, dt, Some(0.0), &plain(&rated)), 0.0);
         ax.accept(0.0);
-        assert_eq!(step(&ax, t0, dt, None, &plain(&rated)), 0.0);
+        assert_eq!(step(&mut ax, t0, dt, None, &plain(&rated)), 0.0);
         ax.accept(3_000.0);
-        assert_eq!(step(&ax, t0, dt, None, &plain(&rated)), 3_000.0);
+        assert_eq!(step(&mut ax, t0, dt, None, &plain(&rated)), 3_000.0);
         ax.try_augment(
             &rated,
             None,
@@ -568,14 +568,14 @@ mod tests {
             Duration::from_secs(60),
         )
         .unwrap();
-        assert_eq!(step(&ax, t0, dt, None, &plain(&rated)), 2_000.0);
+        assert_eq!(step(&mut ax, t0, dt, None, &plain(&rated)), 2_000.0);
     }
 
     /// An armed value with an empty tracking envelope parks at 0;
     /// hold with nothing armed leaves the ramp alone.
     #[test]
     fn empty_tracking_envelope_parks_at_zero_and_hold_leaves_the_ramp() {
-        let ax = ramped(f32::INFINITY, Duration::ZERO);
+        let mut ax = ramped(f32::INFINITY, Duration::ZERO);
         let rated = VecBounds::single(0.0, 22_000.0);
         let t0 = Utc::now();
         ax.accept(10_000.0);
@@ -585,11 +585,11 @@ mod tests {
             physical: Some(&disjoint),
             share: None,
         };
-        assert_eq!(step(&ax, t0, Duration::from_secs(1), None, &ctx), 0.0);
+        assert_eq!(step(&mut ax, t0, Duration::from_secs(1), None, &ctx), 0.0);
 
-        let idle = ramped(f32::INFINITY, Duration::ZERO);
+        let mut idle = ramped(f32::INFINITY, Duration::ZERO);
         assert_eq!(
-            step(&idle, t0, Duration::from_secs(1), None, &plain(&rated)),
+            step(&mut idle, t0, Duration::from_secs(1), None, &plain(&rated)),
             0.0
         );
     }
@@ -601,7 +601,10 @@ mod tests {
         let rated = VecBounds::single(-30_000.0, 0.0);
         let t0 = Utc::now();
         let dt = Duration::from_secs(1);
-        assert_eq!(step(&ax, t0, dt, Some(-6_000.0), &plain(&rated)), -6_000.0);
+        assert_eq!(
+            step(&mut ax, t0, dt, Some(-6_000.0), &plain(&rated)),
+            -6_000.0
+        );
         ax.try_augment(
             &rated,
             None,
@@ -611,35 +614,44 @@ mod tests {
         )
         .unwrap();
         let t1 = t0 + chrono::Duration::seconds(1);
-        assert_eq!(step(&ax, t1, dt, Some(-6_000.0), &plain(&rated)), -2_000.0);
+        assert_eq!(
+            step(&mut ax, t1, dt, Some(-6_000.0), &plain(&rated)),
+            -2_000.0
+        );
     }
 
     /// A non-finite idle value is treated as hold.
     #[test]
     fn non_finite_idle_is_treated_as_hold() {
-        let ax = ramped(f32::INFINITY, Duration::ZERO);
+        let mut ax = ramped(f32::INFINITY, Duration::ZERO);
         let rated = VecBounds::single(-10_000.0, 10_000.0);
         let t0 = Utc::now();
         let dt = Duration::from_secs(1);
-        assert_eq!(step(&ax, t0, dt, Some(4_000.0), &plain(&rated)), 4_000.0);
-        assert_eq!(step(&ax, t0, dt, Some(f32::NAN), &plain(&rated)), 4_000.0);
+        assert_eq!(
+            step(&mut ax, t0, dt, Some(4_000.0), &plain(&rated)),
+            4_000.0
+        );
+        assert_eq!(
+            step(&mut ax, t0, dt, Some(f32::NAN), &plain(&rated)),
+            4_000.0
+        );
     }
 
     /// The physical band is a snap-down limit: a narrowing is
     /// followed at once, a widening is climbed at the ramp rate.
     #[test]
     fn output_never_sits_outside_the_physical_band() {
-        let ax = ramped(2_000.0, Duration::ZERO);
+        let mut ax = ramped(2_000.0, Duration::ZERO);
         let rated = VecBounds::single(-30_000.0, 0.0);
         let t0 = Utc::now();
-        let sun = |avail: f32| {
+        let mut sun = |avail: f32| {
             let band = VecBounds::single(avail, 0.0);
             let ctx = AdvanceCtx {
                 base: &rated,
                 physical: Some(&band),
                 share: None,
             };
-            step(&ax, t0, Duration::from_millis(100), Some(avail), &ctx)
+            step(&mut ax, t0, Duration::from_millis(100), Some(avail), &ctx)
         };
         for _ in 0..160 {
             sun(-30_000.0);
@@ -653,19 +665,19 @@ mod tests {
     /// command climbs back at the ramp rate as the share widens.
     #[test]
     fn the_share_snaps_down_and_a_widening_is_climbed() {
-        let ax = ramped(1_000.0, Duration::ZERO);
+        let mut ax = ramped(1_000.0, Duration::ZERO);
         let rated = VecBounds::single(-10_000.0, 10_000.0);
         let t0 = Utc::now();
         ax.accept(5_000.0);
         let dt = Duration::from_secs(1);
-        let with_share = |s: f32| {
+        let mut with_share = |s: f32| {
             let band = VecBounds::single(0.0, s);
             let ctx = AdvanceCtx {
                 base: &rated,
                 physical: None,
                 share: Some(&band),
             };
-            step(&ax, t0, dt, None, &ctx)
+            step(&mut ax, t0, dt, None, &ctx)
         };
         for _ in 0..6 {
             with_share(10_000.0);
@@ -688,41 +700,47 @@ mod tests {
         let t0 = Utc::now();
         let dt = Duration::from_secs(2);
 
-        let ax = ramped(1_000.0, Duration::ZERO);
+        let mut ax = ramped(1_000.0, Duration::ZERO);
         ax.accept(5_000.0);
-        step(&ax, t0, dt, None, &plain(&rated));
+        step(&mut ax, t0, dt, None, &plain(&rated));
         ax.trip(false);
         assert_eq!(ax.actual(), 0.0);
         assert_eq!(ax.armed(), None);
 
-        let kept = ramped(1_000.0, Duration::ZERO);
+        let mut kept = ramped(1_000.0, Duration::ZERO);
         kept.accept(5_000.0);
-        step(&kept, t0, dt, None, &plain(&rated));
+        step(&mut kept, t0, dt, None, &plain(&rated));
         kept.trip(true);
         assert_eq!(kept.actual(), 0.0);
         assert_eq!(kept.armed(), Some(5_000.0));
-        assert_eq!(step(&kept, t0, dt, None, &plain(&rated)), 2_000.0);
+        assert_eq!(step(&mut kept, t0, dt, None, &plain(&rated)), 2_000.0);
     }
 
     /// A reset clears the command and ramps toward the park value
     /// without snapping.
     #[test]
     fn reset_ramps_toward_the_park_value() {
-        let ax = ramped(1_000.0, Duration::ZERO);
+        let mut ax = ramped(1_000.0, Duration::ZERO);
         let rated = VecBounds::single(-10_000.0, 10_000.0);
         let t0 = Utc::now();
         ax.accept(5_000.0);
-        step(&ax, t0, Duration::from_secs(1), None, &plain(&rated));
+        step(&mut ax, t0, Duration::from_secs(1), None, &plain(&rated));
         ax.reset(0.0);
         assert_eq!(ax.armed(), None);
-        let v = step(&ax, t0, Duration::from_millis(500), None, &plain(&rated));
+        let v = step(
+            &mut ax,
+            t0,
+            Duration::from_millis(500),
+            None,
+            &plain(&rated),
+        );
         assert!((v - 500.0).abs() < 1.0, "ramps toward the park value: {v}");
     }
 
     /// The gateway delay holds a command back; the ramp then slews.
     #[test]
     fn q_accept_then_advance_drives_to_target() {
-        let ax = GatewayAxis::new(GatewayAxisConfig {
+        let mut ax = GatewayAxis::new(GatewayAxisConfig {
             command_delay: Duration::from_millis(100),
             ramp_rate_per_s: 1_000.0,
             initial: 0.0,
@@ -731,10 +749,10 @@ mod tests {
         let base = caps_at(kva(10_000.0), 0.0);
         let now = Utc::now();
         ax.accept(5_000.0);
-        let q = step(&ax, now, Duration::from_millis(50), None, &plain(&base));
+        let q = step(&mut ax, now, Duration::from_millis(50), None, &plain(&base));
         assert!(q.abs() < 1.0, "nothing before the delay, got {q}");
         let q = step(
-            &ax,
+            &mut ax,
             now + chrono::Duration::milliseconds(1100),
             Duration::from_millis(1000),
             None,
@@ -742,7 +760,7 @@ mod tests {
         );
         assert!((q - 1_000.0).abs() < 1.0, "got {q}");
         let q = step(
-            &ax,
+            &mut ax,
             now + chrono::Duration::milliseconds(6100),
             Duration::from_millis(5000),
             None,
@@ -754,13 +772,13 @@ mod tests {
     /// A settled Q re-clamps when P moves under it, and comes back.
     #[test]
     fn q_re_clamps_on_p_drift_after_settle() {
-        let ax = ramped(f32::INFINITY, Duration::ZERO);
+        let mut ax = ramped(f32::INFINITY, Duration::ZERO);
         let now = Utc::now();
         let dt = Duration::from_millis(100);
         ax.accept(8_000.0);
-        let at = |p: f32| {
+        let mut at = |p: f32| {
             let base = caps_at(kva(10_000.0), p);
-            step(&ax, now, dt, None, &plain(&base))
+            step(&mut ax, now, dt, None, &plain(&base))
         };
         assert!((at(0.0) - 8_000.0).abs() < 1.0);
         let q = at(9_000.0);
@@ -771,7 +789,7 @@ mod tests {
     /// The ramp starts at the configured initial value.
     #[test]
     fn the_ramp_starts_at_the_initial_value() {
-        let ax = GatewayAxis::new(GatewayAxisConfig {
+        let mut ax = GatewayAxis::new(GatewayAxisConfig {
             command_delay: Duration::ZERO,
             ramp_rate_per_s: 2_000.0,
             initial: -6_000.0,
@@ -780,7 +798,7 @@ mod tests {
         assert_eq!(ax.actual(), -6_000.0);
         let rated = VecBounds::single(-30_000.0, 0.0);
         let v = step(
-            &ax,
+            &mut ax,
             Utc::now(),
             Duration::from_millis(100),
             Some(-6_000.0),

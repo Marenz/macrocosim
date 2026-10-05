@@ -62,7 +62,11 @@ impl Gateway<'_> {
                 physical: p.physical.as_ref(),
                 share,
             };
-            let out = st.axes[&(p.id, p.axis)].advance(p.target, now, dt, &ctx);
+            let ax = st
+                .axes
+                .get_mut(&(p.id, p.axis))
+                .expect("a planned axis is in the map");
+            let out = ax.advance(p.target, now, dt, &ctx);
             p.component.set_command(p.axis, out);
         }
         drop(st);
@@ -78,7 +82,7 @@ impl Gateway<'_> {
             axes, lifetimes, ..
         } = st;
         let mut planned = Vec::new();
-        for (&(id, axis), ax) in axes.iter() {
+        for (&(id, axis), ax) in axes.iter_mut() {
             let Some(c) = self.site.get(id) else {
                 continue;
             };
