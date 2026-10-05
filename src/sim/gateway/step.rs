@@ -1,13 +1,15 @@
 //! `Gateway::step`: one physics tick of the API rules. Expire request
 //! lifetimes and augmentations at `now`, then for every gateway-owned
-//! axis: trip it when its component is unhealthy, else target, clamp
-//! and ramp it, and hand the result to the component.
+//! axis: trip it when its component is unhealthy, else target it,
+//! share out the batteries' room between the inverters pushing into
+//! them, clamp and ramp each axis, and hand the result to its
+//! component.
 
 use std::{sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
 
-use super::{Gateway, GatewayState, log_expired};
+use super::{Gateway, GatewayState, log_expired, window};
 use crate::sim::{
     SimulatedComponent, bounds::VecBounds, gateway_axis::AdvanceCtx, runtime::Health,
 };
@@ -40,11 +42,20 @@ impl Gateway<'_> {
             ax.drop_expired(now);
         }
         let planned = self.plan_locked(&st, now, dt);
+        let pushes = self.window_pushes(&st, &planned);
+        let shares = window::shares(&pushes, |battery| {
+            self.bounds_of_locked(&st, battery, SetpointAxis::Active)
+                .and_then(|b| b.outer_edges())
+        });
         for p in &planned {
+            let share = match p.axis {
+                SetpointAxis::Active => shares.get(&p.id),
+                SetpointAxis::Reactive => None,
+            };
             let ctx = AdvanceCtx {
                 base: &p.base,
                 physical: p.physical.as_ref(),
-                share: None,
+                share,
             };
             let out = st.axes[&(p.id, p.axis)].advance(p.target, now, dt, &ctx);
             p.component.set_command(p.axis, out);
@@ -86,6 +97,35 @@ impl Gateway<'_> {
         }
         planned
     }
+
+    /// Each planned active axis's step-1 target — or its ramp target
+    /// while it holds — split equally across its component's healthy
+    /// DC children. An axis with none pushes nothing.
+    fn window_pushes(&self, st: &GatewayState, planned: &[Planned]) -> Vec<window::Push> {
+        let mut pushes = Vec::new();
+        for p in planned.iter().filter(|p| p.axis == SetpointAxis::Active) {
+            let batteries: Vec<u64> = self
+                .site
+                .children_of(p.id)
+                .into_iter()
+                .filter(|b| self.site.runtime_of(*b).health == Health::Ok)
+                .filter(|b| self.site.get(*b).is_some_and(|c| c.takes_dc_power()))
+                .collect();
+            if batteries.is_empty() {
+                continue;
+            }
+            let target = p
+                .target
+                .unwrap_or_else(|| st.axes[&(p.id, p.axis)].ramp_target());
+            let each = target / batteries.len() as f32;
+            pushes.extend(batteries.into_iter().map(|battery| window::Push {
+                inverter: p.id,
+                battery,
+                watts: each,
+            }));
+        }
+        pushes
+    }
 }
 
 #[cfg(test)]
@@ -100,8 +140,14 @@ mod tests {
     use parking_lot::Mutex;
 
     use crate::sim::{
-        Category, MicrogridSite, SimulatedComponent, Telemetry, bounds::VecBounds,
-        component::GatewaySettings, reactive::ReactiveCapability, runtime::Health,
+        Battery, BatteryInverter, Category, MicrogridSite, SimulatedComponent, Telemetry,
+        battery::BatteryConfig,
+        bounds::VecBounds,
+        component::GatewaySettings,
+        decay::{SocProtect, soc_protected_bounds},
+        inverter::battery_inverter::BatteryInverterConfig,
+        reactive::ReactiveCapability,
+        runtime::Health,
     };
     use crate::timeout_tracker::SetpointAxis::{self, Active, Reactive};
 
@@ -343,5 +389,273 @@ mod tests {
             assert_eq!(*pq.p.lock(), 1000.0, "iteration {i}");
             assert_eq!(*pq.q.lock(), Some(500.0), "iteration {i}");
         }
+    }
+
+    /// No gateway delay, no ramp, no device delay.
+    fn instant_inverter(id: u64) -> BatteryInverter {
+        BatteryInverter::new(
+            id,
+            Duration::from_secs(1),
+            BatteryInverterConfig {
+                rated_lower_w: -10_000.0,
+                rated_upper_w: 10_000.0,
+                device_delay: Duration::ZERO,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// A running charge command tapers to nothing at `:soc-upper`
+    /// instead of running the battery past it; the command stands,
+    /// and the battery never has to clip what it is pushed.
+    #[test]
+    fn a_running_setpoint_holds_inside_the_soc_window() {
+        let site = MicrogridSite::new();
+        site.register(Battery::new(
+            1,
+            Duration::from_secs(1),
+            BatteryConfig {
+                capacity_wh: 1_000.0,
+                initial_soc_pct: 89.5,
+                soc_upper_pct: 90.0,
+                soc_protect_margin_pct: 0.0,
+                rated_lower_w: -5_000.0,
+                rated_upper_w: 5_000.0,
+                ..Default::default()
+            },
+        ));
+        site.register(instant_inverter(2));
+        site.connect(2, 1);
+        site.gateway().command(2, Active, 3_600.0).unwrap();
+        // 3.6 kW into 1 kWh is 0.01 % per 100 ms tick: 50 ticks to
+        // the window edge.
+        site.tick_n(200, DT);
+        let bat = site.get(1).unwrap();
+        let soc = bat.telemetry(&site).soc_pct.unwrap();
+        assert!(soc <= 90.03, "the window holds within one delay, got {soc}");
+        assert!(soc >= 89.9, "it charged up to the window, got {soc}");
+        assert!(
+            (bat.dc_accept_ratio() - 1.0).abs() < 1e-6,
+            "nothing to clip"
+        );
+        assert!(site.get(2).unwrap().aggregate_power_w(&site).abs() < 1.0);
+        assert!(
+            site.gateway().remaining_lifetime(2, Active).is_some(),
+            "the command stands"
+        );
+    }
+
+    /// Two inverters on one battery share its shrinking room in
+    /// proportion to their pushes, and the second, starting from 0,
+    /// still gets its part.
+    #[test]
+    fn two_inverters_share_the_room_in_proportion() {
+        let site = MicrogridSite::new();
+        site.register(Battery::new(
+            1,
+            Duration::from_secs(1),
+            BatteryConfig {
+                capacity_wh: 1_000_000.0,
+                initial_soc_pct: 85.0,
+                soc_upper_pct: 90.0,
+                soc_protect_margin_pct: 10.0,
+                rated_lower_w: -10_000.0,
+                rated_upper_w: 10_000.0,
+                ..Default::default()
+            },
+        ));
+        site.register(instant_inverter(2));
+        site.register(instant_inverter(3));
+        site.connect(2, 1);
+        site.connect(3, 1);
+        site.gateway().command(2, Active, 2_400.0).unwrap();
+        site.tick_n(3, DT);
+        let bat = site.get(1).unwrap();
+        assert!(bat.set_soc_pct(89.0));
+        site.tick_n(3, DT);
+        site.gateway().command(3, Active, 1_200.0).unwrap();
+        site.tick_n(5, DT);
+
+        let soc = bat.telemetry(&site).soc_pct.unwrap();
+        let room =
+            soc_protected_bounds(-10_000.0, 10_000.0, soc, SocProtect::new(10.0, 90.0, 10.0)).1;
+        assert!(
+            room < 3_600.0,
+            "the test needs the room to be short, got {room}"
+        );
+        let a = site.get(2).unwrap().aggregate_power_w(&site);
+        let b = site.get(3).unwrap().aggregate_power_w(&site);
+        assert!((a / b - 2.0).abs() < 0.01, "in proportion: {a} / {b}");
+        assert!(
+            (a + b - room).abs() < 5.0,
+            "together they fill the room {room}: {a} + {b}"
+        );
+        assert!(
+            b > 1_000.0,
+            "the inverter that started at 0 got its part: {b}"
+        );
+        assert!(
+            (bat.dc_accept_ratio() - 1.0).abs() < 1e-3,
+            "nothing to clip"
+        );
+    }
+
+    /// While its battery has room, a battery inverter's ramp is left
+    /// alone: a lower setpoint, a sign flip and a lifetime expiry are
+    /// all ramped at the ramp rate, not jumped to.
+    #[test]
+    fn a_battery_with_room_leaves_the_ramp_alone() {
+        let site = MicrogridSite::new();
+        site.register(Battery::new(
+            1,
+            Duration::from_secs(1),
+            BatteryConfig {
+                rated_lower_w: -10_000.0,
+                rated_upper_w: 10_000.0,
+                ..Default::default()
+            },
+        ));
+        site.register(BatteryInverter::new(
+            2,
+            Duration::from_secs(1),
+            BatteryInverterConfig {
+                rated_lower_w: -10_000.0,
+                rated_upper_w: 10_000.0,
+                ramp_rate_w_per_s: 1_000.0,
+                device_delay: Duration::ZERO,
+                ..Default::default()
+            },
+        ));
+        site.connect(2, 1);
+        let inv = site.get(2).unwrap();
+        let out = || inv.aggregate_power_w(&site);
+        let gw = site.gateway();
+        let run = site.run_generation();
+        let set = |w: f32, lifetime_s: u64| {
+            gw.set_active_power(2, run, w, Duration::from_secs(lifetime_s), Mode::Reject)
+                .unwrap();
+        };
+        set(3_000.0, 60);
+        site.tick_n(40, DT);
+        assert!((out() - 3_000.0).abs() < 1.0, "settled, got {}", out());
+
+        set(1_000.0, 60);
+        site.tick_n(1, DT);
+        assert!((out() - 2_900.0).abs() < 1.0, "ramps down, got {}", out());
+        site.tick_n(25, DT);
+        assert!((out() - 1_000.0).abs() < 1.0, "settled, got {}", out());
+
+        set(-1_000.0, 5);
+        site.tick_n(1, DT);
+        assert!((out() - 900.0).abs() < 1.0, "ramps across 0, got {}", out());
+        site.tick_n(25, DT);
+        assert!((out() + 1_000.0).abs() < 1.0, "settled, got {}", out());
+
+        // The 5 s lifetime runs out within these ticks; the axis then
+        // ramps toward 0 instead of jumping there.
+        let mut last = out();
+        for _ in 0..30 {
+            site.tick_n(1, DT);
+            let now = out();
+            assert!(
+                (now - last).abs() <= 101.0,
+                "at most 100 W per tick: {last} -> {now}"
+            );
+            last = now;
+        }
+        assert_eq!(gw.remaining_lifetime(2, Active), None, "expired");
+        assert!(last > -1_000.0 && last < 0.0, "on its way to 0, got {last}");
+    }
+
+    /// A 1 MWh battery at `soc` %, ±5 kW, tapering over the 10 %
+    /// below a 90 % `:soc-upper`.
+    fn tapering_battery(id: u64, soc: f32) -> Battery {
+        Battery::new(
+            id,
+            Duration::from_secs(1),
+            BatteryConfig {
+                capacity_wh: 1_000_000.0,
+                initial_soc_pct: soc,
+                soc_upper_pct: 90.0,
+                soc_protect_margin_pct: 10.0,
+                rated_lower_w: -5_000.0,
+                rated_upper_w: 5_000.0,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// The charge room `tapering_battery` leaves at its current SoC.
+    fn charge_room(site: &MicrogridSite, battery: u64) -> f32 {
+        let soc = site.get(battery).unwrap().telemetry(site).soc_pct.unwrap();
+        soc_protected_bounds(-5_000.0, 5_000.0, soc, SocProtect::new(10.0, 90.0, 10.0)).1
+    }
+
+    /// An inverter on two batteries splits its output equally, so the
+    /// nearly full one sets its output: neither battery clips.
+    #[test]
+    fn an_inverter_on_two_batteries_overloads_neither() {
+        let site = MicrogridSite::new();
+        site.register(tapering_battery(1, 89.0));
+        site.register(tapering_battery(3, 50.0));
+        site.register(instant_inverter(2));
+        site.connect(2, 1);
+        site.connect(2, 3);
+        site.gateway().command(2, Active, 6_000.0).unwrap();
+        site.tick_n(10, DT);
+
+        let room = charge_room(&site, 1);
+        assert!(room < 3_000.0, "the test needs battery 1 short, got {room}");
+        for b in [1, 3] {
+            let ratio = site.get(b).unwrap().dc_accept_ratio();
+            assert!((ratio - 1.0).abs() < 1e-3, "battery {b} clips: {ratio}");
+        }
+        let out = site.get(2).unwrap().aggregate_power_w(&site);
+        assert!(
+            (out - 2.0 * room).abs() < 5.0,
+            "twice the tight room {room}, got {out}"
+        );
+    }
+
+    /// When a battery's room narrows under a ramping inverter, the
+    /// output is cut to the room at once, not ramped down to it.
+    #[test]
+    fn a_narrowing_room_cuts_a_ramping_output_at_once() {
+        let site = MicrogridSite::new();
+        site.register(tapering_battery(1, 50.0));
+        site.register(BatteryInverter::new(
+            2,
+            Duration::from_secs(1),
+            BatteryInverterConfig {
+                rated_lower_w: -10_000.0,
+                rated_upper_w: 10_000.0,
+                ramp_rate_w_per_s: 1_000.0,
+                device_delay: Duration::ZERO,
+                ..Default::default()
+            },
+        ));
+        site.connect(2, 1);
+        let inv = site.get(2).unwrap();
+        site.gateway().command(2, Active, 3_000.0).unwrap();
+        site.tick_n(40, DT);
+        assert!((inv.aggregate_power_w(&site) - 3_000.0).abs() < 1.0);
+
+        let bat = site.get(1).unwrap();
+        assert!(bat.set_soc_pct(89.5));
+        // One tick for the battery to see its new SoC, one for the
+        // gateway to read the narrowed room and hand it, one for the
+        // battery to report what it accepted of it.
+        site.tick_n(3, DT);
+        let room = charge_room(&site, 1);
+        assert!(room < 2_000.0, "the test needs the room short, got {room}");
+        let out = inv.aggregate_power_w(&site);
+        assert!(
+            (out - room).abs() < 5.0,
+            "cut to the room {room}, got {out}"
+        );
+        assert!(
+            (bat.dc_accept_ratio() - 1.0).abs() < 1e-3,
+            "the battery no longer clips"
+        );
     }
 }

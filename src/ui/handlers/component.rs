@@ -200,16 +200,6 @@ fn setpoints_for(site: &crate::sim::MicrogridSite, id: u64) -> Vec<ActiveSetpoin
     .collect()
 }
 
-/// `VecBounds`'s envelope extremes — first segment's lower to last
-/// segment's upper, matching how `Telemetry::metric_value` reads a
-/// multi-segment bounds' outer edges.
-fn envelope_tuple(bounds: Option<crate::sim::bounds::VecBounds>) -> Option<(f32, f32)> {
-    let bounds = bounds?;
-    let lower = bounds.0.first()?.lower?;
-    let upper = bounds.0.last()?.upper?;
-    Some((lower, upper))
-}
-
 fn component_state(
     site: &crate::sim::MicrogridSite,
     id: u64,
@@ -229,9 +219,16 @@ fn component_state(
         envelope: Envelope {
             // The gateway's setpoint envelope: own bounds ∩ the
             // children's, or own bounds alone when no child reports
-            // any (the common case for Q, which ends at the inverter).
-            active: envelope_tuple(site.gateway().setpoint_envelope(id, SetpointAxis::Active)),
-            reactive: envelope_tuple(site.gateway().setpoint_envelope(id, SetpointAxis::Reactive)),
+            // any (the common case for Q, which ends at the
+            // inverter).
+            active: site
+                .gateway()
+                .setpoint_envelope(id, SetpointAxis::Active)
+                .and_then(|b| b.outer_edges()),
+            reactive: site
+                .gateway()
+                .setpoint_envelope(id, SetpointAxis::Reactive)
+                .and_then(|b| b.outer_edges()),
         },
         pressure_target_bar: c.pressure_target_bar(),
     })

@@ -97,6 +97,13 @@ impl VecBounds {
         self.0.iter().any(|b| bounds_contains(b, value))
     }
 
+    /// The outer edges, first band's lower to last band's upper, as
+    /// `Telemetry::metric_value` reads them; `None` when there is no
+    /// band or either outer side is open.
+    pub fn outer_edges(&self) -> Option<(f32, f32)> {
+        Some((self.0.first()?.lower?, self.0.last()?.upper?))
+    }
+
     /// Normalize an empty band list to the single band `(0.0, 0.0)`.
     /// An empty `VecBounds` usually means "no information" (see
     /// `sum_single`'s doc), but a live Q envelope with no legal band

@@ -30,6 +30,7 @@ use crate::timeout_tracker::{SetpointAxis, TimeoutTracker, deadline_after};
 mod step;
 #[cfg(test)]
 mod test_stubs;
+mod window;
 
 /// The refusal text for a request that outlived its site's run.
 pub const SITE_RESET: &str = "site was reset since the request was looked up";
