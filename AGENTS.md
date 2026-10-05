@@ -550,8 +550,10 @@ GCP active-power limiter is the motivating case).
   survives a trip; by default charging resumes with the next command,
   and with `:resume-on-recovery t` it ramps back on its own. Every
   command reaches the output after the gateway delay plus a device
-  delay (`:device-delay-ms`, 100 ms unless set); a command still in
-  the device's delay line is dropped by a trip, never replayed.
+  delay (`:device-delay-ms`, 100 ms unless set), each of which lets a
+  command out up to the smaller of 5 ms and half the delay early to
+  allow for a tick landing early; a command still in the device's
+  delay line is dropped by a trip, never replayed.
 - Only a component with a gateway axis on the requested side stores an
   augmentation — both inverters on P and Q, the EV charger and the
   steam boiler on P. Every other component or axis (grid, meter,

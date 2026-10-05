@@ -12,6 +12,27 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
+/// The most a tick may land early and still release a command that is
+/// due, bounded by half the delay so a short delay still waits a
+/// tick. The live physics timer jitters by about a millisecond; 5 ms
+/// matches tokio's threshold for a late tick.
+pub(crate) const TICK_JITTER: chrono::Duration = chrono::Duration::milliseconds(5);
+
+/// Whether a command stamped at `stamp` is due at `now` after
+/// `delay`, allowing for a tick up to the smaller of `TICK_JITTER`
+/// and half the delay early. A stamp after `now` means the clock
+/// stepped back; it counts as due, so the command doesn't wait for
+/// the clock to catch up, even under a saturated "forever" delay.
+/// Otherwise a due time past the end of time is never reached, so
+/// such a delay never releases.
+pub(crate) fn is_due(stamp: DateTime<Utc>, delay: chrono::Duration, now: DateTime<Utc>) -> bool {
+    let allowance = TICK_JITTER.min(delay / 2);
+    stamp > now
+        || stamp
+            .checked_add_signed(delay - allowance)
+            .is_some_and(|due| due <= now)
+}
+
 /// Holds a pending set-point that becomes "armed" only after `delay`
 /// has elapsed on the tick clock.
 ///
@@ -64,12 +85,7 @@ impl State {
         // one at a time, so a burst never collapses into "only the
         // newest value was ever visible".
         if let Some((Some(set_at), v)) = self.executing
-            // checked add: a saturated "forever" delay must mean the
-            // command never arms, not a panic on overflow. A stamp
-            // after `now` means the wall clock stepped back; it counts
-            // as due, so the command doesn't wait for the clock to
-            // catch up.
-            && (set_at > now || set_at.checked_add_signed(delay).is_some_and(|due| now >= due))
+            && is_due(set_at, delay, now)
         {
             self.armed = Some(v);
             self.executing = self.waiting.take();
@@ -234,6 +250,33 @@ mod tests {
         assert_eq!(cd.poll(t0), None); // first poll stamps the command
         assert_eq!(cd.poll(t0 + chrono::Duration::seconds(1)), None);
         assert_eq!(cd.poll(t0 + chrono::Duration::seconds(2)), Some(5000.0));
+    }
+
+    /// A tick that lands a little early still arms a command one
+    /// delay after its stamp: a 99.5 ms gap counts as the 100 ms
+    /// delay.
+    #[test]
+    fn command_delay_allows_for_timer_jitter() {
+        let t0 = Utc::now();
+        let mut cd = CommandDelay::new(Duration::from_millis(100));
+        cd.set_target(1000.0);
+        assert_eq!(cd.poll(t0), None);
+        let early = t0 + chrono::Duration::microseconds(99_500);
+        assert_eq!(cd.poll(early), Some(1000.0));
+    }
+
+    /// The allowance is at most half the delay: a 3 ms command delay
+    /// still waits for the next 100 ms tick.
+    #[test]
+    fn a_short_command_delay_still_waits_a_tick() {
+        let t0 = Utc::now();
+        let mut cd = CommandDelay::new(Duration::from_millis(3));
+        cd.set_target(1000.0);
+        assert_eq!(cd.poll(t0), None);
+        assert_eq!(
+            cd.poll(t0 + chrono::Duration::milliseconds(100)),
+            Some(1000.0)
+        );
     }
 
     /// Commands carry no clock when submitted: the tick clock stamps

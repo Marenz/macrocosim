@@ -1,8 +1,10 @@
 //! `DeviceAxis`: the hardware half of one power axis. A command
-//! handed in at time t reaches the output at t + the device delay,
-//! whatever the physics tick, clamped to the band the component
-//! passes on each tick (its rated band ∩ its current physical band).
-//! The gateway, or a direct writer, hands commands in through
+//! handed in is stamped at the next tick and reaches the output on
+//! the first tick at or after its stamp + the device delay, clamped
+//! to the band the component passes on each tick (its rated band ∩
+//! its current physical band). A command can come out up to the
+//! jitter allowance early (`ramp::TICK_JITTER`, at most half the
+//! delay). The gateway, or a direct writer, hands commands in through
 //! `set_command`; nothing here knows about the Microgrid API.
 
 use std::{collections::VecDeque, time::Duration};
@@ -10,7 +12,7 @@ use std::{collections::VecDeque, time::Duration};
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
-use crate::sim::bounds::VecBounds;
+use crate::sim::{bounds::VecBounds, ramp::is_due};
 
 /// Upper bound on queued commands; an absurd delay drops the oldest
 /// instead of growing without limit.
@@ -56,10 +58,9 @@ impl DeviceAxis {
         self.state.lock().pending = Some(value);
     }
 
-    /// Stamp the pending command at `now`, let every command whose
-    /// delay has run out (or whose stamp is after `now`) reach the
-    /// output in order, and clamp the output to `band`. Returns the
-    /// output.
+    /// Stamp the pending command at `now`, let every command that is
+    /// due by `now` (`ramp::is_due`) reach the output in order, and
+    /// clamp the output to `band`. Returns the output.
     pub fn tick(&self, now: DateTime<Utc>, band: Option<&VecBounds>) -> f32 {
         let mut s = self.state.lock();
         if let Some(v) = s.pending.take() {
@@ -68,13 +69,8 @@ impl DeviceAxis {
                 s.line.pop_front();
             }
         }
-        // A stamp after `now` means the wall clock stepped back; it
-        // counts as due, so newer commands don't queue behind it.
         while let Some(&(at, v)) = s.line.front()
-            && (at > now
-                || at
-                    .checked_add_signed(self.delay)
-                    .is_some_and(|due| due <= now))
+            && is_due(at, self.delay, now)
         {
             s.delayed = v;
             s.line.pop_front();
@@ -129,6 +125,41 @@ mod tests {
         slow.set_command(500.0);
         assert_eq!(slow.tick(t0, None), 0.0);
         assert_eq!(slow.tick(ms(t0, 250), None), 500.0);
+    }
+
+    /// A tick that lands a little early still releases a command one
+    /// delay after its stamp: a 99.5 ms gap counts as the 100 ms
+    /// delay, and a ramp on gaps that alternate 99.5 and 100.5 ms
+    /// lags exactly one tick.
+    #[test]
+    fn timer_jitter_does_not_hold_a_command_back_a_tick() {
+        let t0 = Utc::now();
+        let us = |u: i64| t0 + chrono::Duration::microseconds(u);
+        let ax = DeviceAxis::new(Duration::from_millis(100), 0.0);
+        ax.set_command(1000.0);
+        ax.tick(t0, None);
+        assert_eq!(ax.tick(us(99_500), None), 1000.0);
+
+        let ramp = DeviceAxis::new(Duration::from_millis(100), 0.0);
+        let mut t = 0;
+        for k in 1..=50 {
+            ramp.set_command(k as f32);
+            assert_eq!(ramp.tick(us(t), None), (k - 1) as f32, "tick {k}");
+            t += if k % 2 == 0 { 99_500 } else { 100_500 };
+        }
+    }
+
+    /// The jitter allowance is at most half the delay, so a delay
+    /// shorter than the allowance still holds a command until the
+    /// next tick: 3 ms on 100 ms ticks is not released in the tick
+    /// that stamps it.
+    #[test]
+    fn a_short_delay_still_waits_a_tick() {
+        let t0 = Utc::now();
+        let ax = DeviceAxis::new(Duration::from_millis(3), 0.0);
+        ax.set_command(1000.0);
+        assert_eq!(ax.tick(t0, None), 0.0, "held in the stamping tick");
+        assert_eq!(ax.tick(ms(t0, 100), None), 1000.0);
     }
 
     #[test]
