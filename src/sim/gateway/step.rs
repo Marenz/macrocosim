@@ -145,7 +145,7 @@ mod tests {
 
     use super::super::{
         Mode,
-        test_stubs::{Hw, instant_inverter, nearly_full_pack, put, ramping_inverter, sim_site},
+        test_stubs::{Hw, instant_inverter, nearly_full_pack, put, ramping_inverter},
     };
     use chrono::{DateTime, Utc};
     use parking_lot::Mutex;
@@ -183,7 +183,7 @@ mod tests {
     /// An expired lifetime ramps the axis to its idle value.
     #[test]
     fn expiry_ramps_to_the_idle_value() {
-        let (site, clock) = sim_site();
+        let site = MicrogridSite::new();
         let hw = put(
             &site,
             Arc::new(Hw {
@@ -201,11 +201,9 @@ mod tests {
                 Mode::Reject,
             )
             .unwrap();
-        clock.advance(DT);
-        site.tick_once(site.now(), DT);
+        site.tick_n(1, DT);
         assert_eq!(hw.last(), Some(600.0));
-        clock.advance(Duration::from_secs(1));
-        site.tick_once(site.now(), DT);
+        site.tick_n(10, DT);
         assert_eq!(hw.last(), Some(-50.0));
         assert_eq!(site.gateway().remaining_lifetime(1, Active), None);
     }
@@ -285,7 +283,7 @@ mod tests {
     /// is left stored to weigh on later checks and reads.
     #[test]
     fn step_reaps_lapsed_augmentations() {
-        let (site, clock) = sim_site();
+        let site = MicrogridSite::new();
         put(&site, Arc::new(Hw::new(1)));
         let t0 = site.now();
         site.gateway()
@@ -297,8 +295,7 @@ mod tests {
                 Duration::from_secs(1),
             )
             .unwrap();
-        clock.advance(Duration::from_secs(2));
-        site.tick_once(site.now(), DT);
+        site.tick_n(20, DT);
         let gw = site.gateway();
         let st = gw.gw.state.lock();
         let rated = VecBounds::single(-1000.0, 1000.0);

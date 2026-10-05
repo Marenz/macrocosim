@@ -1225,7 +1225,6 @@ mod tests {
     /// inverter, advance physics + sampling, and assert the totals.
     #[test]
     fn battery_charge_discharge_integrates_through_snapshot() {
-        use chrono::{Duration as ChronoDuration, Utc};
         let (cfg, _dir) = config_with(
             "(setq b (%make-battery :id 100
                                     :capacity 100000.0
@@ -1242,18 +1241,12 @@ mod tests {
         // Two short ticks carry the command across the gateway and
         // device delays; default ramp is infinity, so that settles
         // it.
-        let mut now = Utc::now();
-        for _ in 0..2 {
-            now += ChronoDuration::milliseconds(100);
-            cfg.site()
-                .tick_once(now, std::time::Duration::from_millis(100));
-        }
+        let ms100 = std::time::Duration::from_millis(100);
+        let now = cfg.site().tick_n(2, ms100);
         // Snapshot pass at t0 — first one just seeds the cursor
         // (dt from start is small but non-zero — ignore the result).
         cfg.site().record_history_snapshot(now);
-        now += ChronoDuration::seconds(10);
-        cfg.site()
-            .tick_once(now, std::time::Duration::from_secs(10));
+        let now = cfg.site().tick_n(1, std::time::Duration::from_secs(10));
         cfg.site().record_history_snapshot(now);
         let r = cfg.site().scenario_report(now);
         // 3600 W for 10 s = 10 Wh. Allow some slop for the seed
@@ -1267,13 +1260,8 @@ mod tests {
 
         // Now flip to discharging.
         cfg.eval("(set-active-power 200 -7200.0 60000)").unwrap();
-        for _ in 0..2 {
-            now += ChronoDuration::milliseconds(100);
-            cfg.site()
-                .tick_once(now, std::time::Duration::from_millis(100));
-        }
-        now += ChronoDuration::seconds(5);
-        cfg.site().tick_once(now, std::time::Duration::from_secs(5));
+        cfg.site().tick_n(2, ms100);
+        let now = cfg.site().tick_n(1, std::time::Duration::from_secs(5));
         cfg.site().record_history_snapshot(now);
         let r = cfg.site().scenario_report(now);
         // 7200 W * 5 s / 3600 = 10 Wh discharged.
