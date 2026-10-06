@@ -21,7 +21,7 @@ pub(in crate::ui) async fn eval(
     State(config): State<Config>,
     Text(body): Text,
 ) -> Result<Json<EvalResponse>, ApiError> {
-    let value = super::blocking(move || config.eval(&body))
+    let value = eval_blocking(move || config.eval(&body))
         .await?
         .map_err(ApiError::bad_request)?;
     Ok(Json(EvalResponse { value }))
@@ -38,11 +38,21 @@ pub(in crate::ui) async fn eval_for_mg(
     Text(body): Text,
 ) -> Result<Json<EvalResponse>, ApiError> {
     let mg_id = mg.id;
-    let value = super::blocking(move || config.eval_in_registered_mg(mg_id, &body))
+    let value = eval_blocking(move || config.eval_in_registered_mg(mg_id, &body))
         .await?
         .ok_or_else(|| ApiError::not_registered(mg_id))?
         .map_err(ApiError::bad_request)?;
     Ok(Json(EvalResponse { value }))
+}
+
+/// `f` on the blocking pool; a panic in it is a 500 `eval task
+/// panicked: …`.
+async fn eval_blocking<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, ApiError> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| ApiError::internal(format!("eval task panicked: {e}")))
 }
 
 #[derive(Deserialize)]

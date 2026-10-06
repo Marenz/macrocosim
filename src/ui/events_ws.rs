@@ -7,20 +7,22 @@
 //! a tag.
 
 use axum::extract::State;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{Message, WebSocket};
 use axum::response::IntoResponse;
 use serde::Serialize;
 
 use crate::lisp::Config;
 use crate::sim::events::SiteEvent;
+use crate::ui::api::WsUpgrade;
 
 /// WebSocket event push. Subscribers receive SiteEvent JSON for
 /// every TopologyChanged + Sample broadcast. Client-sent frames are
 /// drained but ignored — the channel is server-push only for v1; an
 /// upcoming change adds a /api/eval-style RPC over the same socket
 /// if it turns out latency-sensitive client actions benefit from it.
+/// A request that is not an upgrade gets a JSON error.
 pub(super) async fn events_ws(
-    ws: WebSocketUpgrade,
+    WsUpgrade(ws): WsUpgrade,
     State(config): State<Config>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| event_pump(socket, config))

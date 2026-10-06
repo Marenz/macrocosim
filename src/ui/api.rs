@@ -3,6 +3,7 @@
 //! into it, and the JSON fallbacks for unknown paths and methods.
 
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection, StringRejection};
+use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::{Method, StatusCode, Uri, request::Parts};
 use axum::response::{IntoResponse, Response};
@@ -153,6 +154,24 @@ where
             .await
             .map(Text)
             .map_err(|e: StringRejection| ApiError::new(e.status(), e.body_text()))
+    }
+}
+
+/// `axum::extract::ws::WebSocketUpgrade` whose rejection is an
+/// `ApiError` that keeps axum's status.
+pub(in crate::ui) struct WsUpgrade(pub axum::extract::ws::WebSocketUpgrade);
+
+impl<S> FromRequestParts<S> for WsUpgrade
+where
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, ApiError> {
+        axum::extract::ws::WebSocketUpgrade::from_request_parts(parts, state)
+            .await
+            .map(WsUpgrade)
+            .map_err(|e: WebSocketUpgradeRejection| ApiError::new(e.status(), e.body_text()))
     }
 }
 

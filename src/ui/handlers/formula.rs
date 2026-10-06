@@ -1,6 +1,6 @@
 //! Formula endpoint behind the formula explorer panel.
 //!
-//! Unlike `/api/mg/{id}/metrics/formulas` (which reads rendered
+//! Unlike `/api/mg/{mg}/metrics/formulas` (which reads rendered
 //! strings off the loopback client's logical meter), this endpoint
 //! builds its own [`ComponentGraph`] straight from the site via
 //! [`graph_adapter`], so it works even when the loopback slot is

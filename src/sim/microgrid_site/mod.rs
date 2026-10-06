@@ -232,7 +232,7 @@ struct MicrogridSiteInner {
     name_overrides: RwLock<HashMap<u64, String>>,
     /// Per-component telemetry history rings, populated by the
     /// `spawn_history_sampler` task. Read by the UI's
-    /// `component/{cid}/history` endpoint. Cleared on `reset()` so a
+    /// `component/{id}/history` endpoint. Cleared on `reset()` so a
     /// hot-reload starts charts fresh.
     histories: RwLock<HashMap<u64, ComponentHistory>>,
     /// Per-component cumulative-energy accumulators, advanced on every
@@ -248,7 +248,7 @@ struct MicrogridSiteInner {
     /// Per-component log of incoming setpoint requests + outcome.
     /// Populated by the gRPC server handlers for SetActivePower /
     /// SetReactivePower / AugmentBounds; read by
-    /// `component/{cid}/setpoints` for the UI's control inspector.
+    /// `component/{id}/setpoints` for the UI's control inspector.
     setpoint_logs: RwLock<HashMap<u64, SetpointLog>>,
     /// Monotonic version counter; bumped via `bump_version` on every
     /// accepted eval (and future programmatic mutations) so UI tabs
@@ -1373,7 +1373,7 @@ impl MicrogridSite {
     //
     // Per-component rolling log of accepted / rejected setpoint
     // requests. Populated by the gRPC handlers; read by the UI's
-    // `component/{cid}/setpoints` inspector. Each `log_setpoint` also
+    // `component/{id}/setpoints` inspector. Each `log_setpoint` also
     // broadcasts on the event bus for live UI updates.
 
     /// Append a setpoint event to the per-component log + broadcast

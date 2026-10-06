@@ -1,7 +1,7 @@
 use super::*;
 use crate::lisp::Config;
 use axum::body::{Body, to_bytes};
-use axum::http::{Method, Request, StatusCode};
+use axum::http::{HeaderMap, Method, Request, StatusCode};
 use chrono::Utc;
 use std::io::Write;
 use tower::ServiceExt;
@@ -74,10 +74,38 @@ async fn call_with(
     runtimes: crate::runtime::MicrogridRuntimes,
     req: Request<Body>,
 ) -> (StatusCode, Vec<u8>) {
+    let (status, _, body) = call_full(config, runtimes, req).await;
+    (status, body)
+}
+
+/// [`call_with`] that also returns the response headers.
+async fn call_full(
+    config: Config,
+    runtimes: crate::runtime::MicrogridRuntimes,
+    req: Request<Body>,
+) -> (StatusCode, HeaderMap, Vec<u8>) {
     let resp = router(config, runtimes).oneshot(req).await.unwrap();
     let status = resp.status();
+    let headers = resp.headers().clone();
     let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    (status, bytes.to_vec())
+    (status, headers, bytes.to_vec())
+}
+
+/// [`call`] for a reply that must be JSON: panics unless its
+/// `content-type` is `application/json`.
+async fn call_json(config: Config, req: Request<Body>) -> (StatusCode, Vec<u8>) {
+    let (status, headers, body) =
+        call_full(config, crate::runtime::MicrogridRuntimes::inert(), req).await;
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(
+        content_type,
+        Some("application/json"),
+        "{status} {}",
+        String::from_utf8_lossy(&body)
+    );
+    (status, body)
 }
 
 fn get(path: &str) -> Request<Body> {
@@ -212,7 +240,7 @@ async fn eval_answers_with_status_codes() {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v, serde_json::json!({"value": "3"}), "{path}");
 
-        let (status, body) = call(cfg.clone(), post(path, "(no-such-fn)")).await;
+        let (status, body) = call_json(cfg.clone(), post(path, "(no-such-fn)")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{path}");
         assert!(error_of(&body).contains("no-such-fn"), "{path}");
     }
@@ -246,6 +274,11 @@ async fn every_microgrid_route_shares_the_unregistered_404() {
         "component/1/ev",
         "undo",
         "snapshots",
+        "scenario",
+        "scenario/events",
+        "scenario/report",
+        "scenario/csv",
+        "scenario/csv/x.csv",
         "dispatches",
     ];
     for suffix in gets {
@@ -297,7 +330,7 @@ async fn every_microgrid_route_shares_the_unregistered_404() {
     assert_eq!(error_of(&body), "invalid microgrid id: \"abc\"");
 }
 
-/// The unscoped per-microgrid routes are gone.
+/// Per-microgrid routes outside `/api/mg/{mg}` answer 404 `no route`.
 #[tokio::test]
 async fn unscoped_microgrid_routes_are_gone() {
     let cfg = config_with("").await;
@@ -412,8 +445,7 @@ async fn creating_a_microgrid_answers_201() {
     assert_eq!(v["id"], 2301);
 }
 
-/// The whole-site eval can create a microgrid: site-level Lisp still
-/// has a door once the unscoped routes are gone.
+/// The whole-site eval can create a microgrid.
 #[tokio::test]
 async fn site_eval_creates_a_microgrid() {
     let cfg = config_with("").await;
@@ -434,13 +466,13 @@ async fn site_eval_creates_a_microgrid() {
 #[tokio::test]
 async fn a_formula_error_is_400_with_its_kind() {
     let cfg = config_with("").await;
-    let (status, body) = call(cfg, get("/api/mg/2200/formula?metric=grid")).await;
+    let (status, body) = call_json(cfg, get("/api/mg/2200/formula?metric=grid")).await;
     // The default test microgrid has no components.
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(error_of(&body), "The microgrid has no components yet.");
 
     let cfg = config_with(FORMULA_TOPOLOGY).await;
-    let (status, body) = call(cfg, get("/api/mg/2200/formula?metric=battery&ids=99")).await;
+    let (status, body) = call_json(cfg, get("/api/mg/2200/formula?metric=battery&ids=99")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["kind"], "component_not_found");
@@ -589,6 +621,36 @@ async fn scenario_endpoints_round_trip_lifecycle_and_events() {
     let events = v["events"].as_array().unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["id"], 1);
+}
+
+/// Starting and stopping a registered scenario answer 204 with no
+/// body; an unknown name is a JSON 400.
+#[tokio::test]
+async fn scenario_start_and_stop_answer_204() {
+    let cfg = config_with(
+        "(make-microgrid :id 2200 :grpc-port 8800 :topology (lambda () nil))
+         (define-scenario :name \"tiny\" :schedule 'relative :length \"60s\")",
+    )
+    .await;
+    let (status, body) = call(cfg.clone(), post("/api/scenarios/tiny/start", "")).await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert!(body.is_empty());
+    let (_, body) = call(cfg.clone(), get("/api/mg/2200/scenario")).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["name"], "tiny");
+
+    let (status, body) = call(cfg.clone(), post("/api/scenarios/stop", "")).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(body.is_empty());
+
+    let (status, body) = call_json(cfg, post("/api/scenarios/nope/start", "")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(error_of(&body).contains("nope"), "{}", error_of(&body));
 }
 
 #[tokio::test]
@@ -1622,7 +1684,7 @@ async fn load_endpoint_offers_load_as_on_collision() {
         "",
     );
     std::fs::write(dir.join("dup.lisp"), &text).unwrap();
-    let (st, body) = call(
+    let (st, body) = call_json(
         config.clone(),
         post_json("/api/load", r#"{"path":"dup.lisp"}"#),
     )
@@ -2817,12 +2879,23 @@ async fn component_snapshot_lists_exactly_the_knobs_each_kind_has() {
 #[tokio::test]
 async fn an_unknown_path_is_a_json_404() {
     let cfg = config_with("").await;
-    let (status, body) = call(cfg, get("/api/nope")).await;
+    let (status, body) = call_json(cfg, get("/api/nope")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(error_of(&body), "no route for GET /api/nope");
 }
 
-/// A wrong method on a known path answers the JSON 405.
+/// A plain GET of the event socket, with no upgrade headers, is a
+/// JSON error.
+#[tokio::test]
+async fn a_ws_events_get_without_upgrade_is_a_json_error() {
+    let cfg = config_with("").await;
+    let (status, body) = call_json(cfg, get("/ws/events")).await;
+    assert!(status.is_client_error(), "{status}");
+    assert!(!error_of(&body).is_empty());
+}
+
+/// A wrong method on a known path answers the JSON 405, in the
+/// nested per-microgrid router too.
 #[tokio::test]
 async fn a_wrong_method_is_a_json_405() {
     let cfg = config_with("").await;
@@ -2831,9 +2904,13 @@ async fn a_wrong_method_is_a_json_405() {
         .uri("/api/microgrids/import")
         .body(Body::empty())
         .unwrap();
-    let (status, body) = call(cfg, req).await;
+    let (status, body) = call_json(cfg.clone(), req).await;
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(error_of(&body), "no route for GET /api/microgrids/import");
+
+    let (status, body) = call_json(cfg, delete_req("/api/mg/2200/topology")).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(error_of(&body), "no route for DELETE /api/mg/2200/topology");
 }
 
 /// A malformed JSON body is a 400 whose error carries axum's
@@ -2847,7 +2924,7 @@ async fn a_malformed_json_body_is_a_json_400() {
         .header("content-type", "application/json")
         .body(Body::from("{not json"))
         .unwrap();
-    let (status, body) = call(cfg, req).await;
+    let (status, body) = call_json(cfg, req).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(!error_of(&body).is_empty());
 }
@@ -2856,7 +2933,7 @@ async fn a_malformed_json_body_is_a_json_400() {
 #[tokio::test]
 async fn a_missing_query_parameter_is_a_json_400() {
     let cfg = config_with("").await;
-    let (status, body) = call(cfg, get("/api/mg/2200/formula")).await;
+    let (status, body) = call_json(cfg, get("/api/mg/2200/formula")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(error_of(&body).contains("metric"), "{}", error_of(&body));
 }
@@ -2870,16 +2947,48 @@ async fn the_origin_guard_rejects_with_json() {
         .header("host", "evil.example")
         .body(Body::empty())
         .unwrap();
-    let (status, body) = call(cfg, req).await;
+    let (status, body) = call_json(cfg.clone(), req).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(error_of(&body), "non-loopback Host rejected");
+
+    // An unknown path behind a foreign Host meets the guard first.
+    let req = Request::builder()
+        .uri("/api/nope")
+        .header("host", "evil.example")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = call_json(cfg.clone(), req).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(error_of(&body), "non-loopback Host rejected");
+
+    // A cross-origin scoped eval is refused before it evaluates.
+    let (status, body) = call_json(
+        cfg.clone(),
+        browser_post(
+            "/api/mg/2200/eval",
+            "localhost:8801",
+            Some("http://evil.example:8801"),
+            "(setq origin-guard-probe 1)",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(error_of(&body), "cross-origin request rejected");
+    let (status, body) = call(
+        cfg,
+        post("/api/mg/2200/eval", "(boundp 'origin-guard-probe)"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["value"], "nil");
 }
 
 /// A handler error keeps its message and comes back as JSON.
 #[tokio::test]
 async fn a_handler_error_is_json_with_its_old_text() {
     let cfg = config_with("").await;
-    let (status, body) = call(cfg, get("/api/scripts?dir=..")).await;
+    let (status, body) = call_json(cfg, get("/api/scripts?dir=..")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(error_of(&body), "invalid dir");
 }

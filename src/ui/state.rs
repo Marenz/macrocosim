@@ -121,7 +121,7 @@ pub(super) const MICROGRID_HISTORY_CAP: usize = 1000;
 /// per-stream cache.
 ///
 /// `BTreeMap` keeps the entries ordered by id so the UI's
-/// Microgrids list and `/api/mg/{id}/metrics/latest` lookups
+/// Microgrids list and `/api/mg/{mg}/metrics/latest` lookups
 /// stay deterministic. Behind an `Arc<RwLock>` so handlers can
 /// take a read lock for lookups without blocking new-microgrid
 /// inserts coming from the create-microgrid endpoint.
