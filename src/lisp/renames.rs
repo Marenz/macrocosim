@@ -258,6 +258,11 @@ pub(crate) const RENAMES: &[Rename] = &[
         convert: Convert::PerHourToPerSecond,
     },
     Rename {
+        old: ":component",
+        new: ":component-id",
+        convert: Convert::None,
+    },
+    Rename {
         old: ":sunlight%",
         new: ":sunlight-pct",
         convert: Convert::None,

@@ -180,7 +180,7 @@ pub fn build_timeline(cues: &[TulispObject], expect: &[TulispObject]) -> Vec<Tim
         let spec = plist_get(e, ":expect");
         let component = spec
             .as_ref()
-            .and_then(|s| plist_get(s, ":component"))
+            .and_then(|s| plist_get(s, ":component-id").or_else(|| plist_get(s, ":component")))
             .and_then(|o| i64::try_from(o).ok());
         let metric = spec
             .as_ref()

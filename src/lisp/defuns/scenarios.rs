@@ -177,7 +177,7 @@ pub(in crate::lisp) fn register_registry(
 
 tulisp::AsPlist! {
     pub struct ScenarioExpectArgs {
-        component: i64,
+        component_id<":component-id">: i64,
         /// Metric to read — symbol or string. Dashes normalize to
         /// underscores, so both the canonical `Metric::as_str` names
         /// and lisp-style spellings work; see `parse_expect_metric`
@@ -441,7 +441,7 @@ pub(super) fn register_lifecycle(
         },
     );
 
-    // `(scenario-expect :component ID :metric M :approx V :tol T)` /
+    // `(scenario-expect :component-id ID :metric M :approx V :tol T)` /
     // `(… :min L :max U)` — read the component's current value of M,
     // compare, and record a pass/fail check on the scenario report.
     // Returns t/nil so scripts can branch. A missing component or
@@ -485,10 +485,10 @@ pub(super) fn register_lifecycle(
                     ));
                 }
             };
-            let id = u64::try_from(a.component).map_err(|_| {
+            let id = u64::try_from(a.component_id).map_err(|_| {
                 Error::os_error(format!(
-                    "scenario-expect: :component must be non-negative, got {}",
-                    a.component
+                    "scenario-expect: :component-id must be non-negative, got {}",
+                    a.component_id
                 ))
             })?;
             let w = r.site();
@@ -797,7 +797,7 @@ mod tests {
         // Bounds metric, lisp-style spelling from the todo example.
         let v = cfg
             .eval(
-                "(scenario-expect :component 2
+                "(scenario-expect :component-id 2
                                   :metric 'active-power-bounds-upper
                                   :approx 10000.0 :tol 1.0)",
             )
@@ -805,13 +805,13 @@ mod tests {
         assert_eq!(v, "t");
         // Range form on a shorthand metric.
         assert_eq!(
-            cfg.eval("(scenario-expect :component 2 :metric 'soc :min 0.0 :max 100.0)")
+            cfg.eval("(scenario-expect :component-id 2 :metric 'soc :min 0.0 :max 100.0)")
                 .unwrap(),
             "t"
         );
         // A failing range: SoC can't be >= 200 %.
         assert_eq!(
-            cfg.eval("(scenario-expect :component 2 :metric 'soc :min 200.0)")
+            cfg.eval("(scenario-expect :component-id 2 :metric 'soc :min 200.0)")
                 .unwrap(),
             "nil"
         );
@@ -819,7 +819,7 @@ mod tests {
         // not an error — the asserted-on component vanishing IS the
         // kind of regression a scenario test exists to catch.
         assert_eq!(
-            cfg.eval("(scenario-expect :component 99 :metric 'soc :min 0.0)")
+            cfg.eval("(scenario-expect :component-id 99 :metric 'soc :min 0.0)")
                 .unwrap(),
             "nil"
         );
@@ -844,6 +844,40 @@ mod tests {
         assert_eq!(report.checks_passed + report.checks_failed, 0);
     }
 
+    /// A check names its component with `:component-id`; the old
+    /// `:component` still reads the same component.
+    #[test]
+    fn scenario_expect_takes_component_id_and_the_old_component() {
+        let (cfg, _dir) = config_with(
+            "(%make-battery :id 2 :capacity-wh 100000.0
+                            :rated-lower-w -10000.0 :rated-upper-w 10000.0)",
+        );
+        cfg.eval("(scenario-start \"ids\")").unwrap();
+        assert_eq!(
+            cfg.eval("(scenario-expect :component-id 2 :metric 'soc :min 0.0 :max 100.0)")
+                .unwrap(),
+            "t"
+        );
+        assert_eq!(
+            cfg.eval("(scenario-expect :component 2 :metric 'soc :min 0.0 :max 100.0)")
+                .unwrap(),
+            "t"
+        );
+        assert_eq!(
+            cfg.eval("(scenario-expect :component-id 99 :metric 'soc :min 0.0)")
+                .unwrap(),
+            "nil"
+        );
+        let report = cfg.site().scenario_report(chrono::Utc::now());
+        assert_eq!(report.checks_passed, 2);
+        assert_eq!(report.checks_failed, 1);
+        assert!(
+            cfg.eval("(scenario-expect :component-id -2 :metric 'soc :min 1.0)")
+                .unwrap_err()
+                .contains(":component-id must be non-negative")
+        );
+    }
+
     /// Script bugs error instead of recording a check: unknown
     /// metric names, a comparator-less call, mixing :approx with
     /// :min/:max, and :tol without :approx.
@@ -851,11 +885,11 @@ mod tests {
     fn scenario_expect_rejects_malformed_calls() {
         let (cfg, _dir) = config_with("(%make-battery :id 2 :capacity-wh 1000.0)");
         for bad in [
-            "(scenario-expect :component 2 :metric 'warp-factor :min 1.0)",
-            "(scenario-expect :component 2 :metric 'soc)",
-            "(scenario-expect :component 2 :metric 'soc :approx 5.0 :min 1.0)",
-            "(scenario-expect :component 2 :metric 'soc :min 1.0 :tol 0.5)",
-            "(scenario-expect :component -2 :metric 'soc :min 1.0)",
+            "(scenario-expect :component-id 2 :metric 'warp-factor :min 1.0)",
+            "(scenario-expect :component-id 2 :metric 'soc)",
+            "(scenario-expect :component-id 2 :metric 'soc :approx 5.0 :min 1.0)",
+            "(scenario-expect :component-id 2 :metric 'soc :min 1.0 :tol 0.5)",
+            "(scenario-expect :component-id -2 :metric 'soc :min 1.0)",
         ] {
             assert!(cfg.eval(bad).is_err(), "expected an error from {bad}");
         }
@@ -946,7 +980,7 @@ mod tests {
         // at / check resolve relative offsets and clock times.
         assert_eq!(f("(plist-get (at \"60s\" (lambda () nil)) :at-s)"), 60.0);
         assert_eq!(
-            f("(plist-get (check \"02:00\" :component 2 :metric 'soc :min 0.0) :at-s)"),
+            f("(plist-get (check \"02:00\" :component-id 2 :metric 'soc :min 0.0) :at-s)"),
             7200.0
         );
 
@@ -1119,8 +1153,9 @@ mod tests {
             (define-scenario :name "t" :schedule 'relative :length "3min"
               :cues (list (at "60s" (lambda () nil))
                           (at "10s" (lambda () nil)))
-              :expect (list (check "120s" :component 2 :metric 'active-power
-                                   :approx 5000.0 :tol 100.0)))
+              :expect (list (check "120s" :component-id 2 :metric 'active-power
+                                   :approx 5000.0 :tol 100.0)
+                            (check "130s" :component 3 :metric 'soc :min 0.0)))
             "#,
         )
         .unwrap();
@@ -1128,7 +1163,7 @@ mod tests {
         let r = regs.lock();
         let tl = &r.get("t").unwrap().timeline;
         // Sorted by time: cue@10, cue@60, check@120.
-        assert_eq!(tl.len(), 3);
+        assert_eq!(tl.len(), 4);
         assert_eq!(tl[0].at_s, 10.0);
         assert_eq!(tl[0].kind, TimelineKind::Cue);
         assert_eq!(tl[1].at_s, 60.0);
@@ -1136,6 +1171,7 @@ mod tests {
         assert_eq!(tl[2].kind, TimelineKind::Check);
         assert_eq!(tl[2].component, Some(2));
         assert_eq!(tl[2].metric.as_deref(), Some("active-power"));
+        assert_eq!(tl[3].component, Some(3), "the old :component still shows");
     }
 
     /// The outage chain keeps exactly one live handle on

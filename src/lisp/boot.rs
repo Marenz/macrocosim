@@ -1530,6 +1530,73 @@ fn log_topology_validation(site: &MicrogridSite, phase: &str) {
 
 #[cfg(test)]
 mod tests {
+    /// No shipped Lisp file spells a renamed keyword or defun the old
+    /// way. A line that handles the old spelling on purpose (reads it
+    /// from a plist and warns, defines the old defun, or a docstring
+    /// saying the old name still works) is skipped.
+    #[test]
+    fn shipped_lisp_uses_no_renamed_keyword() {
+        let mut lines: Vec<String> = Vec::new();
+        for path in [
+            "sim/common.lisp",
+            "sim/defaults.lisp",
+            "sim/scenarios.lisp",
+            "examples/berlin-demo.lisp",
+            "examples/scenario-driving.lisp",
+        ] {
+            for line in std::fs::read_to_string(path).unwrap().lines() {
+                let handles_old = line.contains("%warn-renamed")
+                    || line.contains("common--seconds-arg")
+                    || line.starts_with("(defun ")
+                    || line.contains("still works")
+                    || line.to_lowercase().contains("the old ");
+                if !handles_old {
+                    lines.push(line.to_string());
+                }
+            }
+        }
+        // The text without the lines that read `old` from a plist.
+        let without_reads = |old: &str| {
+            let read = format!("plist-get plist {}", old.trim());
+            lines
+                .iter()
+                .filter(|l| !l.contains(&read))
+                .map(|l| format!("{l}\n"))
+                .collect::<String>()
+        };
+        for r in crate::lisp::renames::RENAMES {
+            let needle = format!("{} ", r.old);
+            let text = without_reads(r.old);
+            // `BatteryPool::power ` is prose, not the `:power` keyword.
+            let used = text
+                .match_indices(&needle)
+                .any(|(i, _)| !text[..i].ends_with(':'));
+            assert!(!used, "{} still used in a shipped file", r.old);
+        }
+        for old in [
+            ":milliseconds",
+            ":every-ms",
+            ":min-every ",
+            ":max-every ",
+            ":min-duration ",
+            ":max-duration ",
+            ":for ",
+            ":over ",
+            ":target ",
+            "scenario-end-after ",
+            "-lifetime-ms",
+            "set-physics-tick-ms",
+            "set-sample-lag-ms",
+            "(set-boiler-demand ",
+            "(drive-boiler ",
+        ] {
+            assert!(
+                !without_reads(old).contains(old),
+                "{old} still used in a shipped file"
+            );
+        }
+    }
+
     use super::super::Config;
     use super::super::test_support::{config_with, next_unique};
 
@@ -1705,7 +1772,7 @@ mod tests {
         // the scenario-expect check itself (I2), exercising the whole
         // stack.
         assert_eq!(
-            cfg.eval_silent("(scenario-expect :component 4 :metric 'soc :approx 56.0 :tol 1.0)")
+            cfg.eval_silent("(scenario-expect :component-id 4 :metric 'soc :approx 56.0 :tol 1.0)")
                 .unwrap(),
             "t",
             "battery SoC should integrate on sim-time to ~56%",
@@ -1715,8 +1782,10 @@ mod tests {
         // it used to read the never-populated history layer and always
         // fail). Meter 2 imports 3600 W for ~60 s -> ~60 Wh.
         assert_eq!(
-            cfg.eval_silent("(scenario-expect :component 2 :metric 'energy :min 40.0 :max 70.0)")
-                .unwrap(),
+            cfg.eval_silent(
+                "(scenario-expect :component-id 2 :metric 'energy :min 40.0 :max 70.0)"
+            )
+            .unwrap(),
             "t",
             "meter energy should integrate on sim-time in a stepped run",
         );
@@ -1791,11 +1860,11 @@ mod tests {
   :schedule 'relative :clock 'stepped :length \"60s\" :seed 7
   :drive (list (drive-meter 2 (timeline (hold 1000.0 :for-s 30)
                                         (ramp :to 5000.0 :over-s 30))))
-  :expect (list (check \"10s\" :component 2 :metric 'active-power
+  :expect (list (check \"10s\" :component-id 2 :metric 'active-power
                        :approx 1000.0 :tol 200.0)
-                (check \"59s\" :component 2 :metric 'active-power
+                (check \"59s\" :component-id 2 :metric 'active-power
                        :approx 5000.0 :tol 800.0)
-                (check \"60s\" :component 2 :metric 'active-power
+                (check \"60s\" :component-id 2 :metric 'active-power
                        :approx 5000.0 :tol 800.0)))";
         let path = dir.join("config.lisp");
         std::fs::write(&path, body).unwrap();
@@ -1864,11 +1933,11 @@ mod tests {
   :drive (list (drive-meter-reactive 2 (timeline (hold 500.0 :for-s 30)
                                                  (ramp :to 2000.0 :over-s 30)))
                (drive-meter-pf 3 0.8))
-  :expect (list (check \"10s\" :component 2 :metric 'reactive-power
+  :expect (list (check \"10s\" :component-id 2 :metric 'reactive-power
                        :approx 500.0 :tol 100.0)
-                (check \"59s\" :component 2 :metric 'reactive-power
+                (check \"59s\" :component-id 2 :metric 'reactive-power
                        :approx 2000.0 :tol 400.0)
-                (check \"10s\" :component 3 :metric 'reactive-power
+                (check \"10s\" :component-id 3 :metric 'reactive-power
                        :approx 6000.0 :tol 100.0)))";
         let path = dir.join("config.lisp");
         std::fs::write(&path, body).unwrap();

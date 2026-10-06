@@ -100,8 +100,8 @@ This single model subsumes both of today's systems: day-stages are sugar over
     (at "60s" (event 'clouds "rolling in")))
 
   :expect (list
-    (check "110s" :component 2 :metric 'active-power :approx 1500000.0 :tol 300000.0)
-    (check "160s" :component 2 :metric 'active-power :max 3800000.0))
+    (check "110s" :component-id 2 :metric 'active-power :approx 1500000.0 :tol 300000.0)
+    (check "160s" :component-id 2 :metric 'active-power :max 3800000.0))
 
   :record 'csv)
 ```

@@ -397,7 +397,7 @@ A ramp without :from continues from the previous segment's end value
 ;;     :agents (list (controller 'ems :every "500ms"
 ;;                     (lambda () (set-active-power 300 (component-bound-upper 300) :lifetime-s 2 :clamp t))))
 ;;     :cues   (list (at "60s" (event 'clouds "rolling in")))
-;;     :expect (list (check "110s" :component 2 :metric 'active-power
+;;     :expect (list (check "110s" :component-id 2 :metric 'active-power
 ;;                          :approx 1500000.0 :tol 300000.0)))
 ;;
 ;; Cue / check times are resolved to seconds by `resolve-time`, which
@@ -455,7 +455,7 @@ lambda) at scenario time TT."
 (defun check (tt &rest expect-args)
   "Expect section: at scenario time TT, run a `scenario-expect` check
 with EXPECT-ARGS (the same plist scenario-expect takes:
-:component / :metric / :approx / :tol / :min / :max)."
+:component-id / :metric / :approx / :tol / :min / :max)."
   (list :at-s (resolve-time tt) :expect expect-args))
 
 (defun event (kind payload)

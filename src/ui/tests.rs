@@ -770,7 +770,7 @@ async fn scenario_readouts_read_each_microgrids_own_journal() {
         cfg.clone(),
         post(
             "/api/eval",
-            "(scenario-expect :component 1 :metric 'active-power :min -1e9)",
+            "(scenario-expect :component-id 1 :metric 'active-power :min -1e9)",
         ),
     )
     .await;
