@@ -29,6 +29,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
 
+from ._http import journal_path
 from ._process import render_config, resolve_binary
 from .build import Component, ConfigSource, RawLisp, to_lisp_atom
 from .enums import Metric, Schedule
@@ -245,10 +246,6 @@ class ScenarioRun:
     def _http(self) -> HttpClient:
         return self._site._http
 
-    def _journal_path(self, suffix: str = "") -> str:
-        """Readout path under the default (lowest-id) microgrid."""
-        return f"/api/mg/{self._site._resolve_mg(None)}/scenario{suffix}"
-
     def _length_s(self) -> float | None:
         for scenario in self._http.get_json("/api/scenarios"):
             if scenario.get("name") == self._name:
@@ -308,7 +305,7 @@ class ScenarioRun:
         deadline = time.monotonic() + length + 5.0
         interval = poll.total_seconds()
         while time.monotonic() < deadline:
-            state = self._http.get_json(self._journal_path())
+            state = self._http.get_json(journal_path(self._site._resolve_mg(None)))
             self._assert_active(state)
             if state.get("ended_at") is not None:
                 break
@@ -322,7 +319,9 @@ class ScenarioRun:
         """The parsed scenario report (pass/fail ledger + peak/soc stats)."""
         # The report carries the scenario name it belongs to; checking
         # it in the same response avoids a two-request race.
-        report = self._http.get_json(self._journal_path("/report"))
+        report = self._http.get_json(
+            journal_path(self._site._resolve_mg(None), "/report")
+        )
         self._assert_active(report)
         return report
 
@@ -335,7 +334,9 @@ class ScenarioRun:
 
     def events(self, *, since: int = 0) -> list[JournalEvent]:
         """The scenario's journal events (list of ``{kind, payload, …}``)."""
-        body = self._http.get_json(self._journal_path(f"/events?since={since}"))
+        body = self._http.get_json(
+            journal_path(self._site._resolve_mg(None), f"/events?since={since}")
+        )
         return body.get("events", [])
 
 

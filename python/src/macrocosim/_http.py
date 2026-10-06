@@ -31,6 +31,21 @@ def _error_text(resp: httpx.Response) -> str:
         return resp.text
 
 
+def _eval_result(resp: httpx.Response) -> EvalResult:
+    """The outcome of an eval response: a 400 is the interpreter's
+    rejection; any other failure raises."""
+    if resp.status_code == 400:
+        return {"ok": False, "error": _error_text(resp)}
+    resp.raise_for_status()
+    return {"ok": True, "value": resp.json()["value"]}
+
+
+def journal_path(mg_id: int, suffix: str = "") -> str:
+    """Route of microgrid ``mg_id``'s scenario journal readout, with
+    ``suffix`` (``/report``, ``/events?...``) appended."""
+    return f"/api/mg/{mg_id}/scenario{suffix}"
+
+
 def control_path(component_id: int, action: str, mg_id: int) -> str:
     """Route for one component action on microgrid ``mg_id``.
 
@@ -74,11 +89,7 @@ class HttpClient:
         """POST a Lisp form: the whole-site ``/api/eval`` without an
         ``mg_id``, the microgrid's eval with one."""
         path = "/api/eval" if mg_id is None else f"/api/mg/{mg_id}/eval"
-        resp = self._client.post(path, content=expr)
-        if resp.status_code == 400:
-            return {"ok": False, "error": _error_text(resp)}
-        resp.raise_for_status()
-        return {"ok": True, "value": resp.json()["value"]}
+        return _eval_result(self._client.post(path, content=expr))
 
     def close(self) -> None:
         self._client.close()
