@@ -48,6 +48,7 @@ const WINDOW_AVG_CAPACITY: usize = 96;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScenarioEvent {
     pub id: u64,
+    #[serde(serialize_with = "crate::timefmt::serialize_rfc3339")]
     pub ts: DateTime<Utc>,
     pub kind: String,
     pub payload: String,
@@ -58,6 +59,7 @@ pub struct ScenarioEvent {
 /// watched conditions.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScenarioCheck {
+    #[serde(serialize_with = "crate::timefmt::serialize_rfc3339")]
     pub ts: DateTime<Utc>,
     pub component_id: u64,
     /// Canonical metric name (`Metric::as_str`).

@@ -30,6 +30,11 @@ pub(super) struct Assets;
 pub struct MicrogridSampleSnapshot {
     pub quantity: &'static str,
     pub unit: &'static str,
+    /// Epoch milliseconds; serialized as RFC 3339 `ts`.
+    #[serde(
+        rename = "ts",
+        serialize_with = "crate::timefmt::serialize_millis_as_rfc3339"
+    )]
     pub ts_ms: i64,
     pub value: Option<f32>,
 }
@@ -108,6 +113,11 @@ pub fn new_microgrid_slot() -> SharedMicrogrid {
 /// oldest entry drops on insert when full.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct HistorySample {
+    /// Epoch milliseconds; serialized as epoch seconds `t_s`.
+    #[serde(
+        rename = "t_s",
+        serialize_with = "crate::timefmt::serialize_millis_as_epoch_s"
+    )]
     pub ts_ms: i64,
     pub value: Option<f32>,
 }
@@ -129,4 +139,33 @@ pub type MicrogridLoopbacks = Arc<RwLock<std::collections::BTreeMap<u64, SharedM
 
 pub fn new_microgrid_loopbacks() -> MicrogridLoopbacks {
     Arc::new(RwLock::new(std::collections::BTreeMap::new()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latest_sample_carries_an_rfc3339_ts() {
+        let snap = MicrogridSampleSnapshot {
+            quantity: "Power",
+            unit: "W",
+            ts_ms: 1_791_288_000_123,
+            value: Some(1.0),
+        };
+        let v = serde_json::to_value(snap).unwrap();
+        assert_eq!(v["ts"], "2026-10-06T12:00:00.123Z");
+        assert!(v.get("ts_ms").is_none());
+    }
+
+    #[test]
+    fn history_sample_carries_epoch_seconds_as_t_s() {
+        let sample = HistorySample {
+            ts_ms: 1_791_288_000_500,
+            value: Some(1.0),
+        };
+        let v = serde_json::to_value(sample).unwrap();
+        assert_eq!(v["t_s"], 1_791_288_000.5);
+        assert!(v.get("ts_ms").is_none());
+    }
 }

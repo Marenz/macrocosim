@@ -68,7 +68,7 @@ pub(in crate::ui) async fn ev(
             max_current_a: Some(i.ev.max_current_a),
             capacity_wh: Some(i.ev.capacity_wh),
             energy_wh: Some(i.ev.energy_wh),
-            plugged_at: Some(i.ev.plugged_at.to_rfc3339()),
+            plugged_at: Some(crate::timefmt::rfc3339(i.ev.plugged_at)),
             state: Some(i.state.as_str()),
         },
     }))

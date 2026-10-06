@@ -31,7 +31,9 @@ use super::MicrogridSite;
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ScenarioSummary {
     pub name: Option<String>,
+    #[serde(serialize_with = "crate::timefmt::serialize_opt_rfc3339")]
     pub started_at: Option<DateTime<Utc>>,
+    #[serde(serialize_with = "crate::timefmt::serialize_opt_rfc3339")]
     pub ended_at: Option<DateTime<Utc>>,
     pub elapsed_s: f64,
     pub event_count: usize,
@@ -115,6 +117,7 @@ pub(crate) struct SocStats {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct WindowAverageEntry {
+    #[serde(serialize_with = "crate::timefmt::serialize_rfc3339")]
     pub window_start: DateTime<Utc>,
     pub avg_w: f64,
 }

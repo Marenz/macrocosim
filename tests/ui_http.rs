@@ -35,6 +35,19 @@ async fn json(client: &reqwest::Client, url: String) -> Value {
         .unwrap_or_else(|e| panic!("parse {url}: {e}"))
 }
 
+/// Fails unless `v` is RFC 3339 text with milliseconds and a `Z`,
+/// e.g. `2026-10-06T12:00:00.000Z`.
+fn assert_rfc3339_millis(v: &Value) {
+    let s = v.as_str().unwrap_or_else(|| panic!("{v} is not a string"));
+    assert!(
+        s.len() == 24
+            && s.ends_with('Z')
+            && &s[19..20] == "."
+            && DateTime::parse_from_rfc3339(s).is_ok(),
+        "{s} is not RFC 3339 with milliseconds and Z"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn topology_endpoint_serves_components_and_connections() {
     let s = TestServer::start(TINY_TOPOLOGY).await;
@@ -675,6 +688,9 @@ async fn weather_http_round_trip() {
     // `now` is the snapshot's own instant, stamped by the same clock as
     // the event ends — it is what the panel filters its cloud list
     // against, so a just-fired cloud has to still be ahead of it.
+    assert_rfc3339_millis(&cloud["now"]);
+    assert_rfc3339_millis(&cloud["events"][0]["start"]);
+    assert_rfc3339_millis(&cloud["events"][0]["end"]);
     let now = DateTime::parse_from_rfc3339(cloud["now"].as_str().unwrap()).unwrap();
     let end = DateTime::parse_from_rfc3339(cloud["events"][0]["end"].as_str().unwrap()).unwrap();
     assert!(end > now, "{cloud}");
@@ -986,6 +1002,7 @@ async fn ev_route_reports_plug_state() {
     assert_eq!(plugged["phases"], 1);
     assert!((plugged["soc_pct"].as_f64().unwrap() - 25.0).abs() < 0.01);
     assert!(plugged["state"].is_string());
+    assert_rfc3339_millis(&plugged["plugged_at"]);
 
     let not_charger = client
         .get(format!("{base}/component/2/ev"))

@@ -1512,7 +1512,7 @@ async function buildCharts(d, container, snapshotJsonP) {
       continue;
     }
     const samples = resp.samples || [];
-    const xs = samples.map(([t]) => t / 1000);
+    const xs = samples.map(([t]) => t);
     const ys = samples.map(([, v]) => v);
     const { plot, scale } = makePlot(
       Plot,

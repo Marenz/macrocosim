@@ -43,13 +43,16 @@ pub(in crate::ui) struct WeatherResponse {
     /// machines (a host browser against a guest VM), and a browser
     /// running a few seconds ahead would drop a cloud that had only
     /// just been fired.
+    #[serde(serialize_with = "crate::timefmt::serialize_rfc3339")]
     now: DateTime<Utc>,
     events: Vec<CloudEventResponse>,
 }
 
 #[derive(Serialize)]
 pub(in crate::ui) struct CloudEventResponse {
+    #[serde(serialize_with = "crate::timefmt::serialize_rfc3339")]
     start: DateTime<Utc>,
+    #[serde(serialize_with = "crate::timefmt::serialize_rfc3339")]
     end: DateTime<Utc>,
     depth_pct: f32,
 }

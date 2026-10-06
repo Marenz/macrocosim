@@ -198,7 +198,7 @@ export const dispatchForm = (() => {
       if (!Number.isFinite(ms)) {
         throw new Error("pick a start time, or choose Immediately");
       }
-      body.start_ms = ms;
+      body.start = new Date(ms).toISOString();
     }
 
     if (dlg().querySelector('input[name="dd-duration-mode"]:checked').value === "for") {

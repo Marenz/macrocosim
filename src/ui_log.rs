@@ -31,6 +31,11 @@ pub static LOG_TAP: OnceLock<LogTap> = OnceLock::new();
 /// One log record, in the wire shape the SPA consumes.
 #[derive(Clone, Debug, Serialize)]
 pub struct LogEvent {
+    /// Epoch milliseconds; serialized as RFC 3339 `ts`.
+    #[serde(
+        rename = "ts",
+        serialize_with = "crate::timefmt::serialize_millis_as_rfc3339"
+    )]
     pub ts_ms: i64,
     pub level: String,
     pub target: String,
@@ -150,6 +155,18 @@ impl SharedLogger for LogTap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_log_record_carries_an_rfc3339_ts() {
+        let ev = LogEvent {
+            ts_ms: 1_791_288_000_000,
+            level: "info".into(),
+            target: "t".into(),
+            message: "m".into(),
+        };
+        let v = serde_json::to_value(ev).unwrap();
+        assert_eq!(v["ts"], "2026-10-06T12:00:00.000Z");
+    }
 
     #[test]
     fn ring_evicts_oldest() {

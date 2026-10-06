@@ -116,7 +116,7 @@ for (let i = 0; i < 10; i++) {
     stream: "grid_power",
     quantity: "Power",
     unit: "W",
-    ts_ms: t0 + i * 1000,
+    t_s: sec0 + i,
     value: i,
   });
 }
@@ -141,7 +141,7 @@ metricsStore.applySample({
   stream: "grid_power",
   quantity: "Power",
   unit: "W",
-  ts_ms: t0 + 10_000,
+  t_s: sec0 + 10,
   value: null,
 });
 const s3 = metricsStore.series("grid_power", 3);
@@ -165,7 +165,7 @@ metricsStore.applySample({
   stream: "wrap_stream",
   quantity: "Power",
   unit: "W",
-  ts_ms: t0,
+  t_s: sec0,
   value: 7,
 });
 const wrapped = metricsStore.series("wrap_stream", 3, sec0 + 900);
@@ -176,12 +176,12 @@ assert.deepEqual(wrapped.ys, [null, null, null]);
 // Two samples 4 s apart leave the three seconds between them empty:
 // they come back as null ys at their own xs, so the trace draws the
 // stall as a gap in place instead of as a continuous 1 Hz line.
-for (const [i, ts] of [t0, t0 + 4000].entries()) {
+for (const [i, ts] of [sec0, sec0 + 4].entries()) {
   metricsStore.applySample({
     stream: "gap_stream",
     quantity: "Power",
     unit: "W",
-    ts_ms: ts,
+    t_s: ts,
     value: i,
   });
 }
@@ -199,7 +199,7 @@ for (const s of [0, 1, 2, 4]) {
     stream: "align_a",
     quantity: "Power",
     unit: "W",
-    ts_ms: t0 + s * 1000,
+    t_s: sec0 + s,
     value: 10 + s,
   });
 }
@@ -208,7 +208,7 @@ for (const s of [0, 3, 4]) {
     stream: "align_b",
     quantity: "Power",
     unit: "W",
-    ts_ms: t0 + s * 1000,
+    t_s: sec0 + s,
     value: 20 + s,
   });
 }
@@ -240,7 +240,7 @@ metricsStore.applySample({
   stream: "jump_b",
   quantity: "Power",
   unit: "W",
-  ts_ms: t0 + 3_600_000,
+  t_s: sec0 + 3600,
   value: 999,
 });
 assert.equal(latestSecond(["align_a", "jump_b"]), sec0 + 3600);
@@ -268,7 +268,7 @@ for (let i = 0; i < 5; i++) {
     stream: "fold_live",
     quantity: "Power",
     unit: "W",
-    ts_ms: t0 + i * 1000,
+    t_s: sec0 + i,
     value: i,
   });
 }
@@ -277,7 +277,7 @@ for (const [i, s] of [0, 1].entries()) {
     stream: "fold_stalled",
     quantity: "Power",
     unit: "W",
-    ts_ms: t0 + s * 1000,
+    t_s: sec0 + s,
     value: 100 + i,
   });
 }
@@ -293,7 +293,7 @@ assert.deepEqual(stalledRow.ys, [100, 101, null, null, null]);
 assert.deepEqual(metricsStore.series("never_sampled", 5), { xs: [], ys: [] });
 assert.equal(latestSecond(["never_sampled"]), null);
 assert.equal(latestSecond([]), null);
-// No ts_ms means no home second: the sample is dropped rather than
+// No t_s means no home second: the sample is dropped rather than
 // stamped with the browser clock, which used to file browser time
 // into a server-time ring and throw x years out of the window.
 metricsStore.applySample({
@@ -314,7 +314,7 @@ metricsStore.applySample({
   stream: "pv_power",
   quantity: "Power",
   unit: "W",
-  ts_ms: t0,
+  t_s: sec0,
   value: 1,
 });
 assert.equal(fired, 1);
@@ -323,7 +323,7 @@ metricsStore.applySample({
   stream: "pv_power",
   quantity: "Power",
   unit: "W",
-  ts_ms: t0 + 1000,
+  t_s: sec0 + 1,
   value: 2,
 });
 assert.equal(fired, 1);

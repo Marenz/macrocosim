@@ -27,7 +27,7 @@ function appendLog(ev) {
   const box = document.getElementById("logs");
   const el = document.createElement("div");
   el.className = `log-line ${(ev.level || "info").toLowerCase()}`;
-  const ts = new Date(ev.ts_ms).toLocaleTimeString();
+  const ts = new Date(ev.ts).toLocaleTimeString();
   el.innerHTML =
     `<span class="log-ts">${ts}</span>` +
     `<span class="log-lvl">${escapeHtml(ev.level || "")}</span>` +
@@ -425,7 +425,7 @@ export function openWebSocket(onTopologyChanged) {
         topology.applySample(ev);
         inspectorLive.applySample(ev);
       } else if (ev.kind === "microgrid_sample") {
-        metricsStore.applySample(ev);
+        metricsStore.applySample({ ...ev, t_s: ev.ts_ms / 1000 });
         topology.applyMicrogridSample(ev);
       } else if (ev.kind === "topology_changed") {
         onTopologyChanged(ev.version);
@@ -441,7 +441,7 @@ export function openWebSocket(onTopologyChanged) {
         // one. topology ignores the tokens it does not draw.
         topology.applyKnob(ev);
       } else if (ev.kind === "log") {
-        appendLog(ev);
+        appendLog({ ...ev, ts: ev.ts_ms });
       } else if (ev.kind === "config_error") {
         // A failed hot-reload (site already reset) or an eval the
         // microgrid's file could not record — the one moment the user most
@@ -458,7 +458,7 @@ export function openWebSocket(onTopologyChanged) {
         }
         lastConfigError = { message: ev.message, ts_ms: ev.ts_ms };
         notify(ev.message);
-        appendLog({ ts_ms: ev.ts_ms, level: "error", message: ev.message });
+        appendLog({ ts: ev.ts_ms, level: "error", message: ev.message });
       } else if (ev.kind === "dispatch_changed") {
         // The dispatch store changed for ev.mg_id; refetch only if
         // we're actually looking at that microgrid's Dispatches tab.

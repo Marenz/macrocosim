@@ -10,8 +10,8 @@ use crate::lisp::Config;
 use crate::ui::api::{ApiError, Json, Mg, Path};
 
 /// JSON shape for one dispatch in the per-microgrid Dispatches view.
-/// Timestamps are epoch-millis so the SPA formats them client-side via
-/// its TZ toggle, like every other UI timestamp. `target` / `recurrence`
+/// Instants are RFC 3339 strings so the SPA formats them client-side
+/// via its TZ toggle, like every other UI timestamp. `target` / `recurrence`
 /// are pre-rendered human strings — the SPA only displays them.
 #[derive(Serialize)]
 pub(in crate::ui) struct DispatchView {
@@ -20,11 +20,11 @@ pub(in crate::ui) struct DispatchView {
     type_: String,
     active: bool,
     dry_run: bool,
-    start_ms: Option<i64>,
+    start: Option<String>,
     duration_s: Option<u32>,
-    end_ms: Option<i64>,
-    create_ms: Option<i64>,
-    update_ms: Option<i64>,
+    end: Option<String>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
     target: String,
     recurrence: Option<String>,
     payload: serde_json::Value,
@@ -51,7 +51,7 @@ pub(in crate::ui) async fn dispatches(
 /// Body for `POST /api/mg/{mg}/dispatches`. `target` is the same
 /// human syntax the dispatch CLI takes (category names or numeric
 /// ids); `payload` is free JSON (must be an object). With no
-/// `start_ms` the dispatch starts immediately. `recurrence` is
+/// `start` (RFC 3339) the dispatch starts immediately. `recurrence` is
 /// optional — omitted (or `freq: "once"`) creates a one-off.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -68,7 +68,7 @@ pub(in crate::ui) struct DispatchCreateReq {
     #[serde(default)]
     payload: Option<serde_json::Value>,
     #[serde(default)]
-    start_ms: Option<i64>,
+    start: Option<String>,
     #[serde(default)]
     recurrence: Option<RecurrenceReq>,
 }
@@ -133,11 +133,19 @@ pub(in crate::ui) async fn dispatch_create(
         }
     };
     let recurrence = recurrence_from_req(req.recurrence.as_ref()).map_err(ApiError::bad_request)?;
-    let start_immediately = req.start_ms.is_none();
-    let start_time = req.start_ms.map(|ms| prost_types::Timestamp {
-        seconds: ms.div_euclid(1000),
-        nanos: (ms.rem_euclid(1000) * 1_000_000) as i32,
-    });
+    let start_time = req
+        .start
+        .as_deref()
+        .map(|text| {
+            chrono::DateTime::parse_from_rfc3339(text)
+                .map(|dt| prost_types::Timestamp {
+                    seconds: dt.timestamp(),
+                    nanos: dt.timestamp_subsec_nanos() as i32,
+                })
+                .map_err(|e| ApiError::bad_request(format!("start: {e}; expected RFC 3339")))
+        })
+        .transpose()?;
+    let start_immediately = start_time.is_none();
     let data = crate::proto::dispatch::DispatchData {
         r#type: req.type_,
         start_time,
@@ -217,11 +225,23 @@ fn dispatch_to_view(d: &crate::proto::dispatch::Dispatch) -> DispatchView {
         type_: data.r#type,
         active: data.is_active,
         dry_run: data.is_dry_run,
-        start_ms: data.start_time.as_ref().map(ts_to_ms),
+        start: data
+            .start_time
+            .as_ref()
+            .and_then(crate::timefmt::rfc3339_from_proto),
         duration_s: data.duration,
-        end_ms: meta.end_time.as_ref().map(ts_to_ms),
-        create_ms: meta.create_time.as_ref().map(ts_to_ms),
-        update_ms: meta.update_time.as_ref().map(ts_to_ms),
+        end: meta
+            .end_time
+            .as_ref()
+            .and_then(crate::timefmt::rfc3339_from_proto),
+        created_at: meta
+            .create_time
+            .as_ref()
+            .and_then(crate::timefmt::rfc3339_from_proto),
+        updated_at: meta
+            .update_time
+            .as_ref()
+            .and_then(crate::timefmt::rfc3339_from_proto),
         target: crate::sim::dispatch::target_to_string(data.target.as_ref()),
         recurrence: recurrence_to_string(data.recurrence.as_ref()),
         payload: data
@@ -230,13 +250,6 @@ fn dispatch_to_view(d: &crate::proto::dispatch::Dispatch) -> DispatchView {
             .map(crate::sim::dispatch::struct_to_json)
             .unwrap_or(serde_json::Value::Null),
     }
-}
-
-fn ts_to_ms(ts: &prost_types::Timestamp) -> i64 {
-    // i128 + clamp: an extreme start_time stored via gRPC (seconds near
-    // i64::MAX) must not overflow `seconds * 1000` when the UI lists it.
-    let ms = ts.seconds as i128 * 1000 + (ts.nanos as i128) / 1_000_000;
-    ms.clamp(i64::MIN as i128, i64::MAX as i128) as i64
 }
 
 /// Compact recurrence summary, e.g. `daily ×2`. `None` for a

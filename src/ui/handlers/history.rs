@@ -33,9 +33,9 @@ pub(in crate::ui) struct HistoryResponse {
     /// Base unit the samples are recorded in (`"W"`, `"VAr"`,
     /// `"Hz"`, `"%"`).
     unit: &'static str,
-    /// Pairs of (timestamp_ms_since_epoch, value). The time format is
-    /// JS-ready (Date.now() shape) so chart libs can plot directly.
-    samples: Vec<(i64, f32)>,
+    /// Pairs of (t_s, value), `t_s` in epoch seconds, the x scale
+    /// chart libraries plot directly.
+    samples: Vec<(f64, f32)>,
 }
 
 pub(in crate::ui) async fn history(
@@ -64,7 +64,7 @@ fn history_body(
         .history_window(id, metric, since)
         .unwrap_or_default()
         .into_iter()
-        .map(|s| (s.ts.timestamp_millis(), s.value))
+        .map(|s| (s.ts.timestamp_millis() as f64 / 1000.0, s.value))
         .collect();
     Ok(Json(HistoryResponse {
         component_id: id,

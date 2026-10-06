@@ -68,6 +68,7 @@ pub enum SetpointOutcome {
 #[derive(Clone, Debug, Serialize)]
 pub struct SetpointEvent {
     /// Wall-clock timestamp of the inbound request.
+    #[serde(serialize_with = "crate::timefmt::serialize_rfc3339")]
     pub ts: DateTime<Utc>,
     pub kind: SetpointKind,
     /// Requested value (W for active, VAR for reactive). For

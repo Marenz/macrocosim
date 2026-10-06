@@ -6,6 +6,7 @@ pub mod proto_conv;
 pub mod runtime;
 pub mod server;
 pub mod sim;
+pub mod timefmt;
 pub mod timeout_tracker;
 pub mod ui;
 pub mod ui_log;

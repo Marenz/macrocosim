@@ -216,10 +216,10 @@ export const dispatchesPanel = (() => {
   // create form + row-button handlers (which are wired once in setup).
   let currentMg = null;
 
-  function fmtTs(ms) {
-    if (ms == null) return "—";
+  function fmtTs(ts) {
+    if (ts == null) return "—";
     try {
-      return new Date(ms).toLocaleString("en-GB", {
+      return new Date(ts).toLocaleString("en-GB", {
         year: "numeric",
         month: "short",
         day: "2-digit",
@@ -229,7 +229,7 @@ export const dispatchesPanel = (() => {
         timeZone: clockState.tzInUse(),
       });
     } catch (_) {
-      return new Date(ms).toISOString();
+      return new Date(ts).toISOString();
     }
   }
 
@@ -269,7 +269,7 @@ export const dispatchesPanel = (() => {
       <td class="disp-id">#${d.id}</td>
       <td>${escapeHtml(d.type)}</td>
       <td>${status}${dry}</td>
-      <td>${escapeHtml(fmtTs(d.start_ms))}</td>
+      <td>${escapeHtml(fmtTs(d.start))}</td>
       <td>${escapeHtml(fmtDuration(d.duration_s))}</td>
       <td>${escapeHtml(d.target)}</td>
       <td>${escapeHtml(d.recurrence || "once")}</td>

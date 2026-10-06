@@ -396,7 +396,10 @@ export function createGraphCanvas(containerId, adapter = {}) {
       if (res == null) return;
       const data = await res.json();
       const firstLive = entry.hist[0]?.[0] ?? Number.POSITIVE_INFINITY;
-      const seeded = (data.samples || []).filter((s) => Number.isFinite(s[1]) && s[0] < firstLive);
+      // The server's t_s is epoch seconds; the live buffer is in ms.
+      const seeded = (data.samples || [])
+        .map(([t, v]) => [t * 1000, v])
+        .filter((s) => Number.isFinite(s[1]) && s[0] < firstLive);
       entry.hist = [...seeded, ...entry.hist].slice(-60);
     } catch {
       // no seed — the live buffer fills on its own

@@ -549,8 +549,11 @@ async fn history_endpoint_returns_recent_samples() {
     assert_eq!(parsed["metric"], "soc_pct");
     let samples = parsed["samples"].as_array().unwrap();
     assert_eq!(samples.len(), 2);
-    // Each sample is [ts_ms, value]
-    assert!(samples[0][0].as_i64().unwrap() < samples[1][0].as_i64().unwrap());
+    // Each sample is [t_s, value], with t_s in epoch seconds.
+    let t0 = samples[0][0].as_f64().unwrap();
+    let t1 = samples[1][0].as_f64().unwrap();
+    assert!((1.7e9..1e10).contains(&t0), "{t0}");
+    assert!(t0 < t1);
 }
 
 #[tokio::test]
@@ -739,7 +742,11 @@ async fn scenario_readouts_read_each_microgrids_own_journal() {
     assert_eq!(second["event_count"], 0);
     // Both journals ran: each has a start time and a numeric elapsed.
     for s in [&first, &second] {
-        assert!(!s["started_at"].is_null(), "{s}");
+        let started = s["started_at"].as_str().expect("started_at is a string");
+        assert!(
+            started.len() == 24 && started.ends_with('Z') && &started[19..20] == ".",
+            "RFC 3339 with milliseconds and Z: {s}"
+        );
         assert!(s["elapsed_s"].is_f64(), "{s}");
     }
 
@@ -895,8 +902,79 @@ async fn dispatch_create_endpoint_stores_and_returns_view() {
     assert_eq!(v["target"], "BATTERY");
     assert_eq!(v["payload"]["target_power_w"], 5000.0);
     // start_immediately default => a start time was stamped.
-    assert!(v["start_ms"].is_i64());
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(v["start"].as_str().unwrap()).is_ok(),
+        "{v}"
+    );
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(v["created_at"].as_str().unwrap()).is_ok(),
+        "{v}"
+    );
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(v["updated_at"].as_str().unwrap()).is_ok(),
+        "{v}"
+    );
     assert_eq!(cfg.dispatches().list_mg(2200).len(), 1);
+}
+
+#[tokio::test]
+async fn dispatch_start_is_an_rfc3339_instant() {
+    let cfg = config_with("").await;
+    let (status, body) = call(
+        cfg.clone(),
+        post_json(
+            "/api/mg/2200/dispatches",
+            r#"{"type":"ALPHA","target":"BATTERY","start":"2026-10-06T12:00:00Z"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+
+    let (status, body) = call(cfg, get("/api/mg/2200/dispatches")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let start = chrono::DateTime::parse_from_rfc3339(v[0]["start"].as_str().unwrap()).unwrap();
+    let want = chrono::DateTime::parse_from_rfc3339("2026-10-06T12:00:00Z").unwrap();
+    assert_eq!(start, want);
+}
+
+#[tokio::test]
+async fn dispatch_start_that_is_not_rfc3339_is_400_naming_the_field() {
+    let cfg = config_with("").await;
+    let (status, body) = call(
+        cfg.clone(),
+        post_json(
+            "/api/mg/2200/dispatches",
+            r#"{"type":"ALPHA","target":"BATTERY","start":"noon"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(error_of(&body).contains("start"), "{}", error_of(&body));
+    assert!(cfg.dispatches().list_mg(2200).is_empty());
+}
+
+/// A create body with the old `start_ms` field is refused with 422
+/// naming it.
+#[tokio::test]
+async fn dispatch_create_refuses_start_ms() {
+    let cfg = config_with("").await;
+    let (status, body) = call_json(
+        cfg.clone(),
+        post_json(
+            "/api/mg/2200/dispatches",
+            r#"{"type":"ALPHA","target":"BATTERY","start_ms":1791288000000}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(error_of(&body).contains("start_ms"), "{}", error_of(&body));
+    assert!(cfg.dispatches().list_mg(2200).is_empty());
 }
 
 #[tokio::test]
@@ -916,7 +994,7 @@ async fn dispatch_create_endpoint_accepts_recurrence() {
     assert_eq!(v["recurrence"], "daily ×2");
     // Recurring dispatches have no single predetermined end, even
     // with a per-occurrence duration set.
-    assert!(v["end_ms"].is_null());
+    assert!(v["end"].is_null());
 
     // freq "once" is the explicit no-recurrence spelling.
     let (status, body) = call(
@@ -3270,10 +3348,11 @@ async fn component_envelope_names_carry_units() {
 async fn setpoints_response_names_the_component_and_unit() {
     use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
     let cfg = config_with("(%make-battery :id 1000)").await;
+    let ts = Utc::now();
     cfg.site().log_setpoint(
         1000,
         SetpointEvent {
-            ts: Utc::now(),
+            ts,
             kind: SetpointKind::ReactivePower,
             value: 300.0,
             ttl_s: Some(5),
@@ -3289,6 +3368,7 @@ async fn setpoints_response_names_the_component_and_unit() {
     assert!(v.get("id").is_none(), "{v}");
     assert_eq!(v["events"][0]["unit"], "VAr");
     assert_eq!(v["events"][0]["value"], 300.0);
+    assert_eq!(v["events"][0]["ts"], crate::timefmt::rfc3339(ts), "{v}");
 }
 
 /// A scenario's check entries name their component `component_id`.

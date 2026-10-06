@@ -622,7 +622,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                 ctx.intern(":energy-wh"),
                 (ev.energy_wh as f64).into(),
                 ctx.intern(":plugged-at"),
-                ev.plugged_at.to_rfc3339().into(),
+                crate::timefmt::rfc3339(ev.plugged_at).into(),
                 ctx.intern(":state"),
                 ctx.intern(info.state.as_str()),
             ]
@@ -2075,6 +2075,16 @@ mod tests {
         assert!(info.contains(":target-soc-pct 80.0"), "{info}");
         assert!(info.contains(":capacity-wh 40000.0"), "{info}");
         assert!(!info.contains("kwh"), "{info}");
+        let at = &info[info.find(":plugged-at \"").expect("plugged-at") + 13..];
+        let at = &at[..at.find('"').unwrap()];
+        assert_eq!(
+            Some(at),
+            chrono::DateTime::parse_from_rfc3339(at)
+                .ok()
+                .map(|dt| crate::timefmt::rfc3339(dt.into()))
+                .as_deref(),
+            "RFC 3339 with milliseconds and Z: {info}"
+        );
     }
 
     #[test]

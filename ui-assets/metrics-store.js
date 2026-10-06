@@ -79,9 +79,9 @@ export const metricsStore = (() => {
   // Absolute-second placement, shared by the live and backfill paths.
   // Returns false for a sample with no usable server timestamp — see
   // the header: there is no browser-clock fallback.
-  function place(b, tsMs, value) {
-    if (!Number.isFinite(tsMs)) return false;
-    const s = Math.floor(tsMs / 1000);
+  function place(b, tS, value) {
+    if (!Number.isFinite(tS)) return false;
+    const s = Math.floor(tS);
     const i = ((s % SPARK_LEN) + SPARK_LEN) % SPARK_LEN;
     b.values[i] = value ?? Number.NaN;
     b.sec[i] = s;
@@ -140,7 +140,7 @@ export const metricsStore = (() => {
       // server-time ring — an offset clock filed samples years out of
       // the window. Drop it; the server stamps every Sample frame it
       // sends, and reseedLatest still refreshes the chips.
-      if (!place(buf(ev.stream), ev.ts_ms, ev.value)) return;
+      if (!place(buf(ev.stream), ev.t_s, ev.value)) return;
       latestMap.set(ev.stream, {
         value: ev.value ?? null,
         quantity: ev.quantity,
@@ -162,11 +162,11 @@ export const metricsStore = (() => {
             b.values.fill(Number.NaN);
             b.sec.fill(Number.NaN);
             b.maxSec = null;
-            // Each history sample carries its own ts_ms, so it lands
+            // Each history sample carries its own t_s, so it lands
             // in the same slot a live frame for that second would —
             // no right-alignment, and a later WS frame for a second
             // already backfilled simply overwrites it in place.
-            for (const smp of samples.slice(-SPARK_LEN)) place(b, smp?.ts_ms, smp?.value);
+            for (const smp of samples.slice(-SPARK_LEN)) place(b, smp?.t_s, smp?.value);
           }
         }
       } catch (_) {
