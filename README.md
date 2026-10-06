@@ -102,10 +102,14 @@ macroctl dispatch create <type> battery --duration 3600
 macroctl --microgrid-id 2 info                                 # pick another microgrid
 ```
 
-`--microgrid-id` selects the microgrid for every subcommand (default:
-the lowest id). `--addr` overrides the gRPC address of the commands
-that use gRPC; with `--microgrid-id` it must be that microgrid's own
-address. `--ui-addr` (default `http://127.0.0.1:8801`) points at the
+`--microgrid-id` selects the microgrid for the gRPC commands,
+`dispatch`, `snapshot`, `pool`, `dashboard` and the scenario readouts
+(`summary`, `report`, `events`, `run --wait`); the default is the
+lowest id. `scenario list` / `start` / `stop` / `event` / `load` and
+a run's start and stop are site-wide, and a scenario's work lands on
+the lowest microgrid, so `--assert` works only on that one. `--addr`
+names the gRPC server directly; with `--microgrid-id` the lookup
+still runs and the two must agree. `--ui-addr` (default `http://127.0.0.1:8801`) points at the
 UI server, which the HTTP-driven verbs (`scenario*`, `snapshot`,
 `dashboard`, `pool`) talk to. The gRPC commands ask it for the
 microgrid's address unless `--addr` alone is given, and `dispatch`

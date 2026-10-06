@@ -1,10 +1,16 @@
 //! Convenience CLI for poking at a running macrocosim server.
 //!
-//! Every subcommand acts on one microgrid: --microgrid-id, else the
-//! lowest id `GET /api/microgrids` reports. gRPC commands connect to
-//! that microgrid's server as the UI server lists it; --addr names a
-//! server directly (it must be the selected microgrid's when
-//! --microgrid-id is also given).
+//! --microgrid-id selects the microgrid for the gRPC commands,
+//! `dispatch`, `snapshot`, `pool`, `dashboard` and the scenario
+//! readouts (`summary`, `report`, `events`, `run --wait`); the
+//! default is the lowest id `GET /api/microgrids` reports. `scenario
+//! list`, `start`, `stop`, `event`, `load` and a run's start and stop
+//! are site-wide, and a scenario's work lands on the lowest
+//! microgrid, so `--assert` works only on that one.
+//!
+//! gRPC commands connect to the microgrid's server as the UI server
+//! lists it. --addr names a gRPC server directly; with
+//! --microgrid-id the lookup still runs and the two must agree.
 //!
 //! gRPC commands (the microgrid's own server, or --addr):
 //!   macroctl info
@@ -59,9 +65,9 @@ use macrocosim::sim::dispatch::{json_to_struct, parse_target, struct_to_json, ta
     propagate_version = true
 )]
 struct Cli {
-    /// gRPC endpoint of the microgrid's server. Overrides the lookup
-    /// through the UI server; with `--microgrid-id` it must be that
-    /// microgrid's own address.
+    /// gRPC endpoint of the microgrid's server, named directly. With
+    /// `--microgrid-id` the lookup through the UI server still runs
+    /// and the two must agree.
     #[arg(long, global = true)]
     addr: Option<String>,
 
@@ -80,8 +86,9 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// Microgrid every subcommand acts on. Default: the lowest id
-    /// `GET /api/microgrids` reports.
+    /// Microgrid for the gRPC commands, `dispatch`, `snapshot`,
+    /// `pool`, `dashboard` and the scenario readouts. Default: the
+    /// lowest id `GET /api/microgrids` reports.
     #[arg(long, global = true)]
     microgrid_id: Option<u64>,
 
@@ -432,7 +439,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         // on a gRPC connect.
         Cmd::Dispatch(d) => {
             let http = reqwest::Client::new();
-            let mg = resolve_microgrid_id(&http, &cli.ui_addr, cli.microgrid_id).await?;
+            // Only the id lookup needs the UI server; an explicit
+            // --microgrid-id skips it.
+            let mg = resolve_microgrid_id(&http, &cli.ui_addr, cli.microgrid_id)
+                .await
+                .map_err(|e| format!("{e}; pass --microgrid-id"))?;
             run_dispatch(d, &cli.dispatch_addr, mg, cli.json).await
         }
         Cmd::Scenario(s) => run_scenario(s, &cli.ui_addr, cli.microgrid_id, cli.json).await,
@@ -843,7 +854,14 @@ async fn resolve_microgrid_id(
     if let Some(id) = explicit {
         return Ok(id);
     }
-    let list = get_json(http, format!("{ui_addr}/api/microgrids")).await?;
+    let resp = http
+        .get(format!("{ui_addr}/api/microgrids"))
+        .send()
+        .await
+        .map_err(|e| {
+            format!("cannot reach the UI server at {ui_addr} to find a microgrid ({e})")
+        })?;
+    let list: serde_json::Value = checked(resp).await?.json().await?;
     lowest_id(&list).ok_or_else(|| "no microgrids registered".into())
 }
 
@@ -854,6 +872,31 @@ fn lowest_id(list: &serde_json::Value) -> Option<u64> {
         .iter()
         .filter_map(|m| m.get("id")?.as_u64())
         .min()
+}
+
+/// Whether `--assert` on microgrid `mg` checks anything. A
+/// scenario's checks land on the lowest microgrid in `list` (an
+/// `/api/microgrids` reply), so any other microgrid is an error;
+/// an empty list passes and leaves the error to the report read.
+fn assert_target(list: &serde_json::Value, mg: u64) -> Result<(), String> {
+    match lowest_id(list) {
+        Some(lowest) if lowest != mg => Err(format!(
+            "scenario checks land on microgrid {lowest}, the lowest registered one; \
+             --assert on microgrid {mg} would check nothing \
+             (drop --microgrid-id or pass {lowest})"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// [`assert_target`] against the UI server's microgrid listing.
+async fn check_assert_target(
+    http: &reqwest::Client,
+    ui_addr: &str,
+    mg: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let list = get_json(http, format!("{ui_addr}/api/microgrids")).await?;
+    Ok(assert_target(&list, mg)?)
 }
 
 async fn build_pool_line(
@@ -908,7 +951,7 @@ async fn build_pool_line(
     }
 }
 
-/// Polls /api/mg/{id}/topology + /api/mg/{id}/metrics/latest at
+/// Polls /api/mg/{mg}/topology + /api/mg/{mg}/metrics/latest at
 /// `interval` seconds and prints a one-line pulse summary per tick.
 /// With `tail=false` (single snapshot mode) the loop runs once and
 /// exits, matching `macroctl dashboard` without a flag.
@@ -1077,9 +1120,15 @@ async fn run_scenario(
                     );
                 }
                 // The microgrid whose journal --wait polls and
-                // reports.
+                // reports. One read of its journal makes an
+                // unregistered --microgrid-id fail before the start.
                 let mg = if wait {
-                    Some(resolve_microgrid_id(&http, ui_addr, microgrid_id).await?)
+                    let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
+                    get_json(&http, format!("{ui_addr}/api/mg/{mg}/scenario")).await?;
+                    if assert {
+                        check_assert_target(&http, ui_addr, mg).await?;
+                    }
+                    Some(mg)
                 } else {
                     None
                 };
@@ -1224,6 +1273,9 @@ async fn run_scenario(
         }
         ScenarioCmd::Report { assert } => {
             let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
+            if assert {
+                check_assert_target(&http, ui_addr, mg).await?;
+            }
             fetch_print_assert_report(&http, ui_addr, mg, json, assert).await?;
         }
         ScenarioCmd::Events { since, limit } => {
@@ -1961,6 +2013,32 @@ mod tests {
             pick_grpc_addr(&list, Some(9))
                 .unwrap_err()
                 .contains("microgrid 9")
+        );
+    }
+
+    #[test]
+    fn assert_target_accepts_only_the_lowest_microgrid() {
+        let list = serde_json::json!([{"id": 7}, {"id": 3}]);
+        assert_eq!(assert_target(&list, 3), Ok(()));
+        assert_eq!(
+            assert_target(&list, 7).unwrap_err(),
+            "scenario checks land on microgrid 3, the lowest registered one; \
+             --assert on microgrid 7 would check nothing \
+             (drop --microgrid-id or pass 3)"
+        );
+        assert_eq!(assert_target(&serde_json::json!([]), 7), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn resolve_microgrid_id_names_an_unreachable_ui_server() {
+        // Nothing listens on port 1: the request fails to connect.
+        let err = resolve_microgrid_id(&test_client(), "http://127.0.0.1:1", None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with("cannot reach the UI server at http://127.0.0.1:1"),
+            "{err}"
         );
     }
 
