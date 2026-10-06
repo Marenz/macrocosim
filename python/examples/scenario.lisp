@@ -13,4 +13,4 @@
  :description "The main meter should hold ~5 kW."
  :schedule    'relative
  :length      "3s"
- :expect (list (check "1s" :component 2 :metric 'active-power :approx 5000.0 :tol 500.0)))
+ :expect (list (check "1s" :component-id 2 :metric 'active-power :approx 5000.0 :tol 500.0)))

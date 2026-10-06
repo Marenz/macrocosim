@@ -54,7 +54,7 @@ class MicrogridEndpoint:
 
     id: int
     name: str
-    grpc: str  # "host:port" of the Microgrid gRPC API
+    grpc_addr: str  # "host:port" of the Microgrid gRPC API
 
 
 class Site:
@@ -90,7 +90,7 @@ class Site:
     @property
     def grpc(self) -> str:
         """``host:port`` of the first (default) microgrid's gRPC API."""
-        return self.microgrids[self._resolve_mg(None)].grpc
+        return self.microgrids[self._resolve_microgrid_id(None)].grpc_addr
 
     @property
     def grpc_url(self) -> str:
@@ -101,15 +101,15 @@ class Site:
         """
         return f"grpc://{self.grpc}"
 
-    def microgrid_grpc_url(self, mg_id: int) -> str:
+    def microgrid_grpc_url(self, microgrid_id: int) -> str:
         """A specific microgrid's gRPC API as a ``grpc://host:port`` URL."""
-        return f"grpc://{self.microgrids[mg_id].grpc}"
+        return f"grpc://{self.microgrids[microgrid_id].grpc_addr}"
 
-    def _resolve_mg(self, mg_id: int | None) -> int:
-        """The microgrid a per-microgrid call acts on: ``mg_id``,
+    def _resolve_microgrid_id(self, microgrid_id: int | None) -> int:
+        """The microgrid a per-microgrid call acts on: ``microgrid_id``,
         else the lowest id in :attr:`microgrids`."""
-        if mg_id is not None:
-            return mg_id
+        if microgrid_id is not None:
+            return microgrid_id
         if not self.microgrids:
             raise RuntimeError(
                 "this Site has no microgrid endpoints; launch() discovers them, "
@@ -117,14 +117,14 @@ class Site:
             )
         return min(self.microgrids)
 
-    def grpc_client(self, mg_id: int | None = None) -> GrpcClient:
+    def grpc_client(self, microgrid_id: int | None = None) -> GrpcClient:
         """The gRPC client for a microgrid, connected on first use.
 
         Requires the ``grpc`` extra (``frequenz-client-microgrid``). One
         cached connection per microgrid — the same client the app under
         test would open against macrocosim.
         """
-        mg = self._resolve_mg(mg_id)
+        mg = self._resolve_microgrid_id(microgrid_id)
         with self._grpc_lock:
             client = self._grpc_clients.get(mg)
             if client is None:
@@ -136,25 +136,29 @@ class Site:
 
     # --- reads: component-level (gRPC — what the app under test sees) ------
 
-    def components(self, mg_id: int | None = None) -> list[ComponentInfo]:
+    def components(self, microgrid_id: int | None = None) -> list[ComponentInfo]:
         """List the microgrid's components (id, category, name)."""
-        return self.grpc_client(mg_id).components()
+        return self.grpc_client(microgrid_id).components()
 
-    def active_power(self, component_id: int, mg_id: int | None = None) -> Power | None:
+    def active_power(
+        self, component_id: int, microgrid_id: int | None = None
+    ) -> Power | None:
         """A component's active power — one sample off its gRPC stream."""
-        watts = self.grpc_client(mg_id).active_power(component_id)
+        watts = self.grpc_client(microgrid_id).active_power(component_id)
         return None if watts is None else Power.from_watts(watts)
 
     def reactive_power(
-        self, component_id: int, mg_id: int | None = None
+        self, component_id: int, microgrid_id: int | None = None
     ) -> ReactivePower | None:
         """A component's reactive power — one sample off its gRPC stream."""
-        vars_ = self.grpc_client(mg_id).reactive_power(component_id)
+        vars_ = self.grpc_client(microgrid_id).reactive_power(component_id)
         return None if vars_ is None else ReactivePower.from_volt_amperes_reactive(vars_)
 
-    def soc(self, component_id: int, mg_id: int | None = None) -> Percentage | None:
+    def soc(
+        self, component_id: int, microgrid_id: int | None = None
+    ) -> Percentage | None:
         """A battery's state of charge — one sample off its gRPC stream."""
-        pct = self.grpc_client(mg_id).soc(component_id)
+        pct = self.grpc_client(microgrid_id).soc(component_id)
         return None if pct is None else Percentage.from_percent(pct)
 
     # --- fluent runtime mutation ------------------------------------------
@@ -173,14 +177,14 @@ class Site:
         return int(target)
 
     def component(
-        self, target: Component | int, mg_id: int | None = None
+        self, target: Component | int, microgrid_id: int | None = None
     ) -> ComponentHandle:
         """A handle onto one component (``site[id]`` is the same): ``command`` /
         ``status`` / ``drive``, reads (``active_power`` / ``soc``), and
         ``expect`` (assertions)."""
         from .handles import ComponentHandle
 
-        return ComponentHandle(self, self._component_id_of(target), mg_id)
+        return ComponentHandle(self, self._component_id_of(target), microgrid_id)
 
     def __getitem__(self, target: Component | int) -> ComponentHandle:
         return self.component(target)
@@ -193,12 +197,12 @@ class Site:
 
         return MicrogridExpect(self, None)
 
-    def microgrid(self, mg_id: int) -> MicrogridHandle:
+    def microgrid(self, microgrid_id: int) -> MicrogridHandle:
         """A handle onto one microgrid (for multi-microgrid setups): ``at`` its
         components, ``expect`` its aggregates, read its formulas."""
         from .handles import MicrogridHandle
 
-        return MicrogridHandle(self, mg_id)
+        return MicrogridHandle(self, microgrid_id)
 
     # --- writes: setpoints + bounds (gRPC — exercises the real gateway) ---
 
@@ -208,12 +212,12 @@ class Site:
         power: Power,
         *,
         lifetime: timedelta | None = None,
-        mg_id: int | None = None,
+        microgrid_id: int | None = None,
     ) -> None:
         """Command a component's active-power setpoint; errors if the value is
         outside the live envelope, exactly as production does."""
         lifetime_s = lifetime.total_seconds() if lifetime is not None else None
-        self.grpc_client(mg_id).set_active_power(
+        self.grpc_client(microgrid_id).set_active_power(
             component_id, power.as_watts(), lifetime_s=lifetime_s
         )
 
@@ -222,80 +226,80 @@ class Site:
         component_id: int,
         lower: Power,
         upper: Power,
-        mg_id: int | None = None,
+        microgrid_id: int | None = None,
     ) -> None:
         """Narrow a component's effective active-power bounds (TTL-limited)."""
-        self.grpc_client(mg_id).augment_active_power_bounds(
+        self.grpc_client(microgrid_id).augment_active_power_bounds(
             component_id, lower.as_watts(), upper.as_watts()
         )
 
     # --- reads: microgrid-level formula aggregates (HTTP) -----------------
 
-    def latest(self, mg_id: int | None = None) -> dict[str, Any]:
+    def latest(self, microgrid_id: int | None = None) -> dict[str, Any]:
         """Latest sample per formula/component stream, keyed by name."""
-        mg = self._resolve_mg(mg_id)
+        mg = self._resolve_microgrid_id(microgrid_id)
         return self._http.get_json(f"/api/mg/{mg}/metrics/latest")
 
-    def formula(self, name: str, mg_id: int | None = None) -> float | None:
+    def formula(self, name: str, microgrid_id: int | None = None) -> float | None:
         """Raw value of one formula stream (e.g. ``"grid_power"``), or None."""
-        snap = self.latest(mg_id).get(name)
+        snap = self.latest(microgrid_id).get(name)
         return None if snap is None else snap.get("value")
 
-    def _power_formula(self, name: str, mg_id: int | None) -> Power | None:
-        value = self.formula(name, mg_id)
+    def _power_formula(self, name: str, microgrid_id: int | None) -> Power | None:
+        value = self.formula(name, microgrid_id)
         return None if value is None else Power.from_watts(value)
 
-    def grid_power(self, mg_id: int | None = None) -> Power | None:
-        return self._power_formula("grid_power", mg_id)
+    def grid_power(self, microgrid_id: int | None = None) -> Power | None:
+        return self._power_formula("grid_power", microgrid_id)
 
-    def pv_power(self, mg_id: int | None = None) -> Power | None:
-        return self._power_formula("pv_power", mg_id)
+    def pv_power(self, microgrid_id: int | None = None) -> Power | None:
+        return self._power_formula("pv_power", microgrid_id)
 
-    def consumer_power(self, mg_id: int | None = None) -> Power | None:
-        return self._power_formula("consumer_power", mg_id)
+    def consumer_power(self, microgrid_id: int | None = None) -> Power | None:
+        return self._power_formula("consumer_power", microgrid_id)
 
-    def battery_power(self, mg_id: int | None = None) -> Power | None:
-        return self._power_formula("battery_pool_power", mg_id)
+    def battery_power(self, microgrid_id: int | None = None) -> Power | None:
+        return self._power_formula("battery_pool_power", microgrid_id)
 
     # --- reads: cumulative energy (integrated server-side from the power
     # aggregates; signed like the power, so net across the bus) ------------
 
-    def _energy_formula(self, name: str, mg_id: int | None) -> Energy | None:
-        value = self.formula(name, mg_id)
+    def _energy_formula(self, name: str, microgrid_id: int | None) -> Energy | None:
+        value = self.formula(name, microgrid_id)
         return None if value is None else Energy.from_watt_hours(value)
 
-    def grid_energy(self, mg_id: int | None = None) -> Energy | None:
+    def grid_energy(self, microgrid_id: int | None = None) -> Energy | None:
         """Cumulative net grid energy for the current run (import positive).
 
         A config hot-reload resets the site and starts a new run, so the
         total restarts at zero there — not only at launch.
         """
-        return self._energy_formula("grid_energy", mg_id)
+        return self._energy_formula("grid_energy", microgrid_id)
 
-    def consumer_energy(self, mg_id: int | None = None) -> Energy | None:
+    def consumer_energy(self, microgrid_id: int | None = None) -> Energy | None:
         """Cumulative consumer (load) energy for the current run."""
-        return self._energy_formula("consumer_energy", mg_id)
+        return self._energy_formula("consumer_energy", microgrid_id)
 
-    def pv_energy(self, mg_id: int | None = None) -> Energy | None:
+    def pv_energy(self, microgrid_id: int | None = None) -> Energy | None:
         """Cumulative PV energy for the current run (production negative)."""
-        return self._energy_formula("pv_energy", mg_id)
+        return self._energy_formula("pv_energy", microgrid_id)
 
-    def battery_energy(self, mg_id: int | None = None) -> Energy | None:
+    def battery_energy(self, microgrid_id: int | None = None) -> Energy | None:
         """Cumulative net battery-pool energy for the current run (discharge
         negative)."""
-        return self._energy_formula("battery_pool_energy", mg_id)
+        return self._energy_formula("battery_pool_energy", microgrid_id)
 
-    def eval(self, expr: str, mg_id: int | None = None) -> EvalResult:
+    def eval(self, expr: str, microgrid_id: int | None = None) -> EvalResult:
         """Evaluate a raw Lisp form on the running interpreter."""
-        return self._http.eval(expr, mg_id)
+        return self._http.eval(expr, microgrid_id)
 
-    def _eval_ok(self, expr: str, mg_id: int | None = None) -> EvalResult:
+    def _eval_ok(self, expr: str, microgrid_id: int | None = None) -> EvalResult:
         """Eval and raise :class:`EvalRejected` on an interpreter rejection.
 
         The one choke point for programmatic eval — rejections can never
         silently no-op.
         """
-        result = self.eval(expr, mg_id)
+        result = self.eval(expr, microgrid_id)
         if not result.get("ok", True):
             raise EvalRejected(f"eval of {expr!r} failed: {result.get('error')}")
         return result
@@ -314,7 +318,7 @@ class Site:
         capacity: Energy | None = None,
         taper_start: float | None = None,
         taper_floor: float | None = None,
-        mg_id: int | None = None,
+        microgrid_id: int | None = None,
     ) -> None:
         """Plug a preset car into charger ``component_id``."""
         self._eval_ok(
@@ -329,18 +333,22 @@ class Site:
                 taper_start=taper_start,
                 taper_floor=taper_floor,
             ),
-            self._resolve_mg(mg_id),
+            self._resolve_microgrid_id(microgrid_id),
         )
 
-    def unplug_ev(self, component_id: int, mg_id: int | None = None) -> bool:
+    def unplug_ev(self, component_id: int, microgrid_id: int | None = None) -> bool:
         """Unplug the car; False when the charger was already empty."""
-        result = self._eval_ok(f"(unplug-ev {component_id})", self._resolve_mg(mg_id))
+        result = self._eval_ok(
+            f"(unplug-ev {component_id})", self._resolve_microgrid_id(microgrid_id)
+        )
         return result.get("value") == "t"
 
-    def ev_info(self, component_id: int, mg_id: int | None = None) -> dict[str, Any]:
+    def ev_info(
+        self, component_id: int, microgrid_id: int | None = None
+    ) -> dict[str, Any]:
         """The car plugged into ``component_id``: ``{"plugged": False}`` or the
         fields, plus ``presets`` (the catalog) either way."""
-        mg = self._resolve_mg(mg_id)
+        mg = self._resolve_microgrid_id(microgrid_id)
         return self._http.get_json(f"/api/mg/{mg}/component/{component_id}/ev")
 
     def control_component(
@@ -348,13 +356,15 @@ class Site:
         component_id: int,
         action: str,
         payload: dict[str, Any],
-        mg_id: int | None = None,
+        microgrid_id: int | None = None,
     ) -> None:
         """POST a typed control request (``status`` / ``drive``) for a component.
 
         Rejections (unknown id, bad value) raise ``ControlRejected``.
         """
-        path = control_path(component_id, action, self._resolve_mg(mg_id))
+        path = control_path(
+            component_id, action, self._resolve_microgrid_id(microgrid_id)
+        )
         self._http.control(path, payload)
 
     def scenario(self, name: str) -> ScenarioRun:
@@ -426,7 +436,7 @@ def _site_from_endpoints(
 ) -> Site:
     microgrids = {
         int(m["id"]): MicrogridEndpoint(
-            id=int(m["id"]), name=m["name"], grpc=m["grpc_addr"]
+            id=int(m["id"]), name=m["name"], grpc_addr=m["grpc_addr"]
         )
         for m in endpoints.get("microgrids", [])
     }

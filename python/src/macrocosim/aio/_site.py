@@ -107,22 +107,22 @@ class Site:
     @property
     def grpc(self) -> str:
         """``host:port`` of the first (default) microgrid's gRPC API."""
-        return self.microgrids[self._resolve_mg(None)].grpc
+        return self.microgrids[self._resolve_microgrid_id(None)].grpc_addr
 
     @property
     def grpc_url(self) -> str:
         """The default microgrid's gRPC API as a ``grpc://host:port`` URL."""
         return f"grpc://{self.grpc}"
 
-    def microgrid_grpc_url(self, mg_id: int) -> str:
+    def microgrid_grpc_url(self, microgrid_id: int) -> str:
         """A specific microgrid's gRPC API as a ``grpc://host:port`` URL."""
-        return f"grpc://{self.microgrids[mg_id].grpc}"
+        return f"grpc://{self.microgrids[microgrid_id].grpc_addr}"
 
-    def _resolve_mg(self, mg_id: int | None) -> int:
-        """The microgrid a per-microgrid call acts on: ``mg_id``,
+    def _resolve_microgrid_id(self, microgrid_id: int | None) -> int:
+        """The microgrid a per-microgrid call acts on: ``microgrid_id``,
         else the lowest id in :attr:`microgrids`."""
-        if mg_id is not None:
-            return mg_id
+        if microgrid_id is not None:
+            return microgrid_id
         if not self.microgrids:
             raise RuntimeError(
                 "this Site has no microgrid endpoints; launch() discovers them, "
@@ -130,8 +130,8 @@ class Site:
             )
         return min(self.microgrids)
 
-    def _grpc(self, mg_id: int | None = None) -> AsyncGrpcClient:
-        mg = self._resolve_mg(mg_id)
+    def _grpc(self, microgrid_id: int | None = None) -> AsyncGrpcClient:
+        mg = self._resolve_microgrid_id(microgrid_id)
         client = self._grpc_clients.get(mg)
         if client is None:
             client = AsyncGrpcClient(self.microgrid_grpc_url(mg))
@@ -140,59 +140,61 @@ class Site:
 
     # --- reads: component-level (gRPC) ---------------------------------------
 
-    async def components(self, mg_id: int | None = None) -> list[ComponentInfo]:
+    async def components(self, microgrid_id: int | None = None) -> list[ComponentInfo]:
         """List the microgrid's components (id, category, name)."""
-        return await self._grpc(mg_id).components()
+        return await self._grpc(microgrid_id).components()
 
     async def active_power(
-        self, component_id: int, mg_id: int | None = None
+        self, component_id: int, microgrid_id: int | None = None
     ) -> Power | None:
         """A component's active power — one sample off its gRPC stream."""
-        watts = await self._grpc(mg_id).active_power(component_id)
+        watts = await self._grpc(microgrid_id).active_power(component_id)
         return None if watts is None else Power.from_watts(watts)
 
     async def reactive_power(
-        self, component_id: int, mg_id: int | None = None
+        self, component_id: int, microgrid_id: int | None = None
     ) -> ReactivePower | None:
         """A component's reactive power — one sample off its gRPC stream."""
-        vars_ = await self._grpc(mg_id).reactive_power(component_id)
+        vars_ = await self._grpc(microgrid_id).reactive_power(component_id)
         return None if vars_ is None else ReactivePower.from_volt_amperes_reactive(vars_)
 
-    async def soc(self, component_id: int, mg_id: int | None = None) -> Percentage | None:
+    async def soc(
+        self, component_id: int, microgrid_id: int | None = None
+    ) -> Percentage | None:
         """A battery's state of charge — one sample off its gRPC stream."""
-        pct = await self._grpc(mg_id).soc(component_id)
+        pct = await self._grpc(microgrid_id).soc(component_id)
         return None if pct is None else Percentage.from_percent(pct)
 
     # --- reads: microgrid-level formula aggregates (HTTP) --------------------
 
-    async def latest(self, mg_id: int | None = None) -> dict[str, Any]:
+    async def latest(self, microgrid_id: int | None = None) -> dict[str, Any]:
         """Latest sample per formula/component stream, keyed by name."""
-        mg = self._resolve_mg(mg_id)
+        mg = self._resolve_microgrid_id(microgrid_id)
         return await self._http.get_json(f"/api/mg/{mg}/metrics/latest")
 
-    async def formula(self, name: str, mg_id: int | None = None) -> float | None:
+    async def formula(self, name: str, microgrid_id: int | None = None) -> float | None:
         """Raw value of one formula stream (e.g. ``"grid_power"``), or None."""
-        snap = (await self.latest(mg_id)).get(name)
+        snap = (await self.latest(microgrid_id)).get(name)
         return None if snap is None else snap.get("value")
 
     async def metric_value(
-        self, spec: MetricSpec[Q], mg_id: int | None = None
+        self, spec: MetricSpec[Q], microgrid_id: int | None = None
     ) -> Q | None:
         """Read one *aggregate* metric from the catalog, typed by its spec."""
-        value = await self.formula(_STREAM_FOR.get(spec.name, spec.name), mg_id)
+        value = await self.formula(_STREAM_FOR.get(spec.name, spec.name), microgrid_id)
         if value is None:
             return None
         return cast("Q", _FROM_WIRE[spec.quantity](value))
 
     # --- aggregate signals (flows; each *_energy integrates its *_power) ----
 
-    def microgrid(self, mg_id: int | None = None) -> MicrogridSignals:
+    def microgrid(self, microgrid_id: int | None = None) -> MicrogridSignals:
         """The aggregate signals of one microgrid.
 
         ``None`` (the default) is the first microgrid — the same signals
         the properties below expose directly.
         """
-        return MicrogridSignals(self, mg_id)
+        return MicrogridSignals(self, microgrid_id)
 
     @property
     def grid_power(self) -> Signal[Power]:
@@ -239,20 +241,20 @@ class Site:
     # --- component handles ----------------------------------------------------
 
     def component(
-        self, target: Component | int, mg_id: int | None = None
+        self, target: Component | int, microgrid_id: int | None = None
     ) -> ComponentHandle:
         """A handle onto one component (``site[id]`` is the same).
 
         A builder bound to a non-default microgrid at launch carries
-        its microgrid into the handle; an explicit ``mg_id`` wins.
+        its microgrid into the handle; an explicit ``microgrid_id`` wins.
         """
         from ..build import Component
 
         if isinstance(target, Component):
-            if mg_id is None:
-                mg_id = target._mg
-            return ComponentHandle(self, target.component_id, mg_id)
-        return ComponentHandle(self, int(target), mg_id)
+            if microgrid_id is None:
+                microgrid_id = target._microgrid_id
+            return ComponentHandle(self, target.id, microgrid_id)
+        return ComponentHandle(self, int(target), microgrid_id)
 
     def __getitem__(self, target: Component | int) -> ComponentHandle:
         return self.component(target)
@@ -265,11 +267,11 @@ class Site:
         power: Power,
         *,
         lifetime: timedelta | None = None,
-        mg_id: int | None = None,
+        microgrid_id: int | None = None,
     ) -> None:
         """Command an active-power setpoint; rejections raise, as production."""
         lifetime_s = lifetime.total_seconds() if lifetime is not None else None
-        await self._grpc(mg_id).set_active_power(
+        await self._grpc(microgrid_id).set_active_power(
             component_id, power.as_watts(), lifetime_s=lifetime_s
         )
 
@@ -278,26 +280,26 @@ class Site:
         component_id: int,
         lower: Power,
         upper: Power,
-        mg_id: int | None = None,
+        microgrid_id: int | None = None,
     ) -> None:
         """Narrow a component's effective active-power bounds (TTL-limited)."""
-        await self._grpc(mg_id).augment_active_power_bounds(
+        await self._grpc(microgrid_id).augment_active_power_bounds(
             component_id, lower.as_watts(), upper.as_watts()
         )
 
     # --- eval (the escape hatch) -----------------------------------------------
 
-    async def eval(self, expr: str, mg_id: int | None = None) -> EvalResult:
+    async def eval(self, expr: str, microgrid_id: int | None = None) -> EvalResult:
         """Evaluate a raw Lisp form on the running interpreter."""
-        return await self._http.eval(expr, mg_id)
+        return await self._http.eval(expr, microgrid_id)
 
-    async def _eval_ok(self, expr: str, mg_id: int | None = None) -> EvalResult:
+    async def _eval_ok(self, expr: str, microgrid_id: int | None = None) -> EvalResult:
         """Eval and raise :class:`EvalRejected` on an interpreter rejection.
 
         The one choke point for programmatic eval — rejections can never
         silently no-op.
         """
-        result = await self.eval(expr, mg_id)
+        result = await self.eval(expr, microgrid_id)
         if not result.get("ok", True):
             raise EvalRejected(f"eval of {expr!r} failed: {result.get('error')}")
         return result
@@ -316,7 +318,7 @@ class Site:
         capacity: Energy | None = None,
         taper_start: float | None = None,
         taper_floor: float | None = None,
-        mg_id: int | None = None,
+        microgrid_id: int | None = None,
     ) -> None:
         """Plug a preset car into charger ``component_id``."""
         await self._eval_ok(
@@ -331,21 +333,21 @@ class Site:
                 taper_start=taper_start,
                 taper_floor=taper_floor,
             ),
-            self._resolve_mg(mg_id),
+            self._resolve_microgrid_id(microgrid_id),
         )
 
-    async def unplug_ev(self, component_id: int, mg_id: int | None = None) -> bool:
+    async def unplug_ev(self, component_id: int, microgrid_id: int | None = None) -> bool:
         """Unplug the car; False when the charger was already empty."""
-        mg = self._resolve_mg(mg_id)
+        mg = self._resolve_microgrid_id(microgrid_id)
         result = await self._eval_ok(f"(unplug-ev {component_id})", mg)
         return result.get("value") == "t"
 
     async def ev_info(
-        self, component_id: int, mg_id: int | None = None
+        self, component_id: int, microgrid_id: int | None = None
     ) -> dict[str, Any]:
         """The car plugged into ``component_id``: ``{"plugged": False}`` or its
         fields, plus ``presets`` (the catalog) either way."""
-        mg = self._resolve_mg(mg_id)
+        mg = self._resolve_microgrid_id(microgrid_id)
         return await self._http.get_json(f"/api/mg/{mg}/component/{component_id}/ev")
 
     async def control_component(
@@ -353,13 +355,15 @@ class Site:
         component_id: int,
         action: str,
         payload: dict[str, Any],
-        mg_id: int | None = None,
+        microgrid_id: int | None = None,
     ) -> None:
         """POST a typed control request (``status`` / ``drive``) for a component.
 
         Rejections (unknown id, bad value) raise ``ControlRejected``.
         """
-        path = control_path(component_id, action, self._resolve_mg(mg_id))
+        path = control_path(
+            component_id, action, self._resolve_microgrid_id(microgrid_id)
+        )
         await self._http.control(path, payload)
 
     # --- scenarios --------------------------------------------------------------
@@ -424,16 +428,16 @@ class Site:
 class MicrogridSignals:
     """One microgrid's aggregate signals (flows over the whole graph)."""
 
-    def __init__(self, site: Site, mg_id: int | None) -> None:
+    def __init__(self, site: Site, microgrid_id: int | None) -> None:
         self._site = site
-        self._mg = mg_id
+        self._microgrid_id = microgrid_id
 
     def _signal(self, spec: MetricSpec[Q]) -> Signal[Q]:
-        read = functools.partial(self._site.metric_value, spec, self._mg)
+        read = functools.partial(self._site.metric_value, spec, self._microgrid_id)
         return Signal(spec, read, spec.name)
 
     def _cumulative(self, spec: MetricSpec[Q]) -> CumulativeSignal[Q]:
-        read = functools.partial(self._site.metric_value, spec, self._mg)
+        read = functools.partial(self._site.metric_value, spec, self._microgrid_id)
         return CumulativeSignal(spec, read, spec.name)
 
     @property
@@ -482,10 +486,12 @@ class MicrogridSignals:
 class ComponentHandle:
     """A component in a running site, acted on by intent (async)."""
 
-    def __init__(self, site: Site, component_id: int, mg_id: int | None = None) -> None:
+    def __init__(
+        self, site: Site, component_id: int, microgrid_id: int | None = None
+    ) -> None:
         self._site = site
         self._id = component_id
-        self._mg = mg_id
+        self._microgrid_id = microgrid_id
 
     async def command(
         self,
@@ -497,11 +503,11 @@ class ComponentHandle:
         """Issue a control command as the app would — through the gRPC gateway."""
         if active_power is not None:
             await self._site.set_active_power(
-                self._id, active_power, lifetime=lifetime, mg_id=self._mg
+                self._id, active_power, lifetime=lifetime, microgrid_id=self._microgrid_id
             )
         if bounds is not None:
             await self._site.augment_bounds(
-                self._id, bounds[0], bounds[1], mg_id=self._mg
+                self._id, bounds[0], bounds[1], microgrid_id=self._microgrid_id
             )
 
     async def status(
@@ -524,7 +530,9 @@ class ComponentHandle:
         if telemetry_mode is not None:
             payload["telemetry_mode"] = telemetry_mode.value
         if payload:
-            await self._site.control_component(self._id, "status", payload, self._mg)
+            await self._site.control_component(
+                self._id, "status", payload, self._microgrid_id
+            )
 
     async def drive(
         self,
@@ -542,14 +550,16 @@ class ComponentHandle:
         if isinstance(power, RawLisp):
             await self._site._eval_ok(
                 f"(set-meter-power {self._id} {to_lisp_atom(power)})",
-                self._site._resolve_mg(self._mg),
+                self._site._resolve_microgrid_id(self._microgrid_id),
             )
         elif power is not None:
             payload["power_w"] = power.as_watts()
         if sunlight is not None:
             payload["sunlight_pct"] = sunlight.as_percent()
         if payload:
-            await self._site.control_component(self._id, "drive", payload, self._mg)
+            await self._site.control_component(
+                self._id, "drive", payload, self._microgrid_id
+            )
 
     @property
     def power(self) -> Signal[Power]:
@@ -559,7 +569,7 @@ class ComponentHandle:
         ``power`` is also settable); this raw-id handle cannot know the
         category, so its signals only observe.
         """
-        site, cid, mg = self._site, self._id, self._mg
+        site, cid, mg = self._site, self._id, self._microgrid_id
 
         async def read() -> Power | None:
             return await site.active_power(cid, mg)
@@ -569,7 +579,7 @@ class ComponentHandle:
     @property
     def soc(self) -> Signal[Percentage]:
         """The battery's state of charge (gRPC) — read/expect only."""
-        site, cid, mg = self._site, self._id, self._mg
+        site, cid, mg = self._site, self._id, self._microgrid_id
 
         async def read() -> Percentage | None:
             return await site.soc(cid, mg)
@@ -584,7 +594,7 @@ class ScenarioRun:
         self._site = site
         self._name = name
         # The microgrid run(wait=True) picked; None until one did.
-        self._mg: int | None = None
+        self._microgrid_id: int | None = None
 
     async def _length_s(self) -> float | None:
         for scenario in await self._site._http.get_json("/api/scenarios"):
@@ -602,7 +612,11 @@ class ScenarioRun:
 
     def _run_mg(self) -> int:
         """The microgrid run() picked, else the lowest one."""
-        return self._mg if self._mg is not None else self._site._resolve_mg(None)
+        return (
+            self._microgrid_id
+            if self._microgrid_id is not None
+            else self._site._resolve_microgrid_id(None)
+        )
 
     async def run(
         self,
@@ -622,7 +636,7 @@ class ScenarioRun:
         # microgrid's journal makes a microgrid the server does not
         # have fail here.
         length = await self._wait_length(until)
-        mg = self._mg = self._site._resolve_mg(None)
+        mg = self._microgrid_id = self._site._resolve_microgrid_id(None)
         await self._site._http.get_json(scenario_path(mg))
         await self._site._http.post(start)
         return await self._wait_for(length, poll, mg)
@@ -730,16 +744,16 @@ def _components_of(config: Any) -> list[tuple[Any, int | None]]:
     count(config)
     out: list[tuple[Any, int | None]] = []
 
-    def walk(node: Any, mg_id: int | None) -> None:
+    def walk(node: Any, microgrid_id: int | None) -> None:
         if isinstance(node, Component):
-            out.append((node, mg_id))
+            out.append((node, microgrid_id))
             for child in node.successors:
-                walk(child, mg_id)
+                walk(child, microgrid_id)
         elif isinstance(node, Microgrid):
             walk(node.topology, node.id if microgrids > 1 else None)
         elif isinstance(node, (list, tuple)):
             for item in node:
-                walk(item, mg_id)
+                walk(item, microgrid_id)
 
     walk(config, None)
     return out
@@ -812,7 +826,7 @@ async def launch(
             )
         microgrids = {
             int(m["id"]): MicrogridEndpoint(
-                id=int(m["id"]), name=m["name"], grpc=m["grpc_addr"]
+                id=int(m["id"]), name=m["name"], grpc_addr=m["grpc_addr"]
             )
             for m in endpoints.get("microgrids", [])
         }
@@ -829,8 +843,8 @@ async def launch(
         components = _components_of(config)
         bound: list[Any] = []
         try:
-            for component, mg_id in components:
-                component._bind(site, mg_id)
+            for component, microgrid_id in components:
+                component._bind(site, microgrid_id)
                 bound.append(component)
             yield site
         finally:

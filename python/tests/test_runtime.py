@@ -15,8 +15,8 @@ def _site() -> mc.Site:
     return mc.connect(
         ui="127.0.0.1:8080",
         microgrids={
-            1: mc.MicrogridEndpoint(id=1, name="a", grpc="10.0.0.1:61000"),
-            2: mc.MicrogridEndpoint(id=2, name="b", grpc="10.0.0.2:61000"),
+            1: mc.MicrogridEndpoint(id=1, name="a", grpc_addr="10.0.0.1:61000"),
+            2: mc.MicrogridEndpoint(id=2, name="b", grpc_addr="10.0.0.2:61000"),
         },
     )
 
@@ -48,12 +48,23 @@ def test_resolve_mg_defaults_to_the_lowest_id() -> None:
     site = mc.connect(
         ui="127.0.0.1:8080",
         microgrids={
-            7: mc.MicrogridEndpoint(id=7, name="a", grpc="10.0.0.7:61000"),
-            3: mc.MicrogridEndpoint(id=3, name="b", grpc="10.0.0.3:61000"),
+            7: mc.MicrogridEndpoint(id=7, name="a", grpc_addr="10.0.0.7:61000"),
+            3: mc.MicrogridEndpoint(id=3, name="b", grpc_addr="10.0.0.3:61000"),
         },
     )
-    assert site._resolve_mg(None) == 3
-    assert site._resolve_mg(7) == 7
+    assert site._resolve_microgrid_id(None) == 3
+    assert site._resolve_microgrid_id(7) == 7
+
+
+def test_microgrid_id_is_the_microgrid_argument() -> None:
+    site = _site()
+    site._http.control = lambda path, payload: {}  # type: ignore[method-assign]
+    site.control_component(6, "drive", {"power_w": 1.0}, microgrid_id=2)
+    old = {"mg" + "_id": 1}
+    with pytest.raises(TypeError):
+        site.components(**old)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        site.control_component(6, "drive", {}, **old)  # type: ignore[arg-type]
 
 
 def test_control_routes_to_the_default_microgrid() -> None:
@@ -66,7 +77,7 @@ def test_control_routes_to_the_default_microgrid() -> None:
 
     site._http.control = fake_control  # type: ignore[method-assign]
     site.control_component(6, "drive", {"power_w": 1.0})
-    site.control_component(6, "status", {"health": "ok"}, mg_id=2)
+    site.control_component(6, "status", {"health": "ok"}, microgrid_id=2)
     assert calls == [
         ("/api/mg/1/component/6/drive", {"power_w": 1.0}),
         ("/api/mg/2/component/6/status", {"health": "ok"}),
@@ -79,7 +90,7 @@ class _EnergyStub:
     def __init__(self, wh: float) -> None:
         self._e = Energy.from_watt_hours(wh)
 
-    def grid_energy(self, _mg: int | None = None) -> Energy:
+    def grid_energy(self, _microgrid_id: int | None = None) -> Energy:
         return self._e
 
 
@@ -103,16 +114,16 @@ class _EnergySite:
     def __init__(self, **wh: float) -> None:
         self._wh = {k: Energy.from_watt_hours(v) for k, v in wh.items()}
 
-    def grid_energy(self, _mg: int | None = None) -> Energy | None:
+    def grid_energy(self, _microgrid_id: int | None = None) -> Energy | None:
         return self._wh.get("grid")
 
-    def consumer_energy(self, _mg: int | None = None) -> Energy | None:
+    def consumer_energy(self, _microgrid_id: int | None = None) -> Energy | None:
         return self._wh.get("consumer")
 
-    def pv_energy(self, _mg: int | None = None) -> Energy | None:
+    def pv_energy(self, _microgrid_id: int | None = None) -> Energy | None:
         return self._wh.get("pv")
 
-    def battery_energy(self, _mg: int | None = None) -> Energy | None:
+    def battery_energy(self, _microgrid_id: int | None = None) -> Energy | None:
         return self._wh.get("battery")
 
 

@@ -139,7 +139,7 @@ class Component:
     _site: Any = field(default=None, repr=False, compare=False)
     # The owning microgrid's id (None = the site's default microgrid),
     # recorded at bind time so signals route to the right microgrid.
-    _mg: Any = field(default=None, repr=False, compare=False)
+    _microgrid_id: Any = field(default=None, repr=False, compare=False)
 
     def to_lisp(self) -> str:
         parts = [f":{key} {to_lisp_atom(val)}" for key, val in self.args.items()]
@@ -152,7 +152,7 @@ class Component:
     # --- live-handle plumbing (bound by macrocosim.aio.launch) ------------
 
     @property
-    def component_id(self) -> int:
+    def id(self) -> int:
         """The explicit ``id=`` this builder was given."""
         cid = self.args.get("id")
         if not isinstance(cid, int):
@@ -161,7 +161,7 @@ class Component:
             raise ValueError(f"{self.make}: needs an explicit id= to be referenced")
         return cid
 
-    def _bind(self, site: Any, mg_id: int | None = None) -> None:
+    def _bind(self, site: Any, microgrid_id: int | None = None) -> None:
         # No id check here: a component without an explicit id= simply
         # has no usable signals (the property raises on first use), but
         # its topology still launches.
@@ -171,11 +171,11 @@ class Component:
                 "running site; build a fresh topology per launch"
             )
         self._site = site
-        self._mg = mg_id
+        self._microgrid_id = microgrid_id
 
     def _unbind(self) -> None:
         self._site = None
-        self._mg = None
+        self._microgrid_id = None
 
     def _live(self) -> Any:
         if self._site is None:
@@ -191,13 +191,13 @@ class Component:
 
         async def set_(value: Health) -> None:
             await self._live().control_component(
-                self.component_id, "status", {"health": value.value}, self._mg
+                self.id, "status", {"health": value.value}, self._microgrid_id
             )
 
         return SettingSignal(
             set_,
             f"{self.make} {self.args.get('id')} health",
-            cue=lambda v: f"(set-component-health {self.component_id} {to_lisp_atom(v)})",
+            cue=lambda v: f"(set-component-health {self.id} {to_lisp_atom(v)})",
         )
 
 
@@ -209,11 +209,11 @@ class Meter(Component):
         """The meter's active power — read/expect the telemetry, set the load."""
 
         async def read() -> Power | None:
-            return await self._live().active_power(self.component_id, self._mg)
+            return await self._live().active_power(self.id, self._microgrid_id)
 
         async def set_(value: Power) -> None:
             await self._live().control_component(
-                self.component_id, "drive", {"power_w": value.as_watts()}, self._mg
+                self.id, "drive", {"power_w": value.as_watts()}, self._microgrid_id
             )
 
         return DrivenSignal(
@@ -221,8 +221,8 @@ class Meter(Component):
             read,
             set_,
             f"meter {self.args.get('id')} power",
-            check_ref=lambda: (self.component_id, "active-power"),
-            cue=lambda v: f"(set-meter-power {self.component_id} {to_lisp_atom(v)})",
+            check_ref=lambda: (self.id, "active-power"),
+            cue=lambda v: f"(set-meter-power {self.id} {to_lisp_atom(v)})",
         )
 
     @property
@@ -230,14 +230,14 @@ class Meter(Component):
         """The meter's reactive power — read the telemetry, set the VAr load."""
 
         async def read() -> ReactivePower | None:
-            return await self._live().reactive_power(self.component_id, self._mg)
+            return await self._live().reactive_power(self.id, self._microgrid_id)
 
         async def set_(value: ReactivePower) -> None:
             await self._live().control_component(
-                self.component_id,
+                self.id,
                 "drive",
                 {"reactive_power_var": value.as_volt_amperes_reactive()},
-                self._mg,
+                self._microgrid_id,
             )
 
         return DrivenSignal(
@@ -245,10 +245,8 @@ class Meter(Component):
             read,
             set_,
             f"meter {self.args.get('id')} reactive_power",
-            check_ref=lambda: (self.component_id, "reactive-power"),
-            cue=lambda v: (
-                f"(set-meter-reactive-power {self.component_id} {to_lisp_atom(v)})"
-            ),
+            check_ref=lambda: (self.id, "reactive-power"),
+            cue=lambda v: f"(set-meter-reactive-power {self.id} {to_lisp_atom(v)})",
         )
 
 
@@ -260,11 +258,11 @@ class Battery(Component):
         """State of charge — read/expect it, or teleport it to arrange a test."""
 
         async def read() -> Percentage | None:
-            return await self._live().soc(self.component_id, self._mg)
+            return await self._live().soc(self.id, self._microgrid_id)
 
         async def set_(value: Percentage) -> None:
             await self._live().control_component(
-                self.component_id, "drive", {"soc_pct": value.as_percent()}, self._mg
+                self.id, "drive", {"soc_pct": value.as_percent()}, self._microgrid_id
             )
 
         return DrivenSignal(
@@ -272,8 +270,8 @@ class Battery(Component):
             read,
             set_,
             f"battery {self.args.get('id')} soc",
-            check_ref=lambda: (self.component_id, "soc"),
-            cue=lambda v: f"(set-battery-soc {self.component_id} {to_lisp_atom(v)})",
+            check_ref=lambda: (self.id, "soc"),
+            cue=lambda v: f"(set-battery-soc {self.id} {to_lisp_atom(v)})",
         )
 
     @property
@@ -292,7 +290,7 @@ class Battery(Component):
             )
 
         async def read() -> Energy | None:
-            soc = await self._live().soc(self.component_id, self._mg)
+            soc = await self._live().soc(self.id, self._microgrid_id)
             if soc is None:
                 return None
             return capacity * (soc.as_percent() / 100.0)
@@ -309,13 +307,13 @@ class BatteryInverter(Component):
         """The inverter's active power (read/expect only)."""
 
         async def read() -> Power | None:
-            return await self._live().active_power(self.component_id, self._mg)
+            return await self._live().active_power(self.id, self._microgrid_id)
 
         return Signal(
             ACTIVE_POWER,
             read,
             f"battery_inverter {self.args.get('id')} power",
-            check_ref=lambda: (self.component_id, "active-power"),
+            check_ref=lambda: (self.id, "active-power"),
         )
 
 
@@ -327,13 +325,13 @@ class SolarInverter(Component):
         """The inverter's active power (read/expect only)."""
 
         async def read() -> Power | None:
-            return await self._live().active_power(self.component_id, self._mg)
+            return await self._live().active_power(self.id, self._microgrid_id)
 
         return Signal(
             ACTIVE_POWER,
             read,
             f"solar_inverter {self.args.get('id')} power",
-            check_ref=lambda: (self.component_id, "active-power"),
+            check_ref=lambda: (self.id, "active-power"),
         )
 
     @property
@@ -342,16 +340,16 @@ class SolarInverter(Component):
 
         async def set_(value: Percentage) -> None:
             await self._live().control_component(
-                self.component_id,
+                self.id,
                 "drive",
                 {"sunlight_pct": value.as_percent()},
-                self._mg,
+                self._microgrid_id,
             )
 
         return SettingSignal(
             set_,
             f"solar_inverter {self.args.get('id')} sunlight",
-            cue=lambda v: f"(set-solar-sunlight {self.component_id} {to_lisp_atom(v)})",
+            cue=lambda v: f"(set-solar-sunlight {self.id} {to_lisp_atom(v)})",
         )
 
 

@@ -144,7 +144,7 @@ await site.expect.battery_energy(approx=Energy.from_kilowatt_hours(-8),
 ```
 
 Per-component energy is a first-class metric too, assertable from Lisp and the
-scenario framework: `(check "15m" :component 2 :metric 'energy :max 15000.0)` or
+scenario framework: `(check "15m" :component-id 2 :metric 'energy :max 15000.0)` or
 `metric=mc.Metric.ENERGY` on a Python `Scenario.check`.
 
 **Mutate** — reach a component with `site[id]` (or `site.component(id)`), then

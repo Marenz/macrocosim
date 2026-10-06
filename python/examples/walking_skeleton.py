@@ -28,7 +28,7 @@ TOPOLOGY = mc.Microgrid(
 def main() -> None:
     with mc.launch(TOPOLOGY) as site:
         mg = next(iter(site.microgrids.values()))
-        print(f"launched: ui={site.ui} grpc={mg.grpc} (mg {mg.id} {mg.name!r})")
+        print(f"launched: ui={site.ui} grpc={mg.grpc_addr} (mg {mg.id} {mg.name!r})")
 
         target = Power.from_watts(7000)
         tol = Power.from_watts(700)

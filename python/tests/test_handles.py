@@ -26,28 +26,33 @@ class FakeSite:
         self.setpoints: list[tuple[int, float, float | None]] = []
         self.bounds: list[tuple[int, float, float]] = []
 
-    def eval(self, expr: str, mg_id: int | None = None) -> dict:
+    def eval(self, expr: str, microgrid_id: int | None = None) -> dict:
         self.evals.append(expr)
         return {"ok": True}
 
-    def _resolve_mg(self, mg_id: int | None) -> int:
-        return 1 if mg_id is None else mg_id
+    def _resolve_microgrid_id(self, microgrid_id: int | None) -> int:
+        return 1 if microgrid_id is None else microgrid_id
 
     def control_component(
-        self, cid: int, action: str, payload: dict[str, Any], mg_id=None
+        self, cid: int, action: str, payload: dict[str, Any], microgrid_id=None
     ) -> None:
         if self.reject_controls is not None:
             raise ControlRejected(self.reject_controls)
         self.controls.append((cid, action, payload))
 
     def set_active_power(
-        self, cid: int, power: Power, *, lifetime: timedelta | None = None, mg_id=None
+        self,
+        cid: int,
+        power: Power,
+        *,
+        lifetime: timedelta | None = None,
+        microgrid_id=None,
     ) -> None:
         secs = None if lifetime is None else lifetime.total_seconds()
         self.setpoints.append((cid, power.as_watts(), secs))
 
     def augment_bounds(
-        self, cid: int, lower: Power, upper: Power, mg_id: int | None = None
+        self, cid: int, lower: Power, upper: Power, microgrid_id: int | None = None
     ) -> None:
         self.bounds.append((cid, lower.as_watts(), upper.as_watts()))
 

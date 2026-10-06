@@ -53,8 +53,8 @@ class FakeSite:
         self._http = FakeHttp(report)
         self.microgrids = {7: object(), 3: object()}
 
-    def _resolve_mg(self, mg_id: int | None) -> int:
-        return mg_id if mg_id is not None else min(self.microgrids)
+    def _resolve_microgrid_id(self, microgrid_id: int | None) -> int:
+        return microgrid_id if microgrid_id is not None else min(self.microgrids)
 
 
 METER = mc_meter(id=2)
@@ -63,11 +63,11 @@ METER = mc_meter(id=2)
 def test_check_metric_is_the_escape_for_signal_less_metrics() -> None:
     scn = Scenario("e", length=timedelta(seconds=60)).check_metric(
         timedelta(seconds=30),
-        component=2,
+        component_id=2,
         metric=Metric.ENERGY,
         matcher=at_most(Power.from_watts(70)),
     )
-    assert '(check "30s" :component 2 :metric \'energy :max 70.0)' in scn.to_lisp()
+    assert '(check "30s" :component-id 2 :metric \'energy :max 70.0)' in scn.to_lisp()
 
 
 def test_cues_render_from_settable_signals() -> None:
@@ -93,7 +93,7 @@ def test_aggregate_signals_are_not_checkable() -> None:
 
     site = mc.aio.connect(
         ui="127.0.0.1:9",
-        microgrids={1: mc.MicrogridEndpoint(id=1, name="a", grpc="10.0.0.1:1")},
+        microgrids={1: mc.MicrogridEndpoint(id=1, name="a", grpc_addr="10.0.0.1:1")},
     )
     scn = Scenario("x", length=timedelta(seconds=1))
     with pytest.raises(ValueError, match="component signals"):
@@ -314,7 +314,7 @@ def test_scenario_authoring_emits_define_scenario() -> None:
     assert ':length "240s"' in lisp
     assert ":seed 42" in lisp
     assert (
-        '(check "1s" :component 2 :metric \'active-power :approx 5000.0 :tol 500.0)'
+        '(check "1s" :component-id 2 :metric \'active-power :approx 5000.0 :tol 500.0)'
         in lisp
     )
     assert ":drive (list (drive-meter 2 2000000.0))" in lisp

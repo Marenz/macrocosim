@@ -45,10 +45,10 @@ class AsyncHttpClient:
         resp.raise_for_status()
         return resp.json() if resp.content else {}
 
-    async def eval(self, expr: str, mg_id: int | None = None) -> EvalResult:
+    async def eval(self, expr: str, microgrid_id: int | None = None) -> EvalResult:
         """POST a Lisp form: the whole-site ``/api/eval`` without an
-        ``mg_id``, the microgrid's eval with one."""
-        path = "/api/eval" if mg_id is None else f"/api/mg/{mg_id}/eval"
+        ``microgrid_id``, the microgrid's eval with one."""
+        path = "/api/eval" if microgrid_id is None else f"/api/mg/{microgrid_id}/eval"
         return eval_result(await self._client.post(path, content=expr))
 
     async def aclose(self) -> None:

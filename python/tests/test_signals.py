@@ -77,14 +77,14 @@ class FakeAioSite:
         self.soc_pct = 42.0
 
     async def control_component(
-        self, cid: int, action: str, payload: dict[str, Any], mg_id=None
+        self, cid: int, action: str, payload: dict[str, Any], microgrid_id=None
     ) -> None:
         self.controls.append((cid, action, payload))
 
-    async def active_power(self, cid: int, mg_id=None) -> Power | None:
+    async def active_power(self, cid: int, microgrid_id=None) -> Power | None:
         return Power.from_watts(float(cid))
 
-    async def soc(self, cid: int, mg_id=None) -> Percentage | None:
+    async def soc(self, cid: int, microgrid_id=None) -> Percentage | None:
         return percent(self.soc_pct)
 
 
@@ -109,7 +109,11 @@ async def test_unbound_component_signals_raise_on_use() -> None:
     with pytest.raises(RuntimeError, match="not bound"):
         await signal.set(kW(1))
     with pytest.raises(ValueError, match="explicit id="):
-        _ = mc.meter().component_id
+        _ = mc.meter().id
+
+
+def test_a_built_component_exposes_its_id() -> None:
+    assert mc.meter(id=5).id == 5
 
 
 async def test_idless_components_bind_but_have_no_signals() -> None:

@@ -22,10 +22,10 @@ _FAST = {"timeout": timedelta(seconds=0.2), "poll": timedelta(seconds=0.01)}
 def _site(**latest: Any) -> mc.aio.Site:
     site = mc.aio.connect(
         ui="127.0.0.1:9",
-        microgrids={1: mc.MicrogridEndpoint(id=1, name="a", grpc="10.0.0.1:61000")},
+        microgrids={1: mc.MicrogridEndpoint(id=1, name="a", grpc_addr="10.0.0.1:61000")},
     )
 
-    async def fake_latest(mg_id: int | None = None) -> dict[str, Any]:
+    async def fake_latest(microgrid_id: int | None = None) -> dict[str, Any]:
         return {name: {"value": value} for name, value in latest.items()}
 
     site.latest = fake_latest  # type: ignore[method-assign]
@@ -69,7 +69,9 @@ async def test_signal_expect_checks_a_cumulative_metric_once() -> None:
 async def test_raw_handle_signals_read_the_component() -> None:
     site = _site()
 
-    async def fake_active_power(cid: int, mg_id: int | None = None) -> Power | None:
+    async def fake_active_power(
+        cid: int, microgrid_id: int | None = None
+    ) -> Power | None:
         return Power.from_watts(float(cid))
 
     site.active_power = fake_active_power  # type: ignore[method-assign]
@@ -83,18 +85,18 @@ def test_component_handle_inherits_the_builders_microgrid() -> None:
     site = _site()
     bat = mc.battery(id=9)
     bat._bind(site, 2)  # what launch() does in a multi-microgrid config
-    assert site[bat]._mg == 2
-    # An explicit mg_id still wins; raw ids keep the default routing.
-    assert site.component(bat, mg_id=1)._mg == 1
-    assert site[9]._mg is None
+    assert site[bat]._microgrid_id == 2
+    # An explicit microgrid_id still wins; raw ids keep the default routing.
+    assert site.component(bat, microgrid_id=1)._microgrid_id == 1
+    assert site[9]._microgrid_id is None
 
 
-async def test_microgrid_view_routes_the_mg_id() -> None:
+async def test_microgrid_view_routes_the_microgrid_id() -> None:
     site = _site()
     seen: list[int | None] = []
 
-    async def fake_latest(mg_id: int | None = None) -> dict[str, Any]:
-        seen.append(mg_id)
+    async def fake_latest(microgrid_id: int | None = None) -> dict[str, Any]:
+        seen.append(microgrid_id)
         return {"grid_power": {"value": 100.0}}
 
     site.latest = fake_latest  # type: ignore[method-assign]
@@ -120,12 +122,12 @@ def test_resolve_mg_defaults_to_the_lowest_id() -> None:
     site = mc.aio.connect(
         ui="127.0.0.1:9",
         microgrids={
-            7: mc.MicrogridEndpoint(id=7, name="a", grpc="10.0.0.7:61000"),
-            3: mc.MicrogridEndpoint(id=3, name="b", grpc="10.0.0.3:61000"),
+            7: mc.MicrogridEndpoint(id=7, name="a", grpc_addr="10.0.0.7:61000"),
+            3: mc.MicrogridEndpoint(id=3, name="b", grpc_addr="10.0.0.3:61000"),
         },
     )
-    assert site._resolve_mg(None) == 3
-    assert site._resolve_mg(7) == 7
+    assert site._resolve_microgrid_id(None) == 3
+    assert site._resolve_microgrid_id(7) == 7
 
 
 async def test_meter_reactive_power_reads_and_drives_through_the_site() -> None:
@@ -137,7 +139,7 @@ async def test_meter_reactive_power_reads_and_drives_through_the_site() -> None:
     reads: list[int] = []
 
     async def fake_reactive_power(
-        cid: int, mg_id: int | None = None
+        cid: int, microgrid_id: int | None = None
     ) -> ReactivePower | None:
         reads.append(cid)
         return ReactivePower.from_volt_amperes_reactive(750.0)
@@ -146,7 +148,7 @@ async def test_meter_reactive_power_reads_and_drives_through_the_site() -> None:
     calls: list[tuple[Any, ...]] = []
 
     async def fake_control_component(
-        cid: int, action: str, payload: Any, mg_id: int | None = None
+        cid: int, action: str, payload: Any, microgrid_id: int | None = None
     ) -> None:
         calls.append((cid, action, payload))
 
@@ -166,7 +168,7 @@ async def test_rejected_eval_raises_from_raw_drive() -> None:
     # A RawLisp drive still goes through the eval choke point.
     site = _site()
 
-    async def fake_eval(expr: str, mg_id: int | None = None) -> dict[str, Any]:
+    async def fake_eval(expr: str, microgrid_id: int | None = None) -> dict[str, Any]:
         return {"ok": False, "error": "set-meter-power: component 3 not found"}
 
     site._http.eval = fake_eval  # type: ignore[method-assign]
@@ -375,8 +377,8 @@ async def test_scenario_readouts_after_a_run_use_the_microgrid_it_picked() -> No
     site = mc.aio.connect(
         ui="127.0.0.1:9",
         microgrids={
-            7: mc.MicrogridEndpoint(id=7, name="a", grpc="10.0.0.7:61000"),
-            3: mc.MicrogridEndpoint(id=3, name="b", grpc="10.0.0.3:61000"),
+            7: mc.MicrogridEndpoint(id=7, name="a", grpc_addr="10.0.0.7:61000"),
+            3: mc.MicrogridEndpoint(id=3, name="b", grpc_addr="10.0.0.3:61000"),
         },
     )
     _recording_posts(site)
@@ -395,7 +397,7 @@ async def test_scenario_readouts_after_a_run_use_the_microgrid_it_picked() -> No
     site._http.get_json = fake_get_json  # type: ignore[method-assign]
     run = await site.scenario("s").run(wait=True, until=timedelta(seconds=1))
     # A lower microgrid appears afterwards.
-    site.microgrids[1] = mc.MicrogridEndpoint(id=1, name="c", grpc="10.0.0.1:61000")
+    site.microgrids[1] = mc.MicrogridEndpoint(id=1, name="c", grpc_addr="10.0.0.1:61000")
     await run.report()
     await run.events()
     assert gets[-2:] == [

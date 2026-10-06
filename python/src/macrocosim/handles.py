@@ -90,10 +90,10 @@ async def _expect(
 class ComponentExpect:
     """Settle-aware assertions on one component's telemetry."""
 
-    def __init__(self, site: Site, component_id: int, mg_id: int | None) -> None:
+    def __init__(self, site: Site, component_id: int, microgrid_id: int | None) -> None:
         self._site = site
         self._id = component_id
-        self._mg = mg_id
+        self._microgrid_id = microgrid_id
 
     async def active_power(
         self,
@@ -109,7 +109,7 @@ class ComponentExpect:
     ) -> Power | list[Power | None] | None:
         return await _expect(
             ACTIVE_POWER,
-            lambda: self._site.active_power(self._id, self._mg),
+            lambda: self._site.active_power(self._id, self._microgrid_id),
             f"component {self._id} active_power",
             approx=approx,
             tol=tol,
@@ -135,7 +135,7 @@ class ComponentExpect:
     ) -> Percentage | list[Percentage | None] | None:
         return await _expect(
             SOC,
-            lambda: self._site.soc(self._id, self._mg),
+            lambda: self._site.soc(self._id, self._microgrid_id),
             f"component {self._id} soc",
             approx=approx,
             tol=tol,
@@ -151,10 +151,12 @@ class ComponentExpect:
 class ComponentHandle:
     """A component in a running site, acted on by intent."""
 
-    def __init__(self, site: Site, component_id: int, mg_id: int | None = None) -> None:
+    def __init__(
+        self, site: Site, component_id: int, microgrid_id: int | None = None
+    ) -> None:
         self._site = site
         self._id = component_id
-        self._mg = mg_id
+        self._microgrid_id = microgrid_id
 
     def command(
         self,
@@ -170,10 +172,12 @@ class ComponentHandle:
         """
         if active_power is not None:
             self._site.set_active_power(
-                self._id, active_power, lifetime=lifetime, mg_id=self._mg
+                self._id, active_power, lifetime=lifetime, microgrid_id=self._microgrid_id
             )
         if bounds is not None:
-            self._site.augment_bounds(self._id, bounds[0], bounds[1], mg_id=self._mg)
+            self._site.augment_bounds(
+                self._id, bounds[0], bounds[1], microgrid_id=self._microgrid_id
+            )
         return self
 
     def status(
@@ -197,7 +201,7 @@ class ComponentHandle:
         if telemetry_mode is not None:
             payload["telemetry_mode"] = telemetry_mode.value
         if payload:
-            self._site.control_component(self._id, "status", payload, self._mg)
+            self._site.control_component(self._id, "status", payload, self._microgrid_id)
         return self
 
     def drive(
@@ -220,28 +224,30 @@ class ComponentHandle:
         if sunlight is not None:
             payload["sunlight_pct"] = sunlight.as_percent()
         if payload:
-            self._site.control_component(self._id, "drive", payload, self._mg)
+            self._site.control_component(self._id, "drive", payload, self._microgrid_id)
         return self
 
     def active_power(self) -> Power | None:
         """A single sample of this component's active power (gRPC)."""
-        return self._site.active_power(self._id, self._mg)
+        return self._site.active_power(self._id, self._microgrid_id)
 
     def soc(self) -> Percentage | None:
         """A single sample of this battery's state of charge (gRPC)."""
-        return self._site.soc(self._id, self._mg)
+        return self._site.soc(self._id, self._microgrid_id)
 
     @property
     def expect(self) -> ComponentExpect:
         """Settle-aware assertions on this component."""
-        return ComponentExpect(self._site, self._id, self._mg)
+        return ComponentExpect(self._site, self._id, self._microgrid_id)
 
     def _eval(self, expr: str) -> None:
         # The server answers a rejected eval with HTTP 400, and
         # Site.eval turns that into ok: False. Surface it, or a
         # status()/drive() typo silently no-ops and the test asserts
         # against an unfaulted, undriven sim.
-        result = self._site.eval(expr, self._site._resolve_mg(self._mg))
+        result = self._site.eval(
+            expr, self._site._resolve_microgrid_id(self._microgrid_id)
+        )
         if not result.get("ok", True):
             raise EvalRejected(f"eval of {expr!r} failed: {result.get('error')}")
 
@@ -249,9 +255,9 @@ class ComponentHandle:
 class MicrogridExpect:
     """Settle-aware assertions on a microgrid's graph-derived aggregates."""
 
-    def __init__(self, site: Site, mg_id: int | None) -> None:
+    def __init__(self, site: Site, microgrid_id: int | None) -> None:
         self._site = site
-        self._mg = mg_id
+        self._microgrid_id = microgrid_id
 
     # --- power (instantaneous — settles) -----------------------------------
 
@@ -269,7 +275,7 @@ class MicrogridExpect:
     ) -> Power | list[Power | None] | None:
         return await _expect(
             GRID_POWER,
-            lambda: self._site.grid_power(self._mg),
+            lambda: self._site.grid_power(self._microgrid_id),
             None,
             approx=approx,
             tol=tol,
@@ -295,7 +301,7 @@ class MicrogridExpect:
     ) -> Power | list[Power | None] | None:
         return await _expect(
             PV_POWER,
-            lambda: self._site.pv_power(self._mg),
+            lambda: self._site.pv_power(self._microgrid_id),
             None,
             approx=approx,
             tol=tol,
@@ -321,7 +327,7 @@ class MicrogridExpect:
     ) -> Power | list[Power | None] | None:
         return await _expect(
             CONSUMER_POWER,
-            lambda: self._site.consumer_power(self._mg),
+            lambda: self._site.consumer_power(self._microgrid_id),
             None,
             approx=approx,
             tol=tol,
@@ -347,7 +353,7 @@ class MicrogridExpect:
     ) -> Power | list[Power | None] | None:
         return await _expect(
             BATTERY_POWER,
-            lambda: self._site.battery_power(self._mg),
+            lambda: self._site.battery_power(self._microgrid_id),
             None,
             approx=approx,
             tol=tol,
@@ -377,7 +383,7 @@ class MicrogridExpect:
         """Assert on cumulative net grid energy (import positive)."""
         return await _expect(
             GRID_ENERGY,
-            lambda: self._site.grid_energy(self._mg),
+            lambda: self._site.grid_energy(self._microgrid_id),
             None,
             approx=approx,
             tol=tol,
@@ -402,7 +408,7 @@ class MicrogridExpect:
         """Assert on cumulative consumer (load) energy."""
         return await _expect(
             CONSUMER_ENERGY,
-            lambda: self._site.consumer_energy(self._mg),
+            lambda: self._site.consumer_energy(self._microgrid_id),
             None,
             approx=approx,
             tol=tol,
@@ -427,7 +433,7 @@ class MicrogridExpect:
         """Assert on cumulative PV energy (production negative)."""
         return await _expect(
             PV_ENERGY,
-            lambda: self._site.pv_energy(self._mg),
+            lambda: self._site.pv_energy(self._microgrid_id),
             None,
             approx=approx,
             tol=tol,
@@ -452,7 +458,7 @@ class MicrogridExpect:
         """Assert on cumulative net battery-pool energy (discharge negative)."""
         return await _expect(
             BATTERY_ENERGY,
-            lambda: self._site.battery_energy(self._mg),
+            lambda: self._site.battery_energy(self._microgrid_id),
             None,
             approx=approx,
             tol=tol,
@@ -467,29 +473,29 @@ class MicrogridExpect:
 class MicrogridHandle:
     """A specific microgrid within a running site (for multi-microgrid setups)."""
 
-    def __init__(self, site: Site, mg_id: int) -> None:
+    def __init__(self, site: Site, microgrid_id: int) -> None:
         self._site = site
-        self._mg = mg_id
+        self._microgrid_id = microgrid_id
 
     def component(self, target: Component | int) -> ComponentHandle:
         cid = self._site._component_id_of(target)
-        return ComponentHandle(self._site, cid, self._mg)
+        return ComponentHandle(self._site, cid, self._microgrid_id)
 
     def __getitem__(self, target: Component | int) -> ComponentHandle:
         return self.component(target)
 
     @property
     def expect(self) -> MicrogridExpect:
-        return MicrogridExpect(self._site, self._mg)
+        return MicrogridExpect(self._site, self._microgrid_id)
 
     def grid_power(self) -> Power | None:
-        return self._site.grid_power(self._mg)
+        return self._site.grid_power(self._microgrid_id)
 
     def pv_power(self) -> Power | None:
-        return self._site.pv_power(self._mg)
+        return self._site.pv_power(self._microgrid_id)
 
     def consumer_power(self) -> Power | None:
-        return self._site.consumer_power(self._mg)
+        return self._site.consumer_power(self._microgrid_id)
 
     def battery_power(self) -> Power | None:
-        return self._site.battery_power(self._mg)
+        return self._site.battery_power(self._microgrid_id)

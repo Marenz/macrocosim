@@ -87,14 +87,14 @@ class Check:
     """A timed ``(check …)`` assertion within a scenario."""
 
     at: timedelta | clock_time
-    component: int
+    component_id: int
     metric: str
     matcher: Matcher[Any]
 
     def to_lisp(self) -> str:
         parts = [
             _time_literal(self.at),
-            f":component {self.component}",
+            f":component-id {self.component_id}",
             f":metric '{self.metric}",
         ]
         m = self.matcher
@@ -157,7 +157,7 @@ class Scenario:
         self,
         at: timedelta | clock_time,
         *,
-        component: int,
+        component_id: int,
         metric: Metric,
         matcher: Matcher[Any],
     ) -> Scenario:
@@ -166,7 +166,7 @@ class Scenario:
         The escape hatch for per-component ``Metric.ENERGY`` (and other
         wire metrics) until they grow signals.
         """
-        self._checks.append(Check(at, component, metric.value, matcher))
+        self._checks.append(Check(at, component_id, metric.value, matcher))
         return self
 
     def at(
@@ -196,7 +196,7 @@ class Scenario:
 
     def drive_meter(self, meter: Component | int, value: Power | RawLisp) -> Scenario:
         """Install a continuous source on a meter (a value, or ``raw`` Lisp)."""
-        cid = meter.component_id if isinstance(meter, Component) else int(meter)
+        cid = meter.id if isinstance(meter, Component) else int(meter)
         self._drives.append(f"(drive-meter {cid} {to_lisp_atom(value)})")
         return self
 
@@ -253,7 +253,7 @@ class ScenarioRun:
         self._site = site
         self._name = name
         # The microgrid run(wait=True) picked; None until one did.
-        self._mg: int | None = None
+        self._microgrid_id: int | None = None
 
     @property
     def _http(self) -> HttpClient:
@@ -275,7 +275,11 @@ class ScenarioRun:
 
     def _run_mg(self) -> int:
         """The microgrid run() picked, else the lowest one."""
-        return self._mg if self._mg is not None else self._site._resolve_mg(None)
+        return (
+            self._microgrid_id
+            if self._microgrid_id is not None
+            else self._site._resolve_microgrid_id(None)
+        )
 
     def run(
         self,
@@ -295,7 +299,7 @@ class ScenarioRun:
         # microgrid's journal makes a microgrid the server does not
         # have fail here.
         length = self._wait_length(until)
-        mg = self._mg = self._site._resolve_mg(None)
+        mg = self._microgrid_id = self._site._resolve_microgrid_id(None)
         self._http.get_json(scenario_path(mg))
         self._http.post(start)
         return self._wait_for(length, poll, mg)
