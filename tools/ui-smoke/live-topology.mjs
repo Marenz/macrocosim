@@ -1697,24 +1697,43 @@ check(
   `${spinnerStyles.fire} / wfield-fire=${spinnerStyles.fireClass}`,
 );
 
-// This smoke runs at wall-clock UTC: the default 06:00-20:00 window
-// would leave clear-sky at 0 outside daylight hours and the cloud
-// check below would be flaky depending on when the run happens.
-// Widen the window via the panel's own fields (Enter-committing, the
-// inspector's edit-in-place contract — weather-panel.js wireField) so
-// the run is always inside daylight.
-await page.fill("#weather-sunrise", "00:00");
-await page.press("#weather-sunrise", "Enter");
-await page.fill("#weather-sunset", "23:59");
-await page.press("#weather-sunset", "Enter");
+// The sky follows wall-clock UTC: the default 06:00-20:00 window
+// leaves clear-sky at 0 outside daylight hours. The window is set
+// via the panel's own fields (Enter-committing, the inspector's
+// edit-in-place contract — weather-panel.js wireField) to a span
+// centred on now, so the readout sits at the top of the sine. The
+// window cannot wrap midnight, so a run reaching here in the two
+// minutes either side of 00:00 UTC waits for 00:02 first; from then
+// on the span is at least 2 minutes each side of now, which keeps
+// the sky well above zero through the checks below.
+const utcMinute = () => {
+  const t = new Date();
+  return t.getUTCHours() * 60 + t.getUTCMinutes() + t.getUTCSeconds() / 60;
+};
+if (utcMinute() > 1437 || utcMinute() < 2) {
+  const m = utcMinute();
+  await new Promise((r) => setTimeout(r, ((m < 2 ? 2 - m : 1442 - m) * 60 + 1) * 1000));
+}
+const nowMinute = utcMinute();
+const halfSpan = Math.min(nowMinute, 1439 - nowMinute, 360);
+const hhmm = (min) => `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+const sunrise = hhmm(Math.floor(nowMinute - halfSpan));
+const sunset = hhmm(Math.ceil(nowMinute + halfSpan));
+// Each commit is checked against the other end as it stands, so a
+// sunrise at or past the default 20:00 sunset goes in second.
+const daylightOrder = sunrise >= "20:00" ? ["sunset", "sunrise"] : ["sunrise", "sunset"];
+for (const end of daylightOrder) {
+  await page.fill(`#weather-${end}`, end === "sunrise" ? sunrise : sunset);
+  await page.press(`#weather-${end}`, "Enter");
+}
 const daylightText = await waitFor(async () => {
   const t = await page.evaluate(() => document.getElementById("weather-clear-sky")?.textContent);
-  return t && t.includes("00:00") && t.includes("23:59") ? t : null;
-}, 10000);
+  return t && t.includes(sunrise) && t.includes(sunset) ? t : null;
+}, 10000).catch(() => null);
 check(
-  "e2e: sunrise/sunset commit widens the daylight window",
-  Boolean(daylightText) && daylightText.includes("00:00") && daylightText.includes("23:59"),
-  daylightText,
+  "e2e: sunrise/sunset commit sets the daylight window",
+  Boolean(daylightText),
+  `${sunrise}–${sunset}: ${daylightText}`,
 );
 
 const preCloudPct = await waitFor(async () => {
@@ -1723,7 +1742,7 @@ const preCloudPct = await waitFor(async () => {
   return Number.isFinite(v) && v > 0 ? v : null;
 }, 10000);
 check(
-  "e2e: the site-% readout is positive inside the widened daylight window",
+  "e2e: the site-% readout is positive inside the daylight window",
   Number.isFinite(preCloudPct) && preCloudPct > 0,
   String(preCloudPct),
 );
@@ -1734,15 +1753,19 @@ await page.fill("#weather-cloud-depth", "100");
 await page.fill("#weather-cloud-duration", "3600");
 await page.fill("#weather-cloud-ramp", "5");
 await page.click("#weather-cloud-fire");
-const postCloudPct = await waitFor(async () => {
-  const t = await page.evaluate(() => document.getElementById("weather-pct")?.textContent);
-  const v = Number(t);
-  return Number.isFinite(v) && v < preCloudPct - 1 ? v : null;
-}, 20000);
+// The reading is wrapped, so a full blackout (0.0) counts as found.
+// The bar is half the pre-cloud reading.
+const postCloudPct = (
+  await waitFor(async () => {
+    const t = await page.evaluate(() => document.getElementById("weather-pct")?.textContent);
+    const v = Number(t);
+    return Number.isFinite(v) && v < preCloudPct / 2 ? { v } : null;
+  }, 20000).catch(() => null)
+)?.v;
 check(
   "e2e: the panel readout drops after firing a deep cloud",
   Number.isFinite(postCloudPct) && postCloudPct < preCloudPct,
-  `${preCloudPct}% -> ${postCloudPct}%`,
+  `${preCloudPct}% -> ${postCloudPct == null ? "no drop below half within 20 s" : `${postCloudPct}%`}`,
 );
 
 // Enter in the pass-a-cloud row fires it too — there is no form here
