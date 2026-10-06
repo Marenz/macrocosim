@@ -952,7 +952,7 @@ export const scenariosPanel = (() => {
     updateActiveChip();
   }
 
-  // Journal readout of microgrid `mg`; null when `mg` is null.
+  // JSON body of `/api/mg/{mg}/{suffix}`; null when `mg` is null.
   const getMgJson = async (mg, suffix) => {
     if (mg == null) return null;
     return getJson(`/api/mg/${mg}/${suffix}`);

@@ -12,7 +12,7 @@ export function jsToLispString(s) {
 // something short like "Paste failed" when the expression would be
 // unreadable in a toast). Returns { ok: true, value } on success, or
 // { ok: false, error } when the evaluation failed, the server
-// refused the request or the transport broke. Undo history is the
+// refused the request or the fetch failed. Undo history is the
 // server's: a structural eval stacks the microgrid file's previous
 // generated block by itself, so there is nothing to record here.
 export async function evalQuoted(expr, label = expr) {

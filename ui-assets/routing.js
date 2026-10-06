@@ -51,15 +51,14 @@ export async function mgJson(suffix, opts) {
 }
 
 // The microgrid the scenario readouts show: the selected one, else
-// the lowest id of the last microgrid listing (`/api/microgrids`
-// fetched while none has landed), else null. Display only: the
-// selection and the route stay as they are.
+// the lowest id in the last microgrid listing (fetched from
+// `/api/microgrids` when no listing has arrived yet), else null.
+// Display only: the selection and the route stay as they are.
 export async function scenarioMgId() {
   const id = readSelectedMg();
   if (id != null) return id;
-  const ids = mgFlags.size
-    ? [...mgFlags.keys()]
-    : (await getJson("/api/microgrids")).map((m) => m.id);
+  if (!mgFlags.size) publishMgFlags(await getJson("/api/microgrids"));
+  const ids = [...mgFlags.keys()];
   return ids.length ? Math.min(...ids) : null;
 }
 
@@ -467,7 +466,7 @@ export async function refreshTopology() {
   try {
     const res = await mgFetch("topology");
     if (res == null) return;
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) throw new Error(await errorText(res));
     const data = await res.json();
     // The user can switch microgrid while the fetch is in flight
     // (selectMicrogrid fires a fresh one). A response for a mg that

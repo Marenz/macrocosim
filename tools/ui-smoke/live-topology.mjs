@@ -507,7 +507,7 @@ check(
   JSON.stringify({ demoManaged, headerState }),
 );
 
-// Undo is the server's: Ctrl+Z posts to /api/mg/{id}/undo instead of
+// Undo is the server's: Ctrl+Z posts to /api/mg/{mg}/undo instead of
 // replaying a client-side stack. With no structural edit behind it
 // the server answers 409, which is fine — the check is on the call.
 let undoPosts = 0;
@@ -795,7 +795,7 @@ check("e2e: hover card hides on blur", hiddenCard.visible === false);
 // re-render. Failures are cached for 10 s, so once a card is open on
 // a component nobody has hovered yet, a 4 s window adds no requests.
 // The glob matches the per-mg route
-// (/api/mg/{id}/component/{cid}/setpoints) the card actually
+// (/api/mg/{mg}/component/{id}/setpoints) the card actually
 // fetches; the open-hit check below fails loudly if the
 // interception ever stops matching the SPA's URL again.
 let setpointHits = 0;
@@ -2644,6 +2644,40 @@ check("e2e: the fallback forgets the stale selection", staleLanding?.stored === 
 // correction would have added a second, and Back would land on it.
 check("e2e: the fallback leaves no history entry behind", staleLanding?.history === historyBefore + 1, JSON.stringify({ historyBefore, staleLanding }));
 check("e2e: the fallback says why", await page.evaluate(() => [...document.querySelectorAll(".toast")].some((t) => /424242/.test(t.textContent))), "no toast naming the microgrid");
+
+// ── e2e: a per-microgrid 404 drops the selection ─────────────────
+// mgFetch reads a 404 `microgrid N not registered` for the selected
+// microgrid as the microgrid having gone, and returns to the list
+// view by itself. The listing poll is held on the real listing (which
+// still carries 2200), so only the per-microgrid answer can act.
+await page.goto(`${BASE}/#microgrids/2200/topology`, { waitUntil: "networkidle" });
+await waitFor(async () => page.evaluate(() => document.body.dataset.mgView === "selected"), 10000).catch(() => null);
+const cachedList = await (await page.request.get(`${BASE}/api/microgrids`)).text(); // bypasses page routes
+await page.route(
+  "**/api/microgrids",
+  onlyGet((route) => route.fulfill({ status: 200, contentType: "application/json", body: cachedList })),
+);
+let topology404s = 0;
+await page.route("**/api/mg/2200/topology", (route) => {
+  if (topology404s > 0) return route.continue();
+  topology404s += 1;
+  return route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"microgrid 2200 not registered"}' });
+});
+const droppedAt = Date.now();
+await page.evaluate(async () => (await import("/assets/routing.js")).refreshTopology());
+const dropped = await waitFor(async () => {
+  const s = await page.evaluate(() => ({ view: document.body.dataset.mgView, hash: location.hash, stored: localStorage.getItem("macrocosim-selected-mg") }));
+  return s.view === "list" ? s : null;
+}, 4000).catch(() => null);
+check(
+  "e2e: a per-microgrid 404 returns to the list view",
+  topology404s === 1 && dropped?.hash === "#microgrids" && dropped?.stored === null && Date.now() - droppedAt < 4500,
+  JSON.stringify({ topology404s, dropped }),
+);
+await page.unroute("**/api/mg/2200/topology");
+await page.unroute("**/api/microgrids");
+await page.goto(`${BASE}/#microgrids/2200/topology`, { waitUntil: "networkidle" });
+await waitFor(async () => page.evaluate(() => document.body.dataset.mgView === "selected"), 10000).catch(() => null);
 
 // ── e2e: compact density ───────────────────────────────────────────
 // The pulse-bar chip turns compact density on: the pulse bar shrinks.

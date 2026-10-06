@@ -20,6 +20,7 @@ import { notify, setStatus } from "./app.js";
 import { showContextMenu } from "./editor.js";
 import { evalQuoted } from "./eval.js";
 import { createHoverCard, hoverCardModel } from "./hovercard.js";
+import { errorText } from "./http.js";
 import { blankLiveEntry, DEAD_FLOW, deadBandW, edgeFlow } from "./live.js";
 import { COLORS, cssToken, invalidateMeasureCache, lodFor, measurePill, pillFontsReady, pillModel, pillRenderer } from "./pill.js";
 import {
@@ -326,7 +327,7 @@ export function createGraphCanvas(containerId, adapter = {}) {
     try {
       const res = await mgFetch(`component/${id}/setpoints?window_s=600`, { signal });
       if (res == null) return hit ? hit.last : null;
-      if (!res.ok) throw new Error(`setpoints: HTTP ${res.status}`);
+      if (!res.ok) throw new Error(await errorText(res));
       const data = await res.json();
       const e = data.events?.[data.events.length - 1];
       const last = e
