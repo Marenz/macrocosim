@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::RwLock;
-use tulisp::{Error, TulispContext};
+use tulisp::{Error, Rest, TulispContext, TulispObject};
 
 use crate::sim::gateway::Mode;
 use crate::sim::microgrids::SharedSiteRouter;
@@ -19,27 +19,87 @@ use super::super::Metadata;
 /// install. Expiry runs on the physics tick (100 ms by default), so a
 /// shorter lifetime can expire before the component ever acts on the
 /// command. `0` is kept as "expire at once" and bypasses the floor.
-const MIN_SETPOINT_LIFETIME_MS: u64 = 150;
+const MIN_SETPOINT_LIFETIME: Duration = Duration::from_millis(150);
 
-/// The request lifetime for a `LIFETIME-MS` argument: omitted falls
-/// back to `default-request-lifetime-ms`, `0` expires at once, any
-/// other value is floored at [`MIN_SETPOINT_LIFETIME_MS`].
-fn lifetime_from_arg(lifetime_ms: Option<i64>, metadata: &RwLock<Metadata>) -> Duration {
-    lifetime_ms
-        .map(|ms| {
-            let raw = ms.max(0) as u64;
-            let clamped = if raw == 0 {
-                0
-            } else {
-                raw.max(MIN_SETPOINT_LIFETIME_MS)
-            };
-            Duration::from_millis(clamped)
-        })
-        .unwrap_or_else(|| metadata.read().default_request_lifetime)
+/// A setpoint or augment tail: the lifetime (`None` = the default) and
+/// the clamp flag.
+pub(super) struct Tail {
+    pub lifetime: Option<Duration>,
+    pub clamp: bool,
+}
+
+/// Parses `:lifetime-s N :clamp B`, or the positional
+/// `LIFETIME-MS [CLAMP]` with a deprecation warning. `allow_clamp` is
+/// false for the augment defuns.
+pub(super) fn parse_tail(
+    name: &str,
+    rest: Vec<TulispObject>,
+    allow_clamp: bool,
+) -> Result<Tail, Error> {
+    let Some(first) = rest.first() else {
+        return Ok(Tail {
+            lifetime: None,
+            clamp: false,
+        });
+    };
+    if first.keywordp() {
+        let mut tail = Tail {
+            lifetime: None,
+            clamp: false,
+        };
+        for pair in rest.chunks(2) {
+            let key = pair[0].to_string();
+            let value = pair.get(1).cloned().unwrap_or_else(TulispObject::nil);
+            match key.as_str() {
+                ":lifetime-s" => tail.lifetime = Some(secs_lifetime(name, value.try_float()?)?),
+                ":clamp" if allow_clamp => tail.clamp = !value.null(),
+                _ => {
+                    return Err(Error::invalid_argument(format!(
+                        "{name}: unknown keyword {key}"
+                    )));
+                }
+            }
+        }
+        return Ok(tail);
+    }
+    if let Some(key) = rest.iter().find(|item| item.keywordp()) {
+        return Err(Error::invalid_argument(format!(
+            "{name}: keyword {key} after a positional LIFETIME-MS; use :lifetime-s"
+        )));
+    }
+    let max = if allow_clamp { 2 } else { 1 };
+    if rest.len() > max {
+        return Err(Error::invalid_argument(format!(
+            "{name}: expected at most {max} positional arguments after the value, got {}",
+            rest.len()
+        )));
+    }
+    crate::lisp::renames::warn_renamed("LIFETIME-MS", ":lifetime-s", " (seconds)");
+    let lifetime = if first.null() {
+        None
+    } else {
+        Some(secs_lifetime(name, first.try_float()? / 1000.0)?)
+    };
+    let clamp = allow_clamp && rest.get(1).is_some_and(|c| !c.null());
+    Ok(Tail { lifetime, clamp })
+}
+
+/// Seconds to a request lifetime: `0` expires at once, anything else
+/// is floored at [`MIN_SETPOINT_LIFETIME`].
+fn secs_lifetime(name: &str, secs: f64) -> Result<Duration, Error> {
+    let d = Duration::try_from_secs_f64(secs).map_err(|_| {
+        Error::invalid_argument(format!(
+            "{name}: :lifetime-s must be a non-negative number, got {secs}"
+        ))
+    })?;
+    Ok(if d.is_zero() {
+        d
+    } else {
+        d.max(MIN_SETPOINT_LIFETIME)
+    })
 }
 
 /// Shared body of the two defuns: one gateway command on `axis`.
-#[expect(clippy::too_many_arguments, reason = "one body for both defuns")]
 fn set_power(
     router: &SharedSiteRouter,
     metadata: &RwLock<Metadata>,
@@ -47,16 +107,18 @@ fn set_power(
     axis: SetpointAxis,
     id: i64,
     value: f64,
-    lifetime_ms: Option<i64>,
-    clamp: Option<bool>,
+    rest: Vec<TulispObject>,
 ) -> Result<bool, Error> {
     let w = router.site();
-    let mode = if clamp.unwrap_or(false) {
+    let tail = parse_tail(name, rest, true)?;
+    let mode = if tail.clamp {
         Mode::Clamp
     } else {
         Mode::Reject
     };
-    let lifetime = lifetime_from_arg(lifetime_ms, metadata);
+    let lifetime = tail
+        .lifetime
+        .unwrap_or_else(|| metadata.read().default_request_lifetime);
     w.gateway()
         .set_power(
             id as u64,
@@ -70,17 +132,17 @@ fn set_power(
     Ok(true)
 }
 
-/// `(set-active-power ID WATTS &OPTIONAL LIFETIME-MS CLAMP)` — apply
-/// an active-power setpoint through the gateway and arm its request
+/// `(set-active-power ID WATTS &key :lifetime-s :clamp)` — apply an
+/// active-power setpoint through the gateway and arm its request
 /// lifetime. Returns `t`; signals an error if the component doesn't
 /// exist, takes no active setpoint, or the value is refused.
 ///
-/// `LIFETIME-MS` is how long the setpoint stands before the physics
-/// step expires it and the axis ramps back to idle. Omitted falls
-/// back to `default-request-lifetime-ms`; `0` expires at once; any
-/// other value is floored at 150 ms.
+/// `:lifetime-s` is how long the setpoint stands, in seconds, before
+/// the physics step expires it and the axis ramps back to idle.
+/// Omitted falls back to `default-request-lifetime-s`; `0` expires at
+/// once; any other value is floored at 0.15 s.
 ///
-/// `CLAMP` (default nil) — when non-nil, a value outside the setpoint
+/// `:clamp` (default nil) — when non-nil, a value outside the setpoint
 /// envelope (the component's own bounds intersected with its
 /// children's) is clamped into it and applied instead of refused, and
 /// an empty envelope clamps to 0: the primitive an in-sim controller
@@ -88,9 +150,12 @@ fn set_power(
 /// the limiter allows" each tick. 0 W (the fail-safe park) is applied
 /// as-is either way.
 ///
-/// `(set-reactive-power ID VARS &OPTIONAL LIFETIME-MS CLAMP)` — the
-/// same on the reactive axis, in VAr, against the reactive envelope:
-/// the component's live Q band (its PF / apparent-power caps at its
+/// The positional `LIFETIME-MS [CLAMP]` form still works, read in
+/// milliseconds, and warns.
+///
+/// `(set-reactive-power ID VARS &key :lifetime-s :clamp)` — the same
+/// on the reactive axis, in VAr, against the reactive envelope: the
+/// component's live Q band (its PF / apparent-power caps at its
 /// current active power, ∩ any live augmentation) narrowed by
 /// whatever Q bounds its children report. 0 VAr always passes.
 pub(super) fn register(
@@ -105,12 +170,9 @@ pub(super) fn register(
         let (r, m) = (router.clone(), metadata.clone());
         ctx.defun(
             name,
-            move |id: i64,
-                  value: f64,
-                  lifetime_ms: Option<i64>,
-                  clamp: Option<bool>|
-                  -> Result<bool, Error> {
-                set_power(&r, &m, name, axis, id, value, lifetime_ms, clamp)
+            move |id: i64, value: f64, rest: Rest<TulispObject>| -> Result<bool, Error> {
+                let rest = rest.into_iter().collect::<Vec<TulispObject>>();
+                set_power(&r, &m, name, axis, id, value, rest)
             },
         );
     }
@@ -534,5 +596,83 @@ mod tests {
         assert!(res.is_err(), "expected error, got {res:?}");
         assert!(res.unwrap_err().contains("999"));
         assert!(cfg.eval("(set-reactive-power 1 100.0)").is_err());
+    }
+
+    const BATTERY_AND_INVERTER: &str =
+        "(setq b1 (%make-battery :id 1 :rated-lower -5000.0 :rated-upper 5000.0))
+         (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
+                                   :successors (list b1))";
+
+    #[test]
+    fn lifetime_keyword_is_seconds() {
+        let (cfg, _dir) = config_with(BATTERY_AND_INVERTER);
+        cfg.eval("(set-active-power 2 1500.0 :lifetime-s 30)")
+            .unwrap();
+        let left = cfg
+            .site()
+            .gateway()
+            .remaining_lifetime(2, SetpointAxis::Active)
+            .unwrap();
+        assert!(
+            left > Duration::from_secs(29) && left <= Duration::from_secs(30),
+            "{left:?}"
+        );
+    }
+
+    #[test]
+    fn a_positional_lifetime_is_still_milliseconds() {
+        let (cfg, _dir) = config_with(BATTERY_AND_INVERTER);
+        cfg.eval("(set-active-power 2 1500.0 30000)").unwrap();
+        let left = cfg
+            .site()
+            .gateway()
+            .remaining_lifetime(2, SetpointAxis::Active)
+            .unwrap();
+        assert!(
+            left > Duration::from_secs(29) && left <= Duration::from_secs(30),
+            "{left:?}"
+        );
+    }
+
+    #[test]
+    fn clamp_is_a_keyword_too() {
+        let (cfg, _dir) = config_with(BATTERY_AND_INVERTER);
+        cfg.eval("(set-active-power 2 999999.0 :clamp t)").unwrap();
+    }
+
+    #[test]
+    fn an_unknown_keyword_is_refused() {
+        let (cfg, _dir) = config_with(BATTERY_AND_INVERTER);
+        let err = cfg
+            .eval("(set-active-power 2 1500.0 :lifetime-ms 30)")
+            .unwrap_err();
+        assert!(err.contains(":lifetime-ms"), "{err}");
+    }
+
+    #[test]
+    fn a_keyword_after_a_positional_lifetime_is_refused() {
+        let (cfg, _dir) = config_with(BATTERY_AND_INVERTER);
+        let err = cfg
+            .eval("(set-active-power 2 999999.0 1000 :clamp nil)")
+            .unwrap_err();
+        assert!(err.contains("set-active-power"), "{err}");
+        assert!(err.contains(":clamp"), "{err}");
+        assert_eq!(
+            cfg.site()
+                .gateway()
+                .remaining_lifetime(2, SetpointAxis::Active),
+            None,
+            "nothing was armed"
+        );
+    }
+
+    #[test]
+    fn more_than_two_positional_items_are_refused() {
+        let (cfg, _dir) = config_with(BATTERY_AND_INVERTER);
+        let err = cfg
+            .eval("(set-reactive-power 2 0.0 1000 nil 7)")
+            .unwrap_err();
+        assert!(err.contains("set-reactive-power"), "{err}");
+        assert!(err.contains("at most 2"), "{err}");
     }
 }

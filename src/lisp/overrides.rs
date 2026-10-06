@@ -288,14 +288,14 @@ impl Config {
         writeln!(out, "(set-timezone \"{}\")", esc(self.tz_name())).unwrap();
         writeln!(
             out,
-            "(set-default-request-lifetime-ms {})",
-            md.default_request_lifetime.as_millis()
+            "(set-default-request-lifetime-s {})",
+            crate::lisp::lisp_float(md.default_request_lifetime.as_secs_f64())
         )
         .unwrap();
         writeln!(
             out,
-            "(set-default-augment-lifetime-ms {})",
-            md.default_augment_lifetime.as_millis()
+            "(set-default-augment-lifetime-s {})",
+            crate::lisp::lisp_float(md.default_augment_lifetime.as_secs_f64())
         )
         .unwrap();
         writeln!(
@@ -444,6 +444,8 @@ fn top_level_load_paths(src: &str) -> (Vec<PathBuf>, bool) {
 const ENTERPRISE_SETTERS: &[&str] = &[
     "set-enterprise-id",
     "set-timezone",
+    "set-default-request-lifetime-s",
+    "set-default-augment-lifetime-s",
     "set-default-request-lifetime-ms",
     "set-default-augment-lifetime-ms",
     "set-assets-socket-addr",
@@ -518,6 +520,20 @@ mod tests {
         let text = std::fs::read_to_string(dir.join("enterprise.lisp")).unwrap();
         assert!(text.contains(":command-delay-s 0.2"), "{text}");
         assert!(!text.contains("command-delay-ms"), "{text}");
+    }
+
+    /// The enterprise block writes the lifetimes in seconds.
+    #[test]
+    fn the_enterprise_block_writes_lifetimes_in_seconds() {
+        let (cfg, dir) = config_with("(set-default-request-lifetime-ms 20000)");
+        cfg.persist_enterprise().unwrap();
+        let text = std::fs::read_to_string(dir.join("enterprise.lisp")).unwrap();
+        assert!(
+            text.contains("(set-default-request-lifetime-s 20"),
+            "{text}"
+        );
+        assert!(text.contains("(set-default-augment-lifetime-s "), "{text}");
+        assert!(!text.contains("-lifetime-ms"), "{text}");
     }
 
     /// A `*-defaults` value that is not a list is written back as it

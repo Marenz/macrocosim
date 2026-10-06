@@ -94,7 +94,7 @@ This single model subsumes both of today's systems: day-stages are sugar over
     (controller 'ems :every "500ms"
       (lambda ()
         (dolist (id '(300 301 302))
-          (set-active-power id (component-bound-upper id) 2000 t)))))
+          (set-active-power id (component-bound-upper id) :lifetime-s 2 :clamp t)))))
 
   :cues (list
     (at "60s" (event 'clouds "rolling in")))

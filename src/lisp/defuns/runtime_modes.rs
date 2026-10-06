@@ -2,7 +2,7 @@
 //! `(set-component-command-mode)` — flip a component's runtime
 //! enum at REPL / scenario time so fault simulation is scriptable.
 //! Plus the site-wide stream knobs `(cancel-all-streams)` and
-//! `(set-sample-lag-ms)`.
+//! `(set-sample-lag-s)`, and its `-ms` name that still works.
 
 use tulisp::TulispContext;
 
@@ -78,13 +78,47 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
         true
     });
 
+    let r2 = router.clone();
+    ctx.defun(
+        "set-sample-lag-s",
+        move |secs: f64| -> Result<bool, tulisp::Error> {
+            // Shift every outgoing telemetry sample's timestamp into
+            // the past by SECS seconds. Models a server that delivers
+            // samples with a fixed timestamp lag, e.g. to test how a
+            // downstream resampler copes with stale data.
+            let d = std::time::Duration::try_from_secs_f64(secs).map_err(|_| {
+                tulisp::Error::invalid_argument(format!(
+                    "set-sample-lag-s: seconds must be a non-negative number, got {secs}"
+                ))
+            })?;
+            r2.site().set_sample_lag_ms(d.as_millis() as u64);
+            Ok(true)
+        },
+    );
+
     let r = router;
     ctx.defun("set-sample-lag-ms", move |ms: i64| -> bool {
-        // Shift every outgoing telemetry sample's timestamp into the
-        // past by MS milliseconds. Models a server that delivers
-        // samples with a fixed timestamp lag, e.g. to test how a
-        // downstream resampler copes with stale data.
+        super::super::renames::warn_renamed("set-sample-lag-ms", "set-sample-lag-s", " (seconds)");
         r.site().set_sample_lag_ms(ms.max(0) as u64);
         true
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::test_support::config_with;
+
+    /// `set-sample-lag-s` takes seconds and refuses a negative value;
+    /// the `-ms` name still takes milliseconds.
+    #[test]
+    fn sample_lag_takes_seconds() {
+        let (cfg, _dir) = config_with("");
+        cfg.eval("(set-sample-lag-s 0.05)").unwrap();
+        assert_eq!(cfg.site().sample_lag_ms(), 50);
+        let err = cfg.eval("(set-sample-lag-s -1)").unwrap_err();
+        assert!(err.contains("set-sample-lag-s"), "{err}");
+        assert_eq!(cfg.site().sample_lag_ms(), 50);
+        cfg.eval("(set-sample-lag-ms 20)").unwrap();
+        assert_eq!(cfg.site().sample_lag_ms(), 20);
+    }
 }

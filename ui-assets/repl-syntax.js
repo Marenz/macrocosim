@@ -62,6 +62,7 @@ export const COMPLETIONS = [
   "set-reactive-apparent-va",
   "set-boiler-demand",
   "set-boiler-pressure",
+  "set-physics-tick-s",
   "set-physics-tick-ms",
   "set-voltage-per-phase",
   "set-frequency",
@@ -76,6 +77,8 @@ export const COMPLETIONS = [
   "set-microgrid-name",
   "set-microgrid-tso",
   "set-socket-addr",
+  "set-default-request-lifetime-s",
+  "set-default-augment-lifetime-s",
   "set-default-request-lifetime-ms",
   "set-default-augment-lifetime-ms",
   // Scenarios — lifecycle, journal + reporter, CSV recording.

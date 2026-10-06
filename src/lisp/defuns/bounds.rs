@@ -3,10 +3,9 @@
 //! like gRPC's `AugmentElectricalComponentBounds`.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use parking_lot::RwLock;
-use tulisp::{Error, TulispContext, TulispObject};
+use tulisp::{Error, Rest, TulispContext, TulispObject};
 
 use crate::proto::common::metrics::Bounds;
 use crate::sim::bounds::VecBounds;
@@ -14,6 +13,7 @@ use crate::sim::microgrids::SharedSiteRouter;
 use crate::timeout_tracker::SetpointAxis;
 
 use super::super::Metadata;
+use super::setpoints::parse_tail;
 
 /// One band edge: a number, or nil for "unbounded on this side".
 fn edge(name: &str, band: &TulispObject, o: TulispObject) -> Result<Option<f32>, Error> {
@@ -80,7 +80,7 @@ fn augment(
     axis: SetpointAxis,
     id: i64,
     bounds: &TulispObject,
-    lifetime_ms: Option<i64>,
+    rest: Vec<TulispObject>,
 ) -> Result<bool, Error> {
     let w = router.site();
     let generation = w.run_generation();
@@ -90,8 +90,8 @@ fn augment(
         )));
     }
     let proposed = parse_bounds(name, bounds)?;
-    let lifetime = lifetime_ms
-        .map(|ms| Duration::from_millis(ms.max(0) as u64))
+    let lifetime = parse_tail(name, rest, false)?
+        .lifetime
         .unwrap_or_else(|| metadata.read().default_augment_lifetime);
     w.gateway()
         .augment(id as u64, generation, axis, proposed, lifetime)
@@ -99,11 +99,11 @@ fn augment(
     Ok(true)
 }
 
-/// `(augment-active-bounds ID BOUNDS &OPTIONAL LIFETIME-MS)` — narrow
-/// component ID's active-power envelope for LIFETIME-MS, like gRPC's
-/// `AugmentElectricalComponentBounds` for `AC_POWER_ACTIVE`, with the
-/// same shape and envelope checks. Returns `t`; signals an error if the
-/// component doesn't exist, stores no augmentation on this axis
+/// `(augment-active-bounds ID BOUNDS &key :lifetime-s)` — narrow
+/// component ID's active-power envelope for `:lifetime-s` seconds, like
+/// gRPC's `AugmentElectricalComponentBounds` for `AC_POWER_ACTIVE`, with
+/// the same shape and envelope checks. Returns `t`; signals an error if
+/// the component doesn't exist, stores no augmentation on this axis
 /// (batteries, meters, the grid), BOUNDS is malformed, or the result
 /// would leave no valid setpoint.
 ///
@@ -112,15 +112,16 @@ fn augment(
 /// around zero. A nil edge is unbounded on that side. The augmentation
 /// composes with the rated bounds and any other live augmentation.
 ///
-/// LIFETIME-MS omitted falls back to `default-augment-lifetime-ms`,
+/// `:lifetime-s` omitted falls back to `default-augment-lifetime-s`,
 /// like a gRPC request without `request_lifetime`. Unlike the gRPC
 /// route there is no [5 s, 15 min] window, no fault gating and no
 /// setpoint journal. The augmentation is stamped on the site clock,
-/// so in a headless (sim-clock) run it lapses after LIFETIME-MS of
-/// sim time, everywhere at once.
+/// so in a headless (sim-clock) run it lapses after that many seconds
+/// of sim time, everywhere at once. The positional `LIFETIME-MS` form
+/// still works, read in milliseconds, and warns.
 ///
-/// `(augment-reactive-bounds ID BOUNDS &OPTIONAL LIFETIME-MS)` — the
-/// same over the reactive axis (`AC_POWER_REACTIVE`), in VAr.
+/// `(augment-reactive-bounds ID BOUNDS &key :lifetime-s)` — the same
+/// over the reactive axis (`AC_POWER_REACTIVE`), in VAr.
 pub(super) fn register(
     ctx: &mut TulispContext,
     router: SharedSiteRouter,
@@ -133,8 +134,9 @@ pub(super) fn register(
         let (r, m) = (router.clone(), metadata.clone());
         ctx.defun(
             name,
-            move |id: i64, bounds: TulispObject, lifetime_ms: Option<i64>| {
-                augment(&r, &m, name, axis, id, &bounds, lifetime_ms)
+            move |id: i64, bounds: TulispObject, rest: Rest<TulispObject>| {
+                let rest = rest.into_iter().collect::<Vec<TulispObject>>();
+                augment(&r, &m, name, axis, id, &bounds, rest)
             },
         );
     }
@@ -250,5 +252,46 @@ mod tests {
         assert!(err.contains("a number or nil as a band edge"), "{err}");
         let err = eval_err(&cfg, "(augment-active-bounds 2 5)");
         assert!(err.contains("band or a list of bands"), "{err}");
+    }
+
+    #[test]
+    fn augment_lifetime_keyword_is_seconds() {
+        let (cfg, _dir) = rig();
+        cfg.eval("(augment-active-bounds 2 '(-1000 1000) :lifetime-s 0)")
+            .unwrap();
+        assert_eq!(active_bounds(&cfg), "[-10000, 10000]");
+        cfg.eval("(augment-active-bounds 2 '(-1000 1000) :lifetime-s 60)")
+            .unwrap();
+        assert_eq!(active_bounds(&cfg), "[-1000, 1000]");
+    }
+
+    #[test]
+    fn a_positional_augment_lifetime_is_still_milliseconds() {
+        let (cfg, _dir) = rig();
+        cfg.eval("(augment-active-bounds 2 '(-1000 1000) 60000)")
+            .unwrap();
+        assert_eq!(active_bounds(&cfg), "[-1000, 1000]");
+    }
+
+    #[test]
+    fn augment_refuses_clamp() {
+        let (cfg, _dir) = rig();
+        let err = eval_err(&cfg, "(augment-active-bounds 2 '(-1000 1000) :clamp t)");
+        assert!(err.contains(":clamp"), "{err}");
+    }
+
+    #[test]
+    fn a_positional_augment_lifetime_takes_one_item_and_no_keyword() {
+        let (cfg, _dir) = rig();
+        let err = eval_err(&cfg, "(augment-active-bounds 2 '(-1000 1000) 60000 t)");
+        assert!(err.contains("augment-active-bounds"), "{err}");
+        assert!(err.contains("at most 1"), "{err}");
+        let err = eval_err(
+            &cfg,
+            "(augment-active-bounds 2 '(-1000 1000) 60000 :lifetime-s 5)",
+        );
+        assert!(err.contains("augment-active-bounds"), "{err}");
+        assert!(err.contains(":lifetime-s"), "{err}");
+        assert_eq!(active_bounds(&cfg), "[-10000, 10000]");
     }
 }

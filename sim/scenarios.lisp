@@ -387,7 +387,7 @@ A ramp without :from continues from the previous segment's end value
 ;;                   (drive-solar 200 (timeline (hold 100 :for 120)
 ;;                                              (ramp :to 20 :over 27))))
 ;;     :agents (list (controller 'ems :every "500ms"
-;;                     (lambda () (set-active-power 300 (component-bound-upper 300) 2000 t))))
+;;                     (lambda () (set-active-power 300 (component-bound-upper 300) :lifetime-s 2 :clamp t))))
 ;;     :cues   (list (at "60s" (event 'clouds "rolling in")))
 ;;     :expect (list (check "110s" :component 2 :metric 'active-power
 ;;                          :approx 1500000.0 :tol 300000.0)))

@@ -1,7 +1,8 @@
 //! Enterprise-scoped metadata setters: `(set-enterprise-id)`,
 //! `(set-assets-socket-addr)`, `(set-dispatch-socket-addr)`,
-//! `(set-default-request-lifetime-ms)`,
-//! `(set-default-augment-lifetime-ms)`.
+//! `(set-default-request-lifetime-s)`,
+//! `(set-default-augment-lifetime-s)`, and the `-ms` names that still
+//! work.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,6 +11,7 @@ use parking_lot::RwLock;
 use tulisp::{Error, TulispContext};
 
 use super::super::Metadata;
+use super::super::renames::warn_renamed;
 
 pub(super) fn register(ctx: &mut TulispContext, metadata: Arc<RwLock<Metadata>>) {
     let m = metadata.clone();
@@ -40,20 +42,71 @@ pub(super) fn register(ctx: &mut TulispContext, metadata: Arc<RwLock<Metadata>>)
             Ok(true)
         },
     );
-    let m = metadata.clone();
-    ctx.defun(
-        "set-default-request-lifetime-ms",
-        move |ms: i64| -> Result<bool, Error> {
-            m.write().default_request_lifetime = Duration::from_millis(ms.max(0) as u64);
+    for (name, ms_name, augment) in [
+        (
+            "set-default-request-lifetime-s",
+            "set-default-request-lifetime-ms",
+            false,
+        ),
+        (
+            "set-default-augment-lifetime-s",
+            "set-default-augment-lifetime-ms",
+            true,
+        ),
+    ] {
+        let store = move |md: &mut Metadata, d: Duration| {
+            if augment {
+                md.default_augment_lifetime = d;
+            } else {
+                md.default_request_lifetime = d;
+            }
+        };
+        let m = metadata.clone();
+        ctx.defun(name, move |secs: f64| -> Result<bool, Error> {
+            store(&mut m.write(), lifetime(name, secs)?);
             Ok(true)
-        },
-    );
-    let m = metadata.clone();
-    ctx.defun(
-        "set-default-augment-lifetime-ms",
-        move |ms: i64| -> Result<bool, Error> {
-            m.write().default_augment_lifetime = Duration::from_millis(ms.max(0) as u64);
+        });
+        let m = metadata.clone();
+        ctx.defun(ms_name, move |ms: i64| -> Result<bool, Error> {
+            warn_renamed(ms_name, name, " (seconds)");
+            store(&mut m.write(), Duration::from_millis(ms.max(0) as u64));
             Ok(true)
-        },
-    );
+        });
+    }
+}
+
+/// A default lifetime from seconds: fractions allowed, never negative.
+fn lifetime(name: &str, secs: f64) -> Result<Duration, Error> {
+    Duration::try_from_secs_f64(secs).map_err(|_| {
+        Error::invalid_argument(format!(
+            "{name}: seconds must be a non-negative number, got {secs}"
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::super::super::test_support::config_with;
+
+    #[test]
+    fn default_lifetimes_take_seconds_and_the_ms_names_still_work() {
+        let (cfg, _dir) = config_with("(set-default-request-lifetime-s 45)");
+        assert_eq!(
+            cfg.metadata().default_request_lifetime,
+            Duration::from_secs(45)
+        );
+        cfg.eval("(set-default-request-lifetime-ms 20000)").unwrap();
+        assert_eq!(
+            cfg.metadata().default_request_lifetime,
+            Duration::from_secs(20)
+        );
+        cfg.eval("(set-default-augment-lifetime-s 1.5)").unwrap();
+        assert_eq!(
+            cfg.metadata().default_augment_lifetime,
+            Duration::from_millis(1500)
+        );
+        assert!(cfg.eval("(set-default-augment-lifetime-s -1)").is_err());
+    }
 }

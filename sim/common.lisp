@@ -162,7 +162,7 @@ without tracking the augmentations yourself. eg. a dispatcher that keeps
 a battery inverter charging at the highest power the live cap allows:
 
   (define-controller :id 'ems
-    :on-tick (lambda () (set-active-power 300 (component-bound-upper 300) 2000 t)))
+    :on-tick (lambda () (set-active-power 300 (component-bound-upper 300) :lifetime-s 2 :clamp t)))
 
 The optional :id is a readability/label. The timer is tracked on
 `active-timers` so `reset-state` cancels it on reload.

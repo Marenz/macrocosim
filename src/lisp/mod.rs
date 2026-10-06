@@ -86,7 +86,7 @@ pub struct Metadata {
     /// Fallback request lifetime when a `SetElectricalComponentPower`
     /// caller doesn't supply `request_lifetime`. Mirrors microsim's
     /// `retain-requests-duration-ms`. Tunable via
-    /// `(set-default-request-lifetime-ms N)`. The gRPC handler's
+    /// `(set-default-request-lifetime-s N)`. The gRPC handler's
     /// per-request validation in `server::resolve_lifetime` clamps
     /// to `[REQUEST_LIFETIME_MIN_S, REQUEST_LIFETIME_MAX_S]`; this
     /// default isn't clamped (a config that wants short / long
@@ -96,7 +96,7 @@ pub struct Metadata {
     /// Fallback lifetime for an Augment request that carries none.
     /// The proto documents 5 s for Augment where SetPower gets 60 s,
     /// so the two fallbacks are separate knobs. Tunable via
-    /// `(set-default-augment-lifetime-ms N)`. Like
+    /// `(set-default-augment-lifetime-s N)`. Like
     /// `default_request_lifetime`, this default isn't clamped to the
     /// RPC's `[AUGMENT_LIFETIME_MIN_S, REQUEST_LIFETIME_MAX_S]`
     /// (5 s, 15 min) range; a config that picks a value outside it is
