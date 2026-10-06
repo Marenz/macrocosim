@@ -2319,3 +2319,162 @@ sites, =gate_setpoint= and =reactive_bounds_raw=; stamp Lisp
 augmentations with it; drive setpoint expiry from =sim_step=.
 
 Fixed 2026-10-04 by the per-microgrid gateway: see the d5b update.
+
+* Review backlog — 2026-10-06
+** TODO Remove the old Lisp names                                  :lisp:cleanup:
+:LOGBOOK:
+- State "TODO"       from              [2026-10-06 Di 12:00]
+:END:
+
+For a release after 0.2.0. The names-and-units work kept every old
+Lisp spelling loading, converted, with a one-time warning. Once
+users have had a release to move, delete:
+
+- the =RENAMES= rows in =src/lisp/renames.rs=, the =Convert= variants
+  only they use, and the =Renamed<…>= wrapper and =rename_plist_value=
+  with their uses in =make.rs=, =weather.rs=, =frequency.rs=,
+  =load_drivers.rs=, =scenarios.rs=, =microgrids.rs= and =overrides.rs=
+  (the =*-defaults= setters);
+- the positional =LIFETIME-MS [CLAMP]= branch of =parse_tail= in
+  =src/lisp/defuns/setpoints.rs= and the same in the augment defuns;
+- the =-ms= defuns: =set-default-request-lifetime-ms=,
+  =set-default-augment-lifetime-ms= (=metadata.rs=, and their entries
+  in =ENTERPRISE_SETTERS= in =overrides.rs=), =set-physics-tick-ms=
+  (=grid_state.rs=) and =set-sample-lag-ms= (=runtime_modes.rs=);
+- =set-boiler-demand= (=load_drivers.rs=), =drive-boiler= and
+  =scenario-end-after= (=sim/scenarios.lisp=, =sim/common.lisp=), and
+  the =%kg-per-h-to-kg-per-s= defun =drive-boiler= calls
+  (=renames.rs=);
+- the old-keyword fallbacks through =common--seconds-arg= in
+  =sim/common.lisp= (=every :milliseconds=, =define-controller
+  :every-ms=) and =sim/scenarios.lisp= (=random-outage=, =hold=,
+  =ramp=), and the helper itself;
+- the =:component= fallback for a =check= in the scenario timeline
+  (=build_timeline= in =src/sim/scenarios.rs=);
+- the =%warn-renamed= defun when nothing calls it, and the
+  deprecation tests (=shipped_lisp_uses_no_renamed_keyword= loses its
+  old-name list);
+- the "Old Lisp names" section of =docs/names-and-units.md=.
+
+Mention the removal in that release's notes under Upgrading.
+
+** TODO macroctl pool --json has no settled shape                       :api:
+:LOGBOOK:
+- State "TODO"       from              [2026-10-06 Di 12:00]
+:END:
+
+=macroctl pool --json= prints an object of =power=, =bounds_lower= and
+=bounds_upper= (battery) or just =power= (PV), each the raw
+=metrics/latest= sample of the matching stream. The keys are not the
+stream names, and the human output mimics the =Sample<Q>= shape
+instead. Decide one shape and name its fields by the rules in
+=docs/names-and-units.md=.
+
+** TODO Python formula() and latest() return raw floats and dicts   :python:api:
+:LOGBOOK:
+- State "TODO"       from              [2026-10-06 Di 12:00]
+:END:
+
+=Site.formula()= returns a bare float and =Site.latest()= the raw
+=metrics/latest= dict, so the typed-quantity rule of the names page
+stops at them. Return =Power= / =Energy= / =Percentage= by stream, the
+way =grid_power()= and =grid_energy()= already do, and give =latest()=
+a typed record with =ts= as a =datetime=.
+
+** TODO Site-import body uses an outside camelCase format           :api:lisp:
+:LOGBOOK:
+- State "TODO"       from              [2026-10-06 Di 12:00]
+:END:
+
+=POST /api/microgrids/import= takes a site export's =components.json=
+and =connections.json= verbatim, so its field names are the exporter's
+camelCase and carry no unit suffix. Leave the input alone, but decide
+whether the import reply and the =site_import= module's docs should say
+which unit each imported number is read in.
+
+** TODO Units for temperature, irradiance and price                   :design:
+:LOGBOOK:
+- State "TODO"       from              [2026-10-06 Di 12:00]
+:END:
+
+The names page covers W, Wh, VAr, VA, V, A, Hz, percent and seconds.
+Temperature (=°C=), irradiance (=W/m²=) and price are not named yet:
+they appear only in the unmerged battery-thermal plan. When that
+lands, pick suffixes (=-c=, =-w-per-m2=, a price unit) and extend the
+rules, the Lisp / HTTP / macroctl / Python tables and the rename
+checks together, before Modbus or CAN register maps copy the names.
+
+** TODO A stop route that names the scenario it stops                :api:scenarios:
+:LOGBOOK:
+- State "TODO"       from              [2026-10-06 Di 12:00]
+:END:
+
+=POST /api/scenarios/stop= takes no name: it runs =(scenario-stop)=,
+which stops whichever scenario the journal holds. =POST
+/api/scenarios/{name}/start= names its scenario, so the pair is
+lopsided. Decide whether stop should be =/api/scenarios/{name}/stop=,
+and what it answers when that scenario is not the running one.
+
+** TODO Say which microgrid a whole-site scenario's records land on  :api:scenarios:
+:LOGBOOK:
+- State "TODO"       from              [2026-10-06 Di 12:00]
+:END:
+
+A scenario's checks, events and recordings are written through the
+ambient site, which with no microgrid in scope is the lowest
+registered id (=SiteRouter::site=). Nothing in a response says
+so, so a client learns it from the docs. Add a server field (for
+example =microgrid_id= on the scenario list / start replies and the
+summary) that names the microgrid the records land on.
+
+** TODO One shared extractor for a microgrid's runtime handle      :api:cleanup:
+:LOGBOOK:
+- State "TODO"       from              [2026-10-06 Di 12:00]
+:END:
+
+The HTTP handlers reach a microgrid's runtime two ways. The
+=metrics/*= handlers in =microgrid_data.rs= take
+=Extension<MicrogridLoopbacks>= and look the slot up with
+=loopback_of= / =logical_meter_of=. The create, import, load-as and
+snapshot-load handlers take =Extension<MicrogridRuntimes>= and call
+=start_and_report=. Fold both into one extractor next to =Mg=, so a
+handler asks for "this microgrid's runtime" once and the 404 / 503
+wording lives in one place.
+
+** TODO UI create, load and import move the selected microgrid       :ui:
+:LOGBOOK:
+- State "TODO"       from              [2026-10-06 Di 12:00]
+:END:
+
+In the SPA, the create dialog, the import dialog and the load-as offer
+each call =selectMicrogrid= on the new id once the POST answers
+(=ui-assets/panels.js=), so the user leaves the microgrid they were
+working on. A plain Load (=/api/load=) only refreshes the list. Decide
+whether these writes should leave the selection alone and show the new
+card instead, and make the three agree.
+
+** TODO An error code field in the JSON error body                    :api:
+:LOGBOOK:
+- State "TODO"       from              [2026-10-06 Di 12:00]
+:END:
+
+Every failure is a JSON object with an =error= string, plus
+route-specific extras (=ApiError= in =src/ui/api.rs=). Clients tell
+failures apart by status and by matching the text. Only the formula
+route adds a machine-readable kind. Add a stable =code= field beside
+=error= (for example =unknown_field=, =no_microgrid=, =id_taken=) on
+every failure, list the codes in =AGENTS.md=, and have the SPA and the
+Python client branch on it.
+
+** TODO History and setpoints answer an empty result for an unknown component :api:
+:LOGBOOK:
+- State "TODO"       from              [2026-10-06 Di 12:00]
+:END:
+
+=GET /api/mg/{mg}/component/{id}/history= and =.../setpoints= answer 200
+with an empty =samples= / =events= list for an id that is not a
+component (=history_body= uses =unwrap_or_default=; =setpoints_body=
+does not look the component up), while =.../component/{id}=, =status=
+and =drive= answer 404. Make the two read routes answer 404 for an
+unknown component id as well, and check the SPA's inspector copes when
+a selected component disappears.
