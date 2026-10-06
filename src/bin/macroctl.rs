@@ -784,21 +784,31 @@ fn same_endpoint(a: &str, b: &str) -> bool {
     endpoint_authority(a) == endpoint_authority(b)
 }
 
-/// The microgrid `mg` (else the lowest id) in an `/api/microgrids`
-/// reply, with its running gRPC server's address. The error names the
+/// The microgrid to use from an `/api/microgrids` reply, as its id
+/// and its entry: `explicit` when the listing has it, otherwise the
+/// lowest id. The error names an `explicit` id the listing lacks, or
+/// says the listing is empty.
+fn choose_mg(
+    list: &serde_json::Value,
+    explicit: Option<u64>,
+) -> Result<(u64, &serde_json::Value), String> {
+    match explicit {
+        Some(id) => listed(list)
+            .find(|&(m, _)| m == id)
+            .ok_or_else(|| format!("microgrid {id} not registered")),
+        None => listed(list)
+            .min_by_key(|&(m, _)| m)
+            .ok_or_else(|| "no microgrids registered".to_string()),
+    }
+}
+
+/// The microgrid [`choose_mg`] picks from an `/api/microgrids` reply,
+/// with its running gRPC server's address. The error names the
 /// microgrid when it is not registered, has no runtime, is not
 /// running, or has no address, and carries the runtime's `error`
 /// text when it reports one.
 fn pick_grpc_addr(list: &serde_json::Value, mg: Option<u64>) -> Result<(u64, String), String> {
-    let entries = list.as_array().ok_or("unexpected /api/microgrids reply")?;
-    let id = match mg {
-        Some(id) => id,
-        None => lowest_id(list).ok_or("no microgrids registered")?,
-    };
-    let entry = entries
-        .iter()
-        .find(|m| m.get("id").and_then(|v| v.as_u64()) == Some(id))
-        .ok_or_else(|| format!("microgrid {id} not registered"))?;
+    let (id, entry) = choose_mg(list, mg)?;
     let runtime = entry.get("runtime").filter(|r| !r.is_null());
     let running = runtime
         .and_then(|r| r.get("status")?.as_str())
@@ -851,13 +861,13 @@ async fn resolve_microgrid_id(
         return Ok(id);
     }
     let list = fetch_microgrids(http, ui_addr).await?;
-    lowest_id(&list).ok_or_else(|| "no microgrids registered".into())
+    Ok(choose_mg(&list, None)?.0)
 }
 
-/// The microgrid a live `scenario run --wait` or a `scenario report
-/// --assert` reads, from one read of `/api/microgrids`: `explicit`
-/// when the listing has it, otherwise the lowest id. With `assert`,
-/// [`assert_target`] checks it against the same listing.
+/// The microgrid a scenario readout (`summary`, `report`, `events`,
+/// `run --wait`) reads: [`choose_mg`] over one read of
+/// `/api/microgrids`. With `assert`, [`assert_target`] checks it
+/// against the same listing.
 async fn resolve_scenario_mg(
     http: &reqwest::Client,
     ui_addr: &str,
@@ -865,11 +875,7 @@ async fn resolve_scenario_mg(
     assert: bool,
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let list = fetch_microgrids(http, ui_addr).await?;
-    let mg = match explicit {
-        Some(id) if listed_ids(&list).any(|m| m == id) => id,
-        Some(id) => return Err(format!("microgrid {id} not registered").into()),
-        None => lowest_id(&list).ok_or("no microgrids registered")?,
-    };
+    let (mg, _) = choose_mg(&list, explicit)?;
     if assert {
         assert_target(&list, mg)?;
     }
@@ -893,19 +899,19 @@ async fn fetch_microgrids(
     Ok(checked(resp).await?.json().await?)
 }
 
-/// The microgrid ids in an `/api/microgrids` reply; none for a reply
-/// that is not a list.
-fn listed_ids(list: &serde_json::Value) -> impl Iterator<Item = u64> + '_ {
+/// The entries in an `/api/microgrids` reply that carry an id, each
+/// with that id; none for a reply that is not a list.
+fn listed(list: &serde_json::Value) -> impl Iterator<Item = (u64, &serde_json::Value)> {
     list.as_array()
         .into_iter()
         .flatten()
-        .filter_map(|m| m.get("id")?.as_u64())
+        .filter_map(|m| Some((m.get("id")?.as_u64()?, m)))
 }
 
 /// The lowest microgrid id in an `/api/microgrids` reply; `None` for
 /// an empty list or a reply that is not a list.
 fn lowest_id(list: &serde_json::Value) -> Option<u64> {
-    listed_ids(list).min()
+    listed(list).map(|(id, _)| id).min()
 }
 
 /// Whether `--assert` on microgrid `mg` checks anything. A
@@ -1265,20 +1271,16 @@ async fn run_scenario(
             println!("loaded {path}");
         }
         ScenarioCmd::Summary => {
-            let mg = resolve_microgrid_id(http, ui_addr, microgrid_id).await?;
+            let mg = resolve_scenario_mg(http, ui_addr, microgrid_id, false).await?;
             let s = get_json(http, format!("{ui_addr}/api/mg/{mg}/scenario")).await?;
             print_summary(&s, json);
         }
         ScenarioCmd::Report { assert } => {
-            let mg = if assert {
-                resolve_scenario_mg(http, ui_addr, microgrid_id, true).await?
-            } else {
-                resolve_microgrid_id(http, ui_addr, microgrid_id).await?
-            };
+            let mg = resolve_scenario_mg(http, ui_addr, microgrid_id, assert).await?;
             fetch_print_assert_report(http, ui_addr, mg, json, assert).await?;
         }
         ScenarioCmd::Events { since, limit } => {
-            let mg = resolve_microgrid_id(http, ui_addr, microgrid_id).await?;
+            let mg = resolve_scenario_mg(http, ui_addr, microgrid_id, false).await?;
             let e = send_json(
                 http.get(format!("{ui_addr}/api/mg/{mg}/scenario/events"))
                     .query(&[("since", since.to_string()), ("limit", limit.to_string())]),
@@ -1974,6 +1976,21 @@ mod tests {
     }
 
     #[test]
+    fn choose_mg_takes_a_listed_id_else_the_lowest() {
+        let list = serde_json::json!([{"id": 7}, {"id": 3}]);
+        assert_eq!(choose_mg(&list, Some(7)), Ok((7, &list[0])));
+        assert_eq!(choose_mg(&list, None), Ok((3, &list[1])));
+        assert_eq!(
+            choose_mg(&list, Some(9)).unwrap_err(),
+            "microgrid 9 not registered"
+        );
+        assert_eq!(
+            choose_mg(&serde_json::json!([]), None).unwrap_err(),
+            "no microgrids registered"
+        );
+    }
+
+    #[test]
     fn pick_grpc_addr_defaults_to_the_lowest_running_microgrid() {
         let list = serde_json::json!([
             {"id": 7, "runtime": {"status": "running", "grpc_addr": "[::1]:8807", "error": null}},
@@ -2041,7 +2058,8 @@ mod tests {
         );
     }
 
-    /// The requests a [`canned_ui_server`] got, each as `METHOD path`.
+    /// The requests a [`canned_ui_server`] got, each as `METHOD
+    /// path`.
     type Requests = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
     /// A UI server stand-in on 127.0.0.1 that answers each of `n`
@@ -2153,6 +2171,17 @@ mod tests {
             assert: false,
         };
         let err = run_scenario(&test_client(), cmd, &ui, Some(9), false)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "microgrid 9 not registered");
+        assert_eq!(*requests.lock().unwrap(), ["GET /api/microgrids"]);
+    }
+
+    #[tokio::test]
+    async fn scenario_summary_reads_nothing_from_an_unregistered_microgrid() {
+        // Room for a second request, so a scenario GET would be seen.
+        let (ui, requests) = canned_ui_server(r#"[{"id": 3}]"#, 2);
+        let err = run_scenario(&test_client(), ScenarioCmd::Summary, &ui, Some(9), false)
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), "microgrid 9 not registered");
