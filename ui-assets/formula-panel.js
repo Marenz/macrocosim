@@ -306,7 +306,7 @@ export async function refreshFormula() {
     SINGLE_ID_METRICS.has(metric) ||
     (GROUP_ID_METRICS.has(metric) && useSelectionEl().checked && selection.length)
   ) {
-    params.set("ids", selection.join(","));
+    params.set("component_ids", selection.join(","));
   }
   for (const [id, param] of ENGINE_OPTIONS) {
     if (document.getElementById(id).checked) params.set(param, "true");

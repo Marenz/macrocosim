@@ -522,7 +522,7 @@ export const microgridsPanel = (() => {
       if (!chosen) return;
       const body = { name: chosen.name, components, connections };
       // Omitted entirely when blank, so the server allocates.
-      if (chosen.mid !== null) body.mid = chosen.mid;
+      if (chosen.mid !== null) body.id = chosen.mid;
       try {
         const res = await mutate("POST", "/api/microgrids/import", body);
         const m = await res.json();

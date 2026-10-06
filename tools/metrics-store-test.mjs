@@ -74,13 +74,13 @@ assert.equal(pfText(Number.NaN, 6000), "PF —");
 // Every branch of the readout is pinned here, because the power
 // branch delegates its ladder to live.js and the two have to keep
 // producing the same strings: the M and k rungs and their exact
-// boundaries, the sub-kilo rung's single decimal, the "var" → "VAr"
+// boundaries, the sub-kilo rung's single decimal, the "VAr"
 // spelling on each rung, and the two decimals the non-power branch
 // uses instead of the ladder.
 assert.equal(fmtValue("Power", "W", 1_234_000), "1.23 MW");
-assert.equal(fmtValue("ReactivePower", "var", -1234), "-1.23 kVAr");
-assert.equal(fmtValue("ReactivePower", "var", 1_500_000), "1.50 MVAr");
-assert.equal(fmtValue("ReactivePower", "var", 500), "500.0 VAr");
+assert.equal(fmtValue("ReactivePower", "VAr", -1234), "-1.23 kVAr");
+assert.equal(fmtValue("ReactivePower", "VAr", 1_500_000), "1.50 MVAr");
+assert.equal(fmtValue("ReactivePower", "VAr", 500), "500.0 VAr");
 assert.equal(fmtValue("Power", "W", 999.94), "999.9 W");
 assert.equal(fmtValue("Power", "W", 0), "0.0 W");
 assert.equal(fmtValue("Power", "W", -0.04), "-0.0 W");
@@ -89,10 +89,9 @@ assert.equal(fmtValue("Power", "W", 1000), "1.00 kW");
 assert.equal(fmtValue("Power", "W", 1_000_000), "1.00 MW");
 // The ladder is reached by quantity OR by wire unit, independently:
 // a power quantity carrying an already-scaled unit still scales, and
-// a non-power quantity carrying "var" still scales and still spells
-// the unit "VAr".
+// a non-power quantity carrying "VAr" still scales.
 assert.equal(fmtValue("Power", "kW", 5), "5.0 kW");
-assert.equal(fmtValue("ApparentPower", "var", 2500), "2.50 kVAr");
+assert.equal(fmtValue("ApparentPower", "VAr", 2500), "2.50 kVAr");
 // Non-power quantities skip the ladder entirely: two decimals and
 // the raw unit, however large the number.
 assert.equal(fmtValue("Frequency", "Hz", 50.0171), "50.02 Hz");

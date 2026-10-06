@@ -415,7 +415,7 @@ const importPost = page.waitForRequest(
 );
 await page.click("#import-mg-form button[type=submit]");
 const postedKeys = Object.keys(JSON.parse((await importPost).postData()));
-check("e2e: a blank id omits mid from the import request", !postedKeys.includes("mid"), JSON.stringify(postedKeys));
+check("e2e: a blank id omits id from the import request", !postedKeys.includes("id"), JSON.stringify(postedKeys));
 await waitFor(async () => (await mgIds()).includes(wantAuto), 15000).catch(() => {});
 check(
   "e2e: a blank id auto-assigns the lowest free microgrid id",
@@ -713,7 +713,7 @@ await page.evaluate(async () => { const { topology } = await import("/assets/top
 // no power through it has no power factor to show. Command it (the
 // setpoint expires on its own, so re-runs start from the same
 // state) and wait for the ramp to reach the live overlay.
-const setpointOk = (await evalMg("(set-active-power 1001 -8000 60000)")).ok;
+const setpointOk = (await evalMg("(set-active-power 1001 -8000 :lifetime-s 60)")).ok;
 check("e2e: hover setup — inverter setpoint accepted", setpointOk === true, String(setpointOk));
 await waitFor(async () => {
   const e = await page.evaluate(async () => {
@@ -1334,7 +1334,7 @@ check("e2e: plugging a city car shows it in the card", /city/.test(pluggedText ?
 const evOk = await (async () => {
   const r = await fetch(`${BASE}/api/mg/2200/eval`, {
     method: "POST",
-    body: `(set-active-power ${chargerId} 22000 60000)`,
+    body: `(set-active-power ${chargerId} 22000 :lifetime-s 60)`,
     signal: AbortSignal.timeout(5000),
   });
   return r.ok;
@@ -1392,10 +1392,10 @@ await page.evaluate(async () => {
 });
 
 // ── e2e: the steam boiler end to end ───────────────────────────────
-// A controllable gas/electric hybrid: :demand (kg/h) is the base
+// A controllable gas/electric hybrid: :demand-kg-per-s is the base
 // load, an active-power setpoint allots how much of it is actually
 // drawn (min(allotment, demand-equivalent) at the target pressure —
-// 100 kg/h ≈ 62.7 kW here), and the boiler's own pressure state can
+// 0.025 kg/s ≈ 56.4 kW here), and the boiler's own pressure state can
 // decline the allotment back toward zero once it drifts above the
 // 8 bar target. Fresh fixture ids (9901/9902), clear of the demo's
 // (1, 2, 100, 1000, 1001) and the import section's (9801/9802,
@@ -1406,7 +1406,7 @@ const BOILER_ID = 9901;
 const BOILER_METER_ID = 9902;
 const boilerSetupOk = (
   await evalMg(
-    `(make-meter :id ${BOILER_METER_ID}) (make-steam-boiler :id ${BOILER_ID} :demand 100.0) (connect 2 ${BOILER_METER_ID}) (connect ${BOILER_METER_ID} ${BOILER_ID})`,
+    `(make-meter :id ${BOILER_METER_ID}) (make-steam-boiler :id ${BOILER_ID} :demand-kg-per-s 0.025) (connect 2 ${BOILER_METER_ID}) (connect ${BOILER_METER_ID} ${BOILER_ID})`,
   )
 ).ok;
 check("e2e: boiler fixture created behind its own meter", boilerSetupOk === true, String(boilerSetupOk));
@@ -1418,11 +1418,11 @@ await page.evaluate(async (id) => {
 }, BOILER_ID);
 const boilerKnobDefuns = await waitFor(async () => {
   const ds = await page.evaluate(() => [...document.querySelectorAll(".knob-input")].map((i) => i.dataset.defun));
-  return ds.includes("set-boiler-demand") && ds.includes("set-boiler-pressure") ? ds : null;
+  return ds.includes("set-boiler-demand-kg-per-s") && ds.includes("set-boiler-pressure") ? ds : null;
 });
 check(
   "e2e: the boiler inspector shows its demand and pressure knobs",
-  boilerKnobDefuns.includes("set-boiler-demand") && boilerKnobDefuns.includes("set-boiler-pressure"),
+  boilerKnobDefuns.includes("set-boiler-demand-kg-per-s") && boilerKnobDefuns.includes("set-boiler-pressure"),
   JSON.stringify(boilerKnobDefuns),
 );
 // Command mode: steam-boiler is in inspect.js's ACCEPTS_SETPOINTS, so
@@ -1435,10 +1435,10 @@ check(
 // installed at construction, pressure from the boiler's own state —
 // which starts pinned to the 8 bar target (no :initial-bar given).
 const demandKnob = await waitFor(async () => {
-  const v = await page.inputValue('.knob-input[data-defun="set-boiler-demand"]');
+  const v = await page.inputValue('.knob-input[data-defun="set-boiler-demand-kg-per-s"]');
   return v || null;
 }, 10000);
-check("e2e: the demand knob is prefilled from construction", demandKnob === "100", demandKnob);
+check("e2e: the demand knob is prefilled from construction", demandKnob === "0.025", demandKnob);
 const pressureKnob = await waitFor(async () => {
   const v = await page.inputValue('.knob-input[data-defun="set-boiler-pressure"]');
   return v || null;
@@ -1480,7 +1480,7 @@ check(
 
 // A pressure poke above the 8 bar target: the boiler declines
 // electricity, so consumption decays back toward zero. Decay back to
-// the target takes ~14 min at this demand — far outside the smoke's
+// the target takes ~16 min at this demand — far outside the smoke's
 // timescale, so "declined" is stable for this assertion.
 const boilerPressureOk = (await evalMg(`(set-boiler-pressure ${BOILER_ID} 9.5)`)).ok;
 check("e2e: the pressure poke is accepted", boilerPressureOk === true, String(boilerPressureOk));
@@ -1624,7 +1624,7 @@ await page.evaluate(() => localStorage.removeItem("macrocosim-topology-live"));
 // ── e2e: weather panel ──────────────────────────────────────────────
 // Runs LAST: the weather this section installs (and the sunrise/sunset
 // override below) persists on the site for the rest of the run.
-// Berlin's PV (id 200) passes :sunlight% explicitly and is driven by a
+// Berlin's PV (id 200) passes :sunlight-pct explicitly and is driven by a
 // set-solar-sunlight timer (examples/berlin-demo.lisp), so it's Manual
 // and its power does not follow weather — assert the panel's own
 // site-% readout, not inverter power.

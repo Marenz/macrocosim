@@ -22,19 +22,17 @@ import { mgFetch } from "./routing.js";
 const SPARK_LEN = 900;
 
 // Readout for a raw sample, which arrives as a quantity + a wire unit
-// (SI "var", which every readout spells "VAr") rather than the
-// display unit live.js's helpers take. This is the adapter over that
-// difference: a power-family reading delegates to formatScaled for
-// the W → kW → MW ladder, so the two surfaces scale identically by
-// construction; every other quantity skips the ladder and keeps two
-// decimals on its unit as-is.
+// rather than the display unit live.js's helpers take. This is the
+// adapter over that difference: a power-family reading delegates to
+// formatScaled for the W → kW → MW ladder, so the two surfaces scale
+// identically by construction; every other quantity skips the ladder
+// and keeps two decimals on its unit as-is.
 export function fmtValue(quantity, unit, value) {
   if (value == null || !Number.isFinite(value)) return "—";
-  const shown = unit === "var" ? "VAr" : unit;
-  if (quantity === "Power" || quantity === "ReactivePower" || unit === "W" || unit === "var") {
-    return formatScaled(value, shown);
+  if (quantity === "Power" || quantity === "ReactivePower" || unit === "W" || unit === "VAr") {
+    return formatScaled(value, unit);
   }
-  return `${value.toFixed(2)} ${shown}`;
+  return `${value.toFixed(2)} ${unit}`;
 }
 
 // Power factor from matching P and Q samples: |P| / hypot(P, Q).

@@ -159,7 +159,7 @@ async def test_meter_reactive_power_reads_and_drives_through_the_site() -> None:
     )
     assert reads == [7]
     await m.reactive_power.set(ReactivePower.from_kilo_volt_amperes_reactive(1.5))
-    assert calls == [(7, "drive", {"reactive_var": 1500.0})]
+    assert calls == [(7, "drive", {"reactive_power_var": 1500.0})]
 
 
 async def test_rejected_eval_raises_from_raw_drive() -> None:

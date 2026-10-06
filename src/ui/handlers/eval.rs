@@ -48,6 +48,7 @@ pub(in crate::ui) async fn eval_for_mg(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::ui) struct FormatQuery {
     /// Column budget for the formatter. Optional; defaults to 80.
     /// Clamped to a sane range so a stray client can't make

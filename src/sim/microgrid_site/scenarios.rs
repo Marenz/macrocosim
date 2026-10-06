@@ -68,7 +68,7 @@ pub(crate) struct ScenarioReport {
     /// against the last P sample, not an independently-peaked P.
     /// `None` before any pairable PQ sample, or when both P and Q
     /// were 0 at that instant.
-    pub site_pf_at_peak_var: Option<f64>,
+    pub site_pf_at_reactive_peak: Option<f64>,
     pub total_battery_charged_wh: f64,
     pub total_battery_discharged_wh: f64,
     pub total_pv_produced_wh: f64,
@@ -540,7 +540,7 @@ impl MicrogridSite {
         let peak_pq = g.peak_grid_pq();
         drop(g);
         let peak_grid_var = peak_pq.map(|(_, q)| q.abs()).unwrap_or(0.0);
-        let site_pf_at_peak_var = peak_pq.and_then(|(p, q)| {
+        let site_pf_at_reactive_peak = peak_pq.and_then(|(p, q)| {
             let apparent = (p * p + q * q).sqrt();
             (apparent != 0.0).then(|| p.abs() / apparent)
         });
@@ -563,7 +563,7 @@ impl MicrogridSite {
             scenario_elapsed_s,
             peak_grid_w,
             peak_grid_var,
-            site_pf_at_peak_var,
+            site_pf_at_reactive_peak,
             total_battery_charged_wh: total_charged,
             total_battery_discharged_wh: total_discharged,
             total_pv_produced_wh: total_pv,

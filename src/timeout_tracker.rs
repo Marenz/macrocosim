@@ -27,8 +27,8 @@ pub enum SetpointAxis {
 }
 
 impl SetpointAxis {
-    /// The axis's unit label, as carried into setpoint error
-    /// messages.
+    /// The axis's unit label, as named in setpoint error messages
+    /// and in the active-setpoint readout.
     pub fn unit(self) -> &'static str {
         match self {
             SetpointAxis::Active => "W",

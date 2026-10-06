@@ -215,7 +215,7 @@ unchanged.
 | `scenario_elapsed_s`           | seconds since `scenario-start`; frozen on stop            |
 | `peak_grid_w`                  | max active-power on the `grid_power` stream so far         |
 | `peak_grid_var`                | max \|reactive-power\| on the `grid_reactive_power` stream so far (tracked by magnitude, not signed max — Q swings both ways) |
-| `site_pf_at_peak_var`          | power factor `\|P\| / sqrt(P² + Q²)` at the grid connection point at the instant `peak_grid_var` was recorded (paired against the last P sample, not an independently-peaked P); `null` before any pairable PQ sample, or when P and Q were both 0 at that instant |
+| `site_pf_at_reactive_peak`     | power factor `\|P\| / sqrt(P² + Q²)` at the grid connection point at the instant `peak_grid_var` was recorded (paired against the last P sample, not an independently-peaked P); `null` before any pairable PQ sample, or when P and Q were both 0 at that instant |
 | `total_battery_charged_wh`     | sum across batteries; positive DC power → charging        |
 | `total_battery_discharged_wh`  | sum across batteries; negative DC power → discharging     |
 | `total_pv_produced_wh`         | sum across solar inverters; negative active P → produced  |

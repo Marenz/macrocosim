@@ -167,7 +167,7 @@ function daySeries(w, nowMs, ghost) {
   const peak = Number(w.peak_pct) || 0;
   // Ramp estimate: the midpoint of the configured ramp range, which
   // is what an ambient cloud draws from. See attenuationAt.
-  const rampMs = (((w.cloud_ramp?.[0] ?? 0) + (w.cloud_ramp?.[1] ?? 0)) / 2) * 1000;
+  const rampMs = (((w.cloud_ramp_s?.[0] ?? 0) + (w.cloud_ramp_s?.[1] ?? 0)) / 2) * 1000;
   const events = (w.events ?? [])
     .map((e) => ({
       start: Date.parse(e.start),
@@ -340,7 +340,7 @@ const TIPS = {
   depth: "How much light the cloud blocks at its darkest (%)",
   duration: "Cloud lifetime, fade-in to fade-out (s)",
   ramp: "Fade-in/out time at the cloud's edges (s); the middle holds at full depth. If 2×ramp exceeds duration the cloud is all ramp, and lasts 2×ramp",
-  rate: "Average random clouds per hour (Poisson); 0 = off",
+  gap: "Average seconds between random clouds (Poisson); 0 = off",
   peak: "Clear-sky maximum at the middle of the day",
   time: "UTC, HH:MM",
   bound: "Each random cloud draws uniformly from lo–hi",
@@ -355,13 +355,13 @@ const FIELDS = [
   { id: "weather-sunset", key: "sunset", label: "sunset", kind: "time", sec: "clear", tip: TIPS.time },
   { id: "weather-peak-pct", key: "peak_pct", label: "peak %", kind: "num", sec: "clear", tip: TIPS.peak },
   {
-    id: "weather-cloud-rate",
-    key: "cloud_rate_per_h",
-    label: "clouds/h",
+    id: "weather-cloud-gap",
+    key: "cloud_mean_gap_s",
+    label: "gap s",
     kind: "num",
     sec: "clouds",
-    tip: TIPS.rate,
-    // An empty rate is off, not "unknown" — say so instead of the
+    tip: TIPS.gap,
+    // An empty gap is off, not "unknown" — say so instead of the
     // bare dash every other field uses for "no reading yet".
     placeholder: "off",
   },
@@ -372,21 +372,21 @@ const FIELDS = [
 // value — the untouched half rides along at whatever it reads.
 const RANGES = [
   {
-    key: "cloud_depth",
+    key: "cloud_depth_pct",
     label: "depth %",
     lo: "weather-depth-lo",
     hi: "weather-depth-hi",
     tip: TIPS.depth,
   },
   {
-    key: "cloud_duration",
+    key: "cloud_duration_s",
     label: "duration s",
     lo: "weather-duration-lo",
     hi: "weather-duration-hi",
     tip: TIPS.duration,
   },
   {
-    key: "cloud_ramp",
+    key: "cloud_ramp_s",
     label: "ramp s",
     lo: "weather-ramp-lo",
     hi: "weather-ramp-hi",
@@ -511,16 +511,17 @@ const PASS_CLOUD = {
 // being typed, before (or without) any commit.
 const numIn = (id) => Number(document.getElementById(id)?.value.trim());
 
-// "≈ N clouds overhead on average": the arrival rate times how long
-// a cloud lasts is how many of them are up at any one moment — the
-// one number the rate and the duration range only mean together.
+// "≈ N clouds overhead on average": how long a cloud lasts over the
+// mean gap between clouds is how many of them are up at any one
+// moment — the one number the gap and the duration range only mean
+// together.
 function updateRateHint() {
   const el = document.getElementById("weather-rate-hint");
   if (!el) return;
-  const rate = numIn("weather-cloud-rate");
+  const gap = numIn("weather-cloud-gap");
   const meanDuration = (numIn("weather-duration-lo") + numIn("weather-duration-hi")) / 2;
-  const overhead = (rate * meanDuration) / 3600;
-  const show = Number.isFinite(overhead) && rate > 0;
+  const overhead = meanDuration / gap;
+  const show = Number.isFinite(overhead) && gap > 0;
   el.hidden = !show;
   el.textContent = show ? `≈ ${overhead.toFixed(1)} clouds overhead on average` : "";
 }
@@ -612,7 +613,7 @@ const scalarRows = (name) => FIELDS.filter((f) => f.sec === name).map(scalarRow)
 function liveHtml() {
   const clearSky = sectionHtml(
     "Clear sky",
-    "A sine curve between sunrise and sunset, peaking at peak%. Times are UTC.",
+    "A sine curve between sunrise and sunset, peaking at peak %. Times are UTC.",
     `<div class="wfields">${scalarRows("clear")}</div>`,
   );
   const randomClouds = sectionHtml(
@@ -730,7 +731,7 @@ function paintLiveSkeleton() {
   // The derived "clouds overhead" line follows the keystrokes in the
   // fields it is computed from, not their commits — it is a reading
   // of what you are typing, and nothing is posted for it.
-  for (const id of ["weather-cloud-rate", "weather-duration-lo", "weather-duration-hi"]) {
+  for (const id of ["weather-cloud-gap", "weather-duration-lo", "weather-duration-hi"]) {
     document.getElementById(id).addEventListener("input", updateRateHint);
   }
   // The ghost preview shows while the pass-a-cloud row is being
@@ -834,7 +835,7 @@ function applyLive(w) {
     paintLiveSkeleton();
     skeleton = "live";
   }
-  const pct = Number(w.pct) || 0;
+  const pct = Number(w.sunlight_pct) || 0;
   const clear = Number(w.clear_sky_pct) || 0;
   document.getElementById("weather-pct").textContent = pct.toFixed(1);
   const sunrise = hhmmToSecs(w.sunrise);

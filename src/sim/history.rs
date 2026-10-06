@@ -108,7 +108,7 @@ impl Metric {
             | Self::ActivePowerUpperBoundW => "W",
             Self::ReactivePowerVar
             | Self::ReactivePowerLowerBoundVar
-            | Self::ReactivePowerUpperBoundVar => "var",
+            | Self::ReactivePowerUpperBoundVar => "VAr",
             Self::FrequencyHz => "Hz",
             Self::SocPct => "%",
             Self::EnergyWh => "Wh",

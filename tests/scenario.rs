@@ -258,7 +258,7 @@ async fn drive_boiler_sets_demand_via_scenario_compile() {
         .steam_drive()
         .expect("demand reading")
         .demand_reading();
-    assert_eq!(r.value, 1800.0, "drive-boiler should set constant demand");
+    assert_eq!(r.value, 0.5, "drive-boiler should set constant demand");
 }
 
 /// The dedicated `POST /api/scenarios/stop` HTTP door must restore

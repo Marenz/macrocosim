@@ -385,7 +385,7 @@ impl SteamDrive for SteamBoiler {
     fn demand_reading(&self) -> ScalarReading {
         let s = self.demand_source.read();
         ScalarReading {
-            value: s.get(),
+            value: s.get() / 3600.0,
             expr: s.source_text(),
         }
     }

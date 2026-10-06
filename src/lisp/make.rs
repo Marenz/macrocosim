@@ -1871,12 +1871,12 @@ mod tests {
             let b = site.get(id).unwrap();
             assert!(b.has_unrenderable_source());
             let v = b.steam_drive().unwrap().demand_reading().value;
-            assert!((v - 1800.0).abs() < 1e-3, "{id}: {v}");
+            assert!((v - 0.5).abs() < 1e-6, "{id}: {v}");
         }
     }
 
-    /// A lambda for `:demand-kg-per-s` is a kg/s source; the boiler
-    /// reads it back in its own kg/h.
+    /// A lambda for `:demand-kg-per-s` is a kg/s source, read back in
+    /// kg/s.
     #[test]
     fn a_dynamic_steam_demand_is_read_in_kg_per_s() {
         let (cfg, _dir) = crate::lisp::test_support::config_with(
@@ -1887,7 +1887,7 @@ mod tests {
         let b = site.get(43).unwrap();
         assert!(b.has_unrenderable_source());
         let v = b.steam_drive().unwrap().demand_reading().value;
-        assert!((v - 1800.0).abs() < 1e-3, "{v}");
+        assert!((v - 0.5).abs() < 1e-6, "{v}");
     }
 
     #[test]

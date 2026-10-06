@@ -13,6 +13,7 @@ use crate::lisp::Config;
 use crate::ui::api::{ApiError, Json, Query};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::ui) struct ScriptsQuery {
     /// Directory to list, relative to the state dir. Empty / absent
     /// lists the state dir itself.

@@ -520,7 +520,7 @@ fn publish_power(
 
 /// Subscribe to one ReactivePower-valued formula and spawn a forwarder that
 /// pushes each `Sample<ReactivePower>` onto the MicrogridSite event bus as a
-/// `MicrogridSample { stream, quantity: "ReactivePower", unit: "var", ... }`
+/// `MicrogridSample { stream, quantity: "ReactivePower", unit: "VAr", ... }`
 /// event. Kept as a parallel pair with `subscribe_power_forwarder` /
 /// `publish_power` rather than a generic-over-quantity helper: that keeps
 /// the (far more heavily used) Power path monomorphic and easy to read,
@@ -577,7 +577,7 @@ fn publish_reactive(
     let ts_ms = sample.timestamp().timestamp_millis();
     // No energy hook on purpose: reactive energy (varh) accumulation is
     // out of scope; energy_stream_for never maps this stream.
-    publish_scalar(stream, "ReactivePower", "var", value, ts_ms, site, state);
+    publish_scalar(stream, "ReactivePower", "VAr", value, ts_ms, site, state);
 }
 
 /// Subscribe to the Frequency-valued grid formula and spawn a forwarder that
@@ -1116,7 +1116,7 @@ mod tests {
         publish_scalar(
             "grid_reactive_power",
             "ReactivePower",
-            "var",
+            "VAr",
             Some(1600.0),
             ts_ms,
             &site,
@@ -1129,13 +1129,15 @@ mod tests {
             r.peak_grid_var
         );
         // P=1200, Q=1600 → PF = 1200/2000 = 0.6, paired off the P above.
-        let pf = r.site_pf_at_peak_var.expect("pf after a paired PQ sample");
+        let pf = r
+            .site_pf_at_reactive_peak
+            .expect("pf after a paired PQ sample");
         assert!((pf - 0.6).abs() < 1e-6, "{pf}");
 
         publish_scalar(
             "pv_reactive_power",
             "ReactivePower",
-            "var",
+            "VAr",
             Some(9000.0),
             ts_ms,
             &site,

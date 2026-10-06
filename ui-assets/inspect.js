@@ -246,7 +246,13 @@ const KNOBS_BY_CATEGORY = {
     { label: "reactive apparent (VA)", defun: "set-reactive-apparent-va", group: "config" },
   ],
   "steam-boiler": [
-    { label: "demand (kg/h or expr)", defun: "set-boiler-demand", dynamic: true, unit: "kg/h" },
+    {
+      label: "demand (kg/s or expr)",
+      defun: "set-boiler-demand-kg-per-s",
+      token: "boiler-demand",
+      dynamic: true,
+      unit: "kg/s",
+    },
     { label: "pressure (bar)", defun: "set-boiler-pressure", unit: "bar" },
   ],
 };
@@ -570,7 +576,7 @@ function renderInspect(d, parentIds, childIds) {
         : "";
       return `<dt>${escapeHtml(k.label)}</dt><dd>
         <input ${inputAttrs} class="knob-input"
-               data-defun="${k.defun}"${k.dynamic ? ` data-dynamic="1" data-unit="${escapeHtml(k.unit || "")}"` : ""} />${exprChipHtml}${flagHtml}${measureBtnHtml}${resolvedHtml}
+               data-defun="${k.defun}"${k.token ? ` data-token="${k.token}"` : ""}${k.dynamic ? ` data-dynamic="1" data-unit="${escapeHtml(k.unit || "")}"` : ""} />${exprChipHtml}${flagHtml}${measureBtnHtml}${resolvedHtml}
       </dd>`;
     };
   const configKnobsHtml = knobs.filter((k) => k.group === "config").map(knobRow).join("");
@@ -1056,7 +1062,7 @@ function applySnapshot(id, snap) {
   const prevAxes = liveState && liveState.id === id ? liveState.axes : null;
   const knobEntries = new Map();
   for (const input of inspectEl.querySelectorAll(".knob-input[data-defun]")) {
-    const token = input.dataset.defun.replace(/^set-/, "");
+    const token = input.dataset.token ?? input.dataset.defun.replace(/^set-/, "");
     knobEntries.set(token, { input });
   }
   liveState = {
@@ -1075,10 +1081,10 @@ function applySnapshot(id, snap) {
   // carries over above. Without this, every accepted setpoint's
   // re-fetch raced the stream and flickered the graduation empty for
   // a beat.
-  const [aLo, aHi] = snap.envelope?.active ?? [null, null];
+  const [aLo, aHi] = snap.envelope?.active_w ?? [null, null];
   liveState.axes.active.lo = aLo ?? prevAxes?.active.lo ?? null;
   liveState.axes.active.hi = aHi ?? prevAxes?.active.hi ?? null;
-  const [rLo, rHi] = snap.envelope?.reactive ?? [null, null];
+  const [rLo, rHi] = snap.envelope?.reactive_var ?? [null, null];
   liveState.axes.reactive.lo = rLo ?? prevAxes?.reactive.lo ?? null;
   liveState.axes.reactive.hi = rHi ?? prevAxes?.reactive.hi ?? null;
 
@@ -1087,7 +1093,7 @@ function applySnapshot(id, snap) {
     if (sp.axis !== "active" && sp.axis !== "reactive") continue;
     liveState.axes[sp.axis].sp = {
       value: sp.value,
-      deadlineMs: sp.remaining_ms != null ? now + sp.remaining_ms : null,
+      deadlineMs: sp.remaining_s != null ? now + sp.remaining_s * 1000 : null,
     };
   }
 

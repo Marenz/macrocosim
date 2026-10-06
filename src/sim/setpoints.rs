@@ -42,6 +42,14 @@ impl SetpointKind {
             SetpointKind::AugmentReactiveBounds => "augment_reactive_bounds",
         }
     }
+
+    /// Unit of the value a setpoint of this kind carries.
+    pub fn unit(self) -> &'static str {
+        match self {
+            SetpointKind::ActivePower | SetpointKind::AugmentBounds => "W",
+            SetpointKind::ReactivePower | SetpointKind::AugmentReactiveBounds => "VAr",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

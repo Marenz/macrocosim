@@ -39,6 +39,8 @@ struct KnobState {
     /// (an inverter's PF-limit / apparent-VA cap before either is
     /// set) — the client still renders the input, empty.
     value: Option<f32>,
+    /// Unit of `value`; `None` for a unitless ratio.
+    unit: Option<&'static str>,
     /// Printed Lisp source for a dynamic (lambda / symbol) reading.
     /// `None` for a plain constant. Shipped unfiltered, including
     /// tulisp's opaque `CompiledDefun` closure Display (an unquoted
@@ -57,10 +59,12 @@ struct KnobState {
 struct ActiveSetpoint {
     axis: &'static str,
     value: f32,
+    /// Unit of `value`.
+    unit: &'static str,
     /// Time left before the request-lifetime timeout resets this
-    /// axis, in ms. `None` for a persistent (untracked) setpoint —
+    /// axis, in seconds. `None` for a persistent (untracked) setpoint —
     /// nothing in `TimeoutTracker` for this (id, axis).
-    remaining_ms: Option<u64>,
+    remaining_s: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -71,8 +75,8 @@ struct AxisFlags {
 
 #[derive(Serialize)]
 struct Envelope {
-    active: Option<(f32, f32)>,
-    reactive: Option<(f32, f32)>,
+    active_w: Option<(f32, f32)>,
+    reactive_var: Option<(f32, f32)>,
 }
 
 pub(in crate::ui) async fn component(
@@ -85,19 +89,21 @@ pub(in crate::ui) async fn component(
 fn knob(
     knob: &'static str,
     value: Option<f32>,
+    unit: Option<&'static str>,
     expr: Option<String>,
     leading: Option<bool>,
 ) -> KnobState {
     KnobState {
         knob,
         value,
+        unit,
         expr,
         leading,
     }
 }
 
-fn scalar_knob(name: &'static str, r: ScalarReading) -> KnobState {
-    knob(name, Some(r.value), r.expr, None)
+fn scalar_knob(name: &'static str, unit: &'static str, r: ScalarReading) -> KnobState {
+    knob(name, Some(r.value), Some(unit), r.expr, None)
 }
 
 /// The runtime knobs the component has, one set per capability it
@@ -107,27 +113,49 @@ fn knobs_for(c: &dyn crate::sim::SimulatedComponent) -> Vec<KnobState> {
     let mut knobs = Vec::new();
     if let Some(meter) = c.meter_drive() {
         if let Some(r) = meter.meter_power_reading() {
-            knobs.push(scalar_knob("meter-power", r));
+            knobs.push(scalar_knob("meter-power", "W", r));
         }
         match meter.meter_reactive_reading() {
-            Some(ReactiveReading::Var(r)) => knobs.push(scalar_knob("meter-reactive-power", r)),
+            Some(ReactiveReading::Var(r)) => {
+                knobs.push(scalar_knob("meter-reactive-power", "VAr", r))
+            }
             Some(ReactiveReading::PowerFactor { pf, leading }) => {
-                knobs.push(knob("meter-power-factor", Some(pf), None, Some(leading)));
+                knobs.push(knob(
+                    "meter-power-factor",
+                    Some(pf),
+                    None,
+                    None,
+                    Some(leading),
+                ));
             }
             None => {}
         }
     }
     if let Some(sun) = c.sunlight_drive() {
-        knobs.push(scalar_knob("solar-sunlight", sun.sunlight_reading()));
+        knobs.push(scalar_knob("solar-sunlight", "%", sun.sunlight_reading()));
     }
     if let Some(r) = c.reactive_limits() {
         let cap = r.reactive_capability();
-        knobs.push(knob("reactive-pf-limit", cap.pf_limit, None, None));
-        knobs.push(knob("reactive-apparent-va", cap.apparent_va, None, None));
+        knobs.push(knob("reactive-pf-limit", cap.pf_limit, None, None, None));
+        knobs.push(knob(
+            "reactive-apparent-va",
+            cap.apparent_va,
+            Some("VA"),
+            None,
+            None,
+        ));
     }
     if let Some(boiler) = c.steam_drive() {
-        knobs.push(scalar_knob("boiler-demand", boiler.demand_reading()));
-        knobs.push(scalar_knob("boiler-pressure", boiler.pressure_reading()));
+        knobs.push(scalar_knob(
+            "boiler-demand",
+            "kg/s",
+            boiler.demand_reading(),
+        ));
+        knobs.push(scalar_knob(
+            "boiler-pressure",
+            "bar",
+            boiler.pressure_reading(),
+        ));
     }
     knobs
 }
@@ -160,10 +188,11 @@ fn setpoints_for(site: &crate::sim::MicrogridSite, id: u64) -> Vec<ActiveSetpoin
         ev.map(|ev| ActiveSetpoint {
             axis,
             value: ev.value,
-            remaining_ms: site
+            unit: timeout_axis.unit(),
+            remaining_s: site
                 .gateway()
                 .remaining_lifetime(id, timeout_axis)
-                .map(|d| d.as_millis() as u64),
+                .map(|d| d.as_secs_f64()),
         })
     })
     .collect()
@@ -188,11 +217,11 @@ fn component_state(
             // children's, or own bounds alone when no child reports
             // any (the common case for Q, which ends at the
             // inverter).
-            active: site
+            active_w: site
                 .gateway()
                 .setpoint_envelope(id, SetpointAxis::Active)
                 .and_then(|b| b.outer_edges()),
-            reactive: site
+            reactive_var: site
                 .gateway()
                 .setpoint_envelope(id, SetpointAxis::Reactive)
                 .and_then(|b| b.outer_edges()),

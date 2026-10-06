@@ -56,6 +56,7 @@ pub(in crate::ui) async fn start_and_report(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::ui) struct CreateMicrogridBody {
     name: String,
     /// Microgrid id to claim. Omit to take the lowest free one.
@@ -228,13 +229,14 @@ fn create_core(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::ui) struct ImportMicrogridBody {
     name: String,
     /// Microgrid id to claim, the one the import dialog asks for.
     /// Omit to take the lowest free one, as every import did before
     /// the dialog existed — the field is additive.
     #[serde(default)]
-    mid: Option<u64>,
+    id: Option<u64>,
     #[serde(default)]
     tso: Option<String>,
     /// The site export's components.json, verbatim.
@@ -271,9 +273,9 @@ pub(in crate::ui) struct ImportMicrogridResp {
 /// nothing is created. The enterprise id allocator jumps past the
 /// import's highest id so later auto-assigned ids can't collide.
 ///
-/// The MICROGRID's own id is a separate matter: `mid` claims one
+/// The MICROGRID's own id is a separate matter: `id` claims one
 /// (the import dialog asks for it, pre-filled with the lowest free
-/// one), and omitting it auto-allocates exactly as before. A `mid`
+/// one), and omitting it auto-allocates exactly as before. An `id`
 /// some other microgrid already holds is refused with create's own
 /// 409, since claiming an id is create's job either way.
 pub(in crate::ui) async fn microgrids_import(
@@ -331,7 +333,7 @@ pub(in crate::ui) async fn microgrids_import(
     // whether an id is free, under the create lock that makes the
     // decision hold until the load inserts the entry.
     let created =
-        create_serialized(&config, &body.name, body.mid, None, body.tso.as_deref()).await?;
+        create_serialized(&config, &body.name, body.id, None, body.tso.as_deref()).await?;
     // Move the shared allocator past the imported ids before any
     // component is built, so nothing auto-allocates into that range.
     // Saturating: an export carrying id u64::MAX must not overflow
@@ -374,6 +376,7 @@ pub(in crate::ui) async fn microgrids_import(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::ui) struct LoadBody {
     /// Path of the file to load. Relative paths resolve against the
     /// state dir, the same anchor `(load …)` uses.
@@ -444,6 +447,7 @@ fn collision_response(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::ui) struct LoadAsBody {
     path: String,
     /// Id the copy is registered under.

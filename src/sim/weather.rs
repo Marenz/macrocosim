@@ -324,7 +324,7 @@ impl Weather {
 /// (`src/lisp/defuns/weather.rs`) and the HTTP weather routes
 /// (`src/ui/handlers/weather.rs`), so both surfaces enforce
 /// identical rules even though each phrases its error text around
-/// its own field vocabulary (`:cloud-mean-gap-s` vs `cloud_rate_per_h`).
+/// its own field vocabulary (`:cloud-mean-gap-s` vs `cloud_mean_gap_s`).
 /// Every fn here is a pure check — no `WeatherConfig`, no site, no
 /// error type tied to either caller's framework.
 pub mod validate {
@@ -429,6 +429,23 @@ pub mod validate {
             ));
         }
         Ok(if v > 0.0 { Some(v) } else { None })
+    }
+
+    /// The ambient cloud rate (events per hour) for a mean gap in
+    /// seconds. Zero is "no ambient clouds" and gives a zero rate.
+    pub fn cloud_rate_for_gap(gap_s: f64) -> Result<f32, String> {
+        if gap_s == 0.0 {
+            return Ok(0.0);
+        }
+        if !(gap_s.is_finite() && gap_s >= 0.0) {
+            return Err(format!(
+                "must be a non-negative number of seconds (0 disables), got {gap_s}"
+            ));
+        }
+        if gap_s < 1.0 {
+            return Err(format!("must be 0 or at least one second, got {gap_s}"));
+        }
+        Ok((3600.0 / gap_s) as f32)
     }
 
     /// Checked after both land, so a form/request moving the whole
@@ -570,21 +587,21 @@ impl WeatherPatch {
             // where `None` has no keyword of its own — but a NEGATIVE
             // rate is a mistake, not a second spelling of "off", so it
             // says so rather than silently disabling the generator.
-            let at = door.label(":cloud-mean-gap-s", "cloud_rate_per_h", true);
+            let at = door.label(":cloud-mean-gap-s", "cloud_mean_gap_s", true);
             cfg.cloud_rate_per_h = validate::cloud_rate(v).map_err(|e| format!("{at} {e}"))?;
         }
         if let Some(range) = self.cloud_depth {
-            let at = door.label(":cloud-depth-pct", "cloud_depth", false);
+            let at = door.label(":cloud-depth-pct", "cloud_depth_pct", false);
             validate::depth_range(range).map_err(|e| format!("{at} {e}"))?;
             cfg.cloud_depth = range;
         }
         if let Some(range) = self.cloud_duration {
-            let at = door.label(":cloud-duration-s", "cloud_duration", false);
+            let at = door.label(":cloud-duration-s", "cloud_duration_s", false);
             validate::secs_range(range).map_err(|e| format!("{at} {e}"))?;
             cfg.cloud_duration = range;
         }
         if let Some(range) = self.cloud_ramp {
-            let at = door.label(":cloud-ramp-s", "cloud_ramp", false);
+            let at = door.label(":cloud-ramp-s", "cloud_ramp_s", false);
             validate::secs_range(range).map_err(|e| format!("{at} {e}"))?;
             cfg.cloud_ramp = range;
         }

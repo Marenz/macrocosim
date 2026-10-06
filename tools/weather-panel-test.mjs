@@ -8,7 +8,9 @@
 // internals under test are re-exported, and the result is imported as
 // a data: URL. Nothing inside the functions is touched: this reads the
 // real source, and a rename here fails loudly rather than silently
-// testing a copy.
+// testing a copy. The field helpers look their inputs up by id, so a
+// stand-in `document` hands them plain objects, and the `mgFetch` stub
+// records each request.
 import { readFileSync } from "node:fs";
 
 const SRC = new URL("../ui-assets/weather-panel.js", import.meta.url);
@@ -23,15 +25,29 @@ if (removed !== 3) {
   );
   process.exit(1);
 }
+// A stand-in DOM: just the elements the field helpers look up by id,
+// each with the few properties they read and write.
+const elements = new Map();
+const element = (id) => {
+  if (!elements.has(id)) elements.set(id, { value: "", dataset: {}, hidden: false, textContent: "" });
+  return elements.get(id);
+};
+globalThis.document = { getElementById: element };
+// Every weather request, and the body the next one answers with.
+globalThis.weatherRequests = [];
+globalThis.weatherReply = null;
 const shimmed = [
-  "const mgFetch = async () => null;",
+  "const mgFetch = async (path, init) => {",
+  "  globalThis.weatherRequests.push({ path, init });",
+  "  return { ok: true, status: 200, json: async () => globalThis.weatherReply };",
+  "};",
   "const requireUplot = () => null;",
   "const isPanelOpen = () => false;",
   "const makeSidePanelToggle = () => {};",
   stripped,
-  "export { daySeries, eventsHtml };",
+  "export { FIELDS, commitField, daySeries, eventsHtml, fieldText, updateRateHint };",
 ].join("\n");
-const { daySeries, eventsHtml } = await import(
+const { FIELDS, commitField, daySeries, eventsHtml, fieldText, updateRateHint } = await import(
   `data:text/javascript;base64,${Buffer.from(shimmed).toString("base64")}`
 );
 
@@ -46,7 +62,7 @@ const near = (got, want, eps = 1e-6) => Math.abs(got - want) <= eps * Math.max(1
 
 // One UTC day, daylight all of it so every sample below sits under a
 // bright sky, and a zero ambient ramp so each cloud is a clean
-// rectangle (the curve's ramp estimate is read off `cloud_ramp`).
+// rectangle (the curve's ramp estimate is read off `cloud_ramp_s`).
 const DAY = "2026-01-02";
 const at = (hhmm) => `${DAY}T${hhmm}:00Z`;
 const NOW = at("12:00");
@@ -54,11 +70,11 @@ const PAYLOAD = {
   sunrise: "00:00",
   sunset: "23:59",
   peak_pct: 100,
-  cloud_rate_per_h: 0,
-  cloud_depth: [0, 0],
-  cloud_duration: [0, 0],
-  cloud_ramp: [0, 0],
-  pct: 49,
+  cloud_mean_gap_s: null,
+  cloud_depth_pct: [0, 0],
+  cloud_duration_s: [0, 0],
+  cloud_ramp_s: [0, 0],
+  sunlight_pct: 49,
   clear_sky_pct: 98,
   // Server-stamped, by the same clock as the event ends below.
   now: NOW,
@@ -136,6 +152,42 @@ const PAYLOAD = {
   check("ghost: the apex of an all-ramp cloud is full depth",
     apex >= 0 && near(preview[apex], 0),
     `${apex} ${preview[apex]}`);
+}
+
+// ── the cloud gap field: shown and sent as cloud_mean_gap_s ─────────
+
+{
+  const gap = FIELDS.find((f) => f.key === "cloud_mean_gap_s");
+  check("gap: a field reads and writes cloud_mean_gap_s", gap != null);
+  check("gap: the reading is shown as given", fieldText(13) === "13", fieldText(13));
+  check("gap: no ambient clouds shows the off placeholder",
+    fieldText(null) === "" && gap.placeholder === "off",
+    `${fieldText(null)} ${gap.placeholder}`);
+  element(gap.id).value = "13";
+  globalThis.weatherRequests.length = 0;
+  globalThis.weatherReply = { ...PAYLOAD, cloud_mean_gap_s: 13 };
+  await commitField(gap);
+  const sent = globalThis.weatherRequests.map((r) => JSON.parse(r.init.body));
+  check("gap: a commit posts the typed gap under cloud_mean_gap_s",
+    sent.length === 1 && sent[0].cloud_mean_gap_s === 13 && Object.keys(sent[0]).length === 1,
+    JSON.stringify(sent));
+}
+
+// ── the "clouds overhead" hint: mean duration over the gap ──────────
+
+{
+  const hint = element("weather-rate-hint");
+  element("weather-duration-lo").value = "100";
+  element("weather-duration-hi").value = "300";
+  element("weather-cloud-gap").value = "100";
+  updateRateHint();
+  check("hint: mean duration / gap clouds overhead",
+    !hint.hidden && hint.textContent === "≈ 2.0 clouds overhead on average",
+    `${hint.hidden} ${hint.textContent}`);
+  element("weather-cloud-gap").value = "0";
+  updateRateHint();
+  check("hint: hidden when the clouds are off", hint.hidden && hint.textContent === "",
+    `${hint.hidden} ${hint.textContent}`);
 }
 
 if (failures) {

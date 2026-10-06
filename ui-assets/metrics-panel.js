@@ -242,7 +242,7 @@ function cardFrame(card, secs, currentDiv = 1, shape = null) {
   };
   const all = [];
   for (const s of active) for (const v of ysOf(s.stream)) if (v != null) all.push(v);
-  const isPower = unit === "W" || unit === "var";
+  const isPower = unit === "W" || unit === "VAr";
   const { div, prefix } = isPower ? chooseDiv(all, currentDiv) : { div: 1, prefix: "" };
   const scaled = (stream) => ysOf(stream).map((v) => (v == null ? null : v / div));
   // Pool envelopes (battery, steam boiler): lower/upper bounds as
@@ -297,7 +297,7 @@ function buildChart(card, slot) {
     slot.innerHTML = '<p class="hint">waiting for samples</p>';
     return;
   }
-  const shown = unit === "var" ? "VAr" : unit;
+  const shown = unit;
   const series = [
     {},
     ...active.map((s) => ({

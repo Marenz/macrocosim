@@ -472,7 +472,11 @@ async fn a_formula_error_is_400_with_its_kind() {
     assert_eq!(error_of(&body), "The microgrid has no components yet.");
 
     let cfg = config_with(FORMULA_TOPOLOGY).await;
-    let (status, body) = call_json(cfg, get("/api/mg/2200/formula?metric=battery&ids=99")).await;
+    let (status, body) = call_json(
+        cfg,
+        get("/api/mg/2200/formula?metric=battery&component_ids=99"),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["kind"], "component_not_found");
@@ -541,7 +545,7 @@ async fn history_endpoint_returns_recent_samples() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["id"], 1000);
+    assert_eq!(parsed["component_id"], 1000);
     assert_eq!(parsed["metric"], "soc_pct");
     let samples = parsed["samples"].as_array().unwrap();
     assert_eq!(samples.len(), 2);
@@ -1055,7 +1059,7 @@ async fn control_drive_sets_meter_power() {
     assert!(parsed["error"].as_str().unwrap().contains("999"));
 }
 
-/// The drive op's reactive twins mirror `power_w`: `reactive_var` lands
+/// The drive op's reactive twins mirror `power_w`: `reactive_power_var` lands
 /// a constant Q override, `power_factor` (+ optional `leading`) holds Q
 /// at a power factor tracking live P. A non-meter and an out-of-range
 /// power_factor are both 400s.
@@ -1072,7 +1076,7 @@ async fn drive_op_accepts_reactive_var_and_power_factor() {
         cfg.clone(),
         post_json(
             "/api/mg/2200/component/7/drive",
-            r#"{"reactive_var": 500.0}"#,
+            r#"{"reactive_power_var": 500.0}"#,
         ),
     )
     .await;
@@ -1097,13 +1101,18 @@ async fn drive_op_accepts_reactive_var_and_power_factor() {
         cfg.clone(),
         post_json(
             "/api/mg/2200/component/8/drive",
-            r#"{"reactive_var": 100.0}"#,
+            r#"{"reactive_power_var": 100.0}"#,
         ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(parsed["error"].as_str().unwrap().contains("reactive_var"));
+    assert!(
+        parsed["error"]
+            .as_str()
+            .unwrap()
+            .contains("reactive_power_var")
+    );
 
     let (status, body) = call(
         cfg.clone(),
@@ -1147,7 +1156,7 @@ async fn drive_op_rejects_reactive_var_with_power_factor() {
         cfg.clone(),
         post_json(
             "/api/mg/2200/component/7/drive",
-            r#"{"reactive_var": 500.0}"#,
+            r#"{"reactive_power_var": 500.0}"#,
         ),
     )
     .await;
@@ -1157,14 +1166,14 @@ async fn drive_op_rejects_reactive_var_with_power_factor() {
         cfg.clone(),
         post_json(
             "/api/mg/2200/component/7/drive",
-            r#"{"reactive_var": 100.0, "power_factor": 0.8}"#,
+            r#"{"reactive_power_var": 100.0, "power_factor": 0.8}"#,
         ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let err = parsed["error"].as_str().unwrap();
-    assert!(err.contains("reactive_var"), "{err}");
+    assert!(err.contains("reactive_power_var"), "{err}");
     assert!(err.contains("power_factor"), "{err}");
 
     // Nothing applied: the earlier override still stands.
@@ -1371,7 +1380,11 @@ async fn formula_endpoint_rejects_unknown_metric_and_bad_ids() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(error_of(&body).contains("bogus"));
 
-    let (status, body) = call(cfg, get("/api/mg/2200/formula?metric=battery&ids=1,x")).await;
+    let (status, body) = call(
+        cfg,
+        get("/api/mg/2200/formula?metric=battery&component_ids=1,x"),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(
@@ -1385,7 +1398,11 @@ async fn formula_endpoint_rejects_unknown_metric_and_bad_ids() {
 #[tokio::test]
 async fn formula_endpoint_reports_error_kind_for_missing_component() {
     let cfg = config_with(FORMULA_TOPOLOGY).await;
-    let (status, body) = call(cfg, get("/api/mg/2200/formula?metric=battery&ids=99")).await;
+    let (status, body) = call(
+        cfg,
+        get("/api/mg/2200/formula?metric=battery&component_ids=99"),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(parsed["kind"], "component_not_found");
@@ -1810,7 +1827,7 @@ async fn snapshot_load_as_waits_for_a_create_in_flight() {
     let held = create_lock.lock().await;
     let pending = tokio::spawn(call(
         config.clone(),
-        post_json("/api/mg/46/snapshots/load", r#"{"name":"one","as_id":47}"#),
+        post_json("/api/mg/46/snapshots/load", r#"{"name":"one","id":47}"#),
     ));
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(
@@ -1946,13 +1963,13 @@ async fn snapshots_are_per_microgrid() {
     // The ambient endpoint is gone.
     let (st, _) = call(config.clone(), get("/api/snapshots")).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
-    // Loading the same snapshot `as_id` lands it BESIDE the original.
+    // Loading the same snapshot `id` lands it BESIDE the original.
     // It runs through load_as, so it inherits the fresh component
     // ids: microgrid 31 still holds meter 600, and the copy holds an
     // equivalent meter under an id of its own.
     let (st, body) = call(
         config.clone(),
-        post_json("/api/mg/31/snapshots/load", r#"{"name":"one","as_id":32}"#),
+        post_json("/api/mg/31/snapshots/load", r#"{"name":"one","id":32}"#),
     )
     .await;
     assert_eq!(st, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
@@ -2564,7 +2581,7 @@ async fn component_snapshot_inverter_knobs_and_reactive_envelope() {
         .find(|k| k["knob"] == "reactive-apparent-va")
         .unwrap();
     assert!(apparent_va["value"].is_null());
-    assert!(!v["envelope"]["reactive"].is_null());
+    assert!(!v["envelope"]["reactive_var"].is_null());
 }
 
 /// A battery inverter's own reactive capability must populate
@@ -2601,7 +2618,7 @@ async fn component_snapshot_reactive_envelope_falls_back_to_own_bounds() {
     let (status, body) = call(cfg, get("/api/mg/2200/component/3")).await;
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let reactive = &v["envelope"]["reactive"];
+    let reactive = &v["envelope"]["reactive_var"];
     assert!(!reactive.is_null(), "{v}");
     let bounds = reactive.as_array().unwrap();
     let lo = bounds[0].as_f64().unwrap();
@@ -2612,20 +2629,20 @@ async fn component_snapshot_reactive_envelope_falls_back_to_own_bounds() {
     );
 }
 
-/// `setpoints[axis].remaining_ms` reflects the live `TimeoutTracker`
-/// deadline armed by `(set-active-power … LIFETIME-MS)`, bounded by
+/// `setpoints[axis].remaining_s` reflects the live `TimeoutTracker`
+/// deadline armed by `(set-active-power … :lifetime-s N)`, bounded by
 /// the lifetime just requested. The value/axis themselves come from
 /// the separate setpoint-event log (`log_setpoint`), which
 /// `(set-active-power)` doesn't populate on its own — planted here
 /// the same way `setpoints_resolve_per_microgrid` does.
 #[tokio::test]
-async fn component_snapshot_reports_remaining_ms_for_a_timed_setpoint() {
+async fn component_snapshot_reports_remaining_s_for_a_timed_setpoint() {
     use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
     let cfg = config_with("(%make-solar-inverter :id 4)").await;
-    let lifetime_ms: u64 = 5000;
+    let lifetime_s: f64 = 5.0;
     let (status, _) = call(
         cfg.clone(),
-        post("/api/eval", "(set-active-power 4 -5000 5000)"),
+        post("/api/eval", "(set-active-power 4 -5000 :lifetime-s 5)"),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -2652,9 +2669,10 @@ async fn component_snapshot_reports_remaining_ms_for_a_timed_setpoint() {
         .find(|s| s["axis"] == "active")
         .unwrap();
     assert_eq!(sp["value"], -5000.0);
-    let remaining = sp["remaining_ms"].as_u64().unwrap();
+    assert_eq!(sp["unit"], "W");
+    let remaining = sp["remaining_s"].as_f64().unwrap();
     assert!(
-        remaining > 0 && remaining <= lifetime_ms,
+        remaining > 0.0 && remaining <= lifetime_s,
         "remaining={remaining}"
     );
 }
@@ -2843,8 +2861,10 @@ async fn component_snapshot_boiler_knobs_and_pressure_target() {
     let knobs = v["knobs"].as_array().unwrap();
     let names: Vec<&str> = knobs.iter().map(|k| k["knob"].as_str().unwrap()).collect();
     assert_eq!(names, ["boiler-demand", "boiler-pressure"]);
-    assert_eq!(knobs[0]["value"], 40.0);
+    assert!((knobs[0]["value"].as_f64().unwrap() - 40.0 / 3600.0).abs() < 1e-7);
+    assert_eq!(knobs[0]["unit"], "kg/s");
     assert_eq!(knobs[1]["value"], 9.0);
+    assert_eq!(knobs[1]["unit"], "bar");
     assert_eq!(v["pressure_target_bar"], 8.0);
 }
 
@@ -3010,4 +3030,339 @@ async fn a_handler_error_is_json_with_its_old_text() {
     let (status, body) = call_json(cfg, get("/api/scripts?dir=..")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(error_of(&body), "invalid dir");
+}
+
+/// A renamed field's old name is refused with an error that names it,
+/// not silently ignored.
+#[tokio::test]
+async fn an_old_field_name_is_refused() {
+    let cfg = config_with("(%make-meter :id 7)").await;
+    let (status, body) = call_json(
+        cfg,
+        post_json("/api/mg/2200/component/7/drive", r#"{"reactive_var": 10}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        error_of(&body).contains("reactive_var"),
+        "{}",
+        error_of(&body)
+    );
+}
+
+/// Every query struct refuses a name it does not know.
+#[tokio::test]
+async fn an_unknown_query_name_is_refused() {
+    let cfg = config_with("(%make-battery :id 1000)").await;
+    for (path, field) in [
+        (
+            "/api/mg/2200/component/1000/history?metric=soc_pct&window=10",
+            "window",
+        ),
+        ("/api/mg/2200/component/1000/setpoints?window=10", "window"),
+        ("/api/mg/2200/formula?metric=battery&ids=1000", "ids"),
+        ("/api/mg/2200/scenario/events?after=1", "after"),
+    ] {
+        let (status, body) = call_json(cfg.clone(), get(path)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}");
+        let error = error_of(&body);
+        assert!(error.contains(&format!("`{field}`")), "{path}: {error}");
+    }
+}
+
+/// The drive door takes steam demand in kg/s and the knob reads it back
+/// in kg/s.
+#[tokio::test]
+async fn steam_demand_is_driven_and_read_in_kg_per_s() {
+    let cfg = config_with("(%make-steam-boiler :id 9)").await;
+    let (status, body) = call(
+        cfg.clone(),
+        post_json(
+            "/api/mg/2200/component/9/drive",
+            r#"{"steam_demand_kg_per_s": 0.5}"#,
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    let (_, body) = call(cfg.clone(), get("/api/mg/2200/component/9")).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let demand = v["knobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["knob"] == "boiler-demand")
+        .unwrap();
+    assert_eq!(demand["value"], 0.5);
+    assert_eq!(demand["unit"], "kg/s");
+
+    let (status, body) = call_json(
+        cfg,
+        post_json(
+            "/api/mg/2200/component/9/drive",
+            r#"{"steam_demand_kg_h": 1800}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(error_of(&body).contains("steam_demand_kg_h"));
+}
+
+#[tokio::test]
+async fn weather_reports_unit_names() {
+    let cfg = config_with("").await;
+    let (status, _) = call(
+        cfg.clone(),
+        post(
+            "/api/mg/2200/eval",
+            "(make-weather :peak-pct 80.0 :cloud-mean-gap-s 1200)",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = call(cfg.clone(), get("/api/mg/2200/weather")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    for k in [
+        "cloud_depth_pct",
+        "cloud_duration_s",
+        "cloud_ramp_s",
+        "cloud_mean_gap_s",
+        "sunlight_pct",
+    ] {
+        assert!(v.get(k).is_some(), "missing {k} in {v}");
+    }
+    for k in [
+        "pct",
+        "cloud_depth",
+        "cloud_duration",
+        "cloud_ramp",
+        "cloud_rate_per_h",
+    ] {
+        assert!(v.get(k).is_none(), "old {k} still in {v}");
+    }
+    let gap = v["cloud_mean_gap_s"].as_f64().unwrap();
+    assert!((gap - 1200.0).abs() < 0.01, "{gap}");
+
+    // The request takes the same names; an old one is refused.
+    let (status, body) = call(
+        cfg.clone(),
+        post_json(
+            "/api/mg/2200/weather",
+            r#"{"cloud_mean_gap_s": 600, "cloud_depth_pct": [10, 20]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["cloud_depth_pct"], serde_json::json!([10.0, 20.0]));
+    assert!((v["cloud_mean_gap_s"].as_f64().unwrap() - 600.0).abs() < 0.01);
+    let (status, body) = call_json(
+        cfg.clone(),
+        post_json("/api/mg/2200/weather", r#"{"cloud_depth": [10, 20]}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        error_of(&body).contains("`cloud_depth`"),
+        "{}",
+        error_of(&body)
+    );
+    let (status, body) = call_json(
+        cfg,
+        post_json("/api/mg/2200/weather", r#"{"cloud_mean_gap_s": 0.5}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        error_of(&body).contains("cloud_mean_gap_s"),
+        "{}",
+        error_of(&body)
+    );
+}
+
+/// An import claims the new microgrid's id under `id`; `mid` is refused.
+#[tokio::test]
+async fn import_claims_the_new_microgrids_id_as_id() {
+    let cfg = config_with("(%make-grid-connection-point :id 1)").await;
+    let body = |key: &str| {
+        format!(
+            r#"{{"name": "imported", "{key}": 77,
+                "components": {{"electricalComponents": [
+                  {{"id": "10", "category": "ELECTRICAL_COMPONENT_CATEGORY_GRID_CONNECTION_POINT"}}
+                ]}}}}"#
+        )
+    };
+    let (status, resp) = call_json(
+        cfg.clone(),
+        post_json("/api/microgrids/import", &body("mid")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(error_of(&resp).contains("`mid`"), "{}", error_of(&resp));
+    let (status, resp) = call(cfg, post_json("/api/microgrids/import", &body("id"))).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&resp));
+    let parsed: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(parsed["id"], 77);
+}
+
+/// A snapshot loads as a new microgrid under `id`; `as_id` is refused.
+#[tokio::test]
+async fn snapshot_load_refuses_as_id() {
+    let cfg = config_with("").await;
+    let (status, body) = call_json(
+        cfg,
+        post_json(
+            "/api/mg/2200/snapshots/load",
+            r#"{"name":"one","as_id":52}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(error_of(&body).contains("as_id"), "{}", error_of(&body));
+}
+
+/// The formula query names its components `component_ids`; `ids` is
+/// refused.
+#[tokio::test]
+async fn formula_takes_component_ids() {
+    let cfg = config_with(FORMULA_TOPOLOGY).await;
+    let (status, body) = call_json(
+        cfg.clone(),
+        get("/api/mg/2200/formula?metric=battery&component_ids=4"),
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    let (status, body) = call_json(cfg, get("/api/mg/2200/formula?metric=battery&ids=4")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(error_of(&body).contains("`ids`"), "{}", error_of(&body));
+}
+
+/// The envelope carries its unit in each name.
+#[tokio::test]
+async fn component_envelope_names_carry_units() {
+    let cfg = config_with("(%make-meter :id 7)").await;
+    call(cfg.clone(), post("/api/eval", "(set-meter-power 7 1500)")).await;
+    let (_, body) = call(cfg, get("/api/mg/2200/component/7")).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let envelope = v["envelope"].as_object().unwrap();
+    assert!(envelope.contains_key("active_w"), "{v}");
+    assert!(envelope.contains_key("reactive_var"), "{v}");
+    assert!(!envelope.contains_key("active"), "{v}");
+    assert!(!envelope.contains_key("reactive"), "{v}");
+    let knobs = v["knobs"].as_array().unwrap();
+    let power = knobs.iter().find(|k| k["knob"] == "meter-power").unwrap();
+    assert_eq!(power["unit"], "W", "{v}");
+}
+
+/// History and setpoint responses name their component `component_id`,
+/// and each setpoint carries its unit.
+#[tokio::test]
+async fn setpoints_response_names_the_component_and_unit() {
+    use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
+    let cfg = config_with("(%make-battery :id 1000)").await;
+    cfg.site().log_setpoint(
+        1000,
+        SetpointEvent {
+            ts: Utc::now(),
+            kind: SetpointKind::ReactivePower,
+            value: 300.0,
+            ttl_s: Some(5),
+            outcome: SetpointOutcome::Accepted {
+                effective_value: Some(300.0),
+            },
+        },
+    );
+    let (status, body) = call(cfg, get("/api/mg/2200/component/1000/setpoints")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["component_id"], 1000);
+    assert!(v.get("id").is_none(), "{v}");
+    assert_eq!(v["events"][0]["unit"], "VAr");
+    assert_eq!(v["events"][0]["value"], 300.0);
+}
+
+/// A scenario's check entries name their component `component_id`.
+#[tokio::test]
+async fn scenario_timeline_names_the_component_id() {
+    let (cfg, dir) = config_with_dir("").await;
+    let dst_dir = dir.join("sim");
+    std::fs::create_dir_all(&dst_dir).unwrap();
+    std::fs::copy("sim/scenarios.lisp", dst_dir.join("scenarios.lisp")).unwrap();
+    let (status, body) = call(
+        cfg.clone(),
+        post(
+            "/api/eval",
+            r#"(progn (load "sim/scenarios.lisp")
+                 (define-scenario :name "t" :schedule 'relative :length "3min"
+                   :expect (list (check "120s" :component-id 2 :metric 'active-power
+                                        :approx 5000.0 :tol 100.0))))"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let (status, body) = call(cfg, get("/api/scenarios")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let entry = &v
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "t")
+        .unwrap()["timeline"][0];
+    assert_eq!(entry["component_id"], 2, "{v}");
+    assert!(entry.get("component").is_none(), "{v}");
+}
+
+/// The report's power factor at the reactive peak is named for that.
+#[tokio::test]
+async fn scenario_report_names_the_power_factor_at_the_reactive_peak() {
+    let cfg = config_with("(scenario-start \"pf\")").await;
+    let now = Utc::now();
+    cfg.site().record_grid_power_sample(3000.0, now);
+    cfg.site().record_grid_reactive_sample(4000.0, now);
+    let (_, body) = call(cfg, get("/api/mg/2200/scenario/report")).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v.get("site_pf_at_peak_var").is_none(), "{v}");
+    let pf = v["site_pf_at_reactive_peak"].as_f64().unwrap();
+    assert!((pf - 0.6).abs() < 1e-6, "{pf}");
+}
+
+/// A report check carries the unit of its metric beside `actual`, and
+/// reactive power is spelled `VAr` in history.
+#[tokio::test]
+async fn report_checks_and_history_carry_units() {
+    let cfg = config_with("(%make-battery :id 1000 :initial-soc-pct 50.0)").await;
+    let (status, body) = call(
+        cfg.clone(),
+        post(
+            "/api/eval",
+            "(progn (scenario-start \"u\")
+                    (scenario-expect :component-id 1000 :metric 'soc :min 0.0))",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let (_, body) = call(cfg.clone(), get("/api/mg/2200/scenario/report")).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let check = &v["checks"][0];
+    assert_eq!(check["unit"], "%", "{v}");
+    assert!(check["actual"].is_number(), "{v}");
+
+    let (_, body) = call(
+        cfg,
+        get("/api/mg/2200/component/1000/history?metric=reactive_power_var"),
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["unit"], "VAr", "{v}");
 }

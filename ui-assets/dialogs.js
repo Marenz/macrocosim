@@ -196,7 +196,7 @@ function renderScenarioCard(r) {
       <dt>elapsed</dt><dd>${r.scenario_elapsed_s.toFixed(1)} s</dd>
       <dt>grid peak</dt><dd>${fmt(r.peak_grid_w)}</dd>
       <dt>grid Q peak</dt><dd>${fmt(r.peak_grid_var, "VAr")}</dd>
-      <dt>site PF at Q peak</dt><dd>${r.site_pf_at_peak_var == null ? "—" : r.site_pf_at_peak_var.toFixed(2)}</dd>
+      <dt>site PF at Q peak</dt><dd>${r.site_pf_at_reactive_peak == null ? "—" : r.site_pf_at_reactive_peak.toFixed(2)}</dd>
       <dt>battery charge</dt><dd>${fmt(r.total_battery_charged_wh, "Wh")}</dd>
       <dt>battery discharge</dt><dd>${fmt(r.total_battery_discharged_wh, "Wh")}</dd>
       <dt>PV produced</dt><dd>${fmt(r.total_pv_produced_wh, "Wh")}</dd>

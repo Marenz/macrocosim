@@ -24,6 +24,7 @@ pub(in crate::ui) async fn snapshots_list(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::ui) struct SnapshotsSaveBody {
     name: String,
 }
@@ -43,12 +44,13 @@ pub(in crate::ui) async fn snapshots_save(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::ui) struct SnapshotsLoadBody {
     name: String,
     /// Load the snapshot as a NEW microgrid under this id instead of
     /// restoring it over the original. Omit to restore in place.
     #[serde(default)]
-    as_id: Option<u64>,
+    id: Option<u64>,
 }
 
 pub(in crate::ui) async fn snapshots_load(
@@ -58,17 +60,17 @@ pub(in crate::ui) async fn snapshots_load(
     Json(body): Json<SnapshotsLoadBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let mg_id = mg.id;
-    let as_id = body.as_id;
-    let load = move |cfg: &Config| cfg.load_snapshot_for(mg_id, &body.name, body.as_id);
-    // Loading `as_id` is a load-as: it claims an id and a port.
-    let loaded = if as_id.is_some() {
+    let new_id = body.id;
+    let load = move |cfg: &Config| cfg.load_snapshot_for(mg_id, &body.name, body.id);
+    // Loading with an `id` is a load-as: it claims an id and a port.
+    let loaded = if new_id.is_some() {
         super::blocking_under_create_lock(&config, load).await?
     } else {
         super::blocking(move || load(&config)).await?
     }
     .map_err(status_for)?;
     // Loaded as a new microgrid: wait for its runtime and report it.
-    if as_id.is_some()
+    if new_id.is_some()
         && let Some(id) = loaded
     {
         return Ok(Json(serde_json::json!({

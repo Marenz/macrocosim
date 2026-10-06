@@ -54,6 +54,7 @@ pub(in crate::ui) async fn dispatches(
 /// `start_ms` the dispatch starts immediately. `recurrence` is
 /// optional — omitted (or `freq: "once"`) creates a one-off.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::ui) struct DispatchCreateReq {
     #[serde(rename = "type")]
     type_: String,
@@ -77,6 +78,7 @@ pub(in crate::ui) struct DispatchCreateReq {
 /// by-minute / by-weekday refinements the proto also carries aren't
 /// exposed here — the dispatch CLI covers those.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::ui) struct RecurrenceReq {
     freq: String,
     #[serde(default)]
@@ -163,6 +165,7 @@ pub(in crate::ui) struct DispatchPath {
 /// Body for `POST /api/mg/{mg}/dispatches/{did}/active` — pause
 /// (`false`) or resume (`true`).
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::ui) struct DispatchSetActiveReq {
     active: bool,
 }

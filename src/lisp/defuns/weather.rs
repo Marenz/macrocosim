@@ -78,20 +78,8 @@ fn range_arg(kw: &str, v: &LispValue) -> Result<(f32, f32), Error> {
 /// The ambient cloud rate, events per hour, for a mean gap in seconds.
 /// Zero is "no ambient clouds"; the weather model takes the rate.
 fn cloud_rate_per_h(form: &str, gap_s: f64) -> Result<f32, Error> {
-    if gap_s == 0.0 {
-        return Ok(0.0);
-    }
-    if !(gap_s.is_finite() && gap_s >= 0.0) {
-        return Err(Error::invalid_argument(format!(
-            "{form}: :cloud-mean-gap-s must be a non-negative number of seconds (0 disables), got {gap_s}"
-        )));
-    }
-    if gap_s < 1.0 {
-        return Err(Error::invalid_argument(format!(
-            "{form}: :cloud-mean-gap-s must be 0 or at least one second, got {gap_s}"
-        )));
-    }
-    Ok((3600.0 / gap_s) as f32)
+    crate::sim::weather::validate::cloud_rate_for_gap(gap_s)
+        .map_err(|e| Error::invalid_argument(format!("{form}: :cloud-mean-gap-s {e}")))
 }
 
 /// A time-of-day kwarg: an `"HH:MM"` string, or a bare number of

@@ -19,11 +19,12 @@ use crate::sim::graph_adapter;
 use crate::ui::api::{ApiError, Json, Mg, Query};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::ui) struct FormulaQuery {
     metric: String,
     /// Comma-separated component ids for the id-taking metrics.
     #[serde(default)]
-    ids: Option<String>,
+    component_ids: Option<String>,
     /// Engine options, mirroring `ComponentGraphConfig`. The UI keeps
     /// these client-side and passes them on every request.
     #[serde(default)]
@@ -40,7 +41,7 @@ pub(in crate::ui) struct FormulaQuery {
     allow_unspecified_inverters: bool,
 }
 
-/// GET /api/mg/{mg}/formula?metric=grid[&ids=1,2][&prefer_meters=true…]
+/// GET /api/mg/{mg}/formula?metric=grid[&component_ids=1,2][&prefer_meters=true…]
 /// — the rendered formula string.
 pub(in crate::ui) async fn formula(
     mg: Mg,
@@ -80,7 +81,7 @@ fn formula_body(
             );
         }
     };
-    let ids: Option<BTreeSet<u64>> = match query.ids.as_deref() {
+    let ids: Option<BTreeSet<u64>> = match query.component_ids.as_deref() {
         None | Some("") => None,
         Some(text) => match parse_ids(text) {
             Ok(set) => Some(set),

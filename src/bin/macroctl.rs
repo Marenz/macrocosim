@@ -1323,7 +1323,7 @@ async fn run_snapshot(
         SnapshotCmd::Load { name, as_id } => {
             let mut body = serde_json::json!({ "name": name });
             if let Some(id) = as_id {
-                body["as_id"] = serde_json::json!(id);
+                body["id"] = serde_json::json!(id);
             }
             let resp = send_json(
                 http.post(format!("{ui_addr}/api/mg/{mg}/snapshots/load"))

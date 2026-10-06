@@ -125,7 +125,7 @@ pub struct TimelineEntry {
     pub label: String,
     /// For checks: the asserted component + metric (used to match a
     /// recorded `scenario-expect` result back to this entry).
-    pub component: Option<i64>,
+    pub component_id: Option<i64>,
     pub metric: Option<String>,
 }
 
@@ -168,7 +168,7 @@ pub fn build_timeline(cues: &[TulispObject], expect: &[TulispObject]) -> Vec<Tim
                 kind: TimelineKind::Cue,
                 at_s: at,
                 label: format!("cue @{at}s"),
-                component: None,
+                component_id: None,
                 metric: None,
             });
         }
@@ -194,7 +194,7 @@ pub fn build_timeline(cues: &[TulispObject], expect: &[TulispObject]) -> Vec<Tim
             kind: TimelineKind::Check,
             at_s: at,
             label,
-            component,
+            component_id: component,
             metric,
         });
     }

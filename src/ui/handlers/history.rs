@@ -11,6 +11,7 @@ use crate::sim::setpoints::SetpointEvent;
 use crate::ui::api::{ApiError, ComponentPath, Json, Mg, Path, Query};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::ui) struct HistoryQuery {
     /// Metric name (one of `History::Metric::as_str` strings).
     /// Required.
@@ -22,14 +23,14 @@ pub(in crate::ui) struct HistoryQuery {
 
 #[derive(Serialize)]
 pub(in crate::ui) struct HistoryResponse {
-    id: u64,
+    component_id: u64,
     metric: String,
     /// Typed quantity (`"Power"`, `"ReactivePower"`, `"Frequency"`,
     /// `"Percentage"`) — mirrors the frequenz-microgrid `Sample<Q>`
     /// `Q` parameter so the SPA picks a scale family from this
     /// instead of pattern-matching on the metric name.
     quantity: &'static str,
-    /// Base unit the samples are recorded in (`"W"`, `"var"`,
+    /// Base unit the samples are recorded in (`"W"`, `"VAr"`,
     /// `"Hz"`, `"%"`).
     unit: &'static str,
     /// Pairs of (timestamp_ms_since_epoch, value). The time format is
@@ -66,7 +67,7 @@ fn history_body(
         .map(|s| (s.ts.timestamp_millis(), s.value))
         .collect();
     Ok(Json(HistoryResponse {
-        id,
+        component_id: id,
         metric: q.metric,
         quantity: metric.quantity(),
         unit: metric.unit(),
@@ -75,6 +76,7 @@ fn history_body(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::ui) struct SetpointsQuery {
     /// Window length in seconds. Optional; defaults to the full
     /// 1000-event capacity of the ring (which at typical control-app
@@ -84,8 +86,16 @@ pub(in crate::ui) struct SetpointsQuery {
 
 #[derive(Serialize)]
 pub(in crate::ui) struct SetpointsResponse {
-    id: u64,
-    events: Vec<SetpointEvent>,
+    component_id: u64,
+    events: Vec<SetpointEventView>,
+}
+
+/// A logged setpoint event plus the unit its `value` is in.
+#[derive(Serialize)]
+struct SetpointEventView {
+    #[serde(flatten)]
+    event: SetpointEvent,
+    unit: &'static str,
 }
 
 pub(in crate::ui) async fn setpoints(
@@ -105,6 +115,16 @@ fn setpoints_body(
     // panicking chrono.
     let window = ChronoDuration::seconds(q.window_s.unwrap_or(600).clamp(0, 31_536_000));
     let since = Utc::now() - window;
-    let events = site.setpoints_window(id, since);
-    Json(SetpointsResponse { id, events })
+    let events = site
+        .setpoints_window(id, since)
+        .into_iter()
+        .map(|event| SetpointEventView {
+            unit: event.kind.unit(),
+            event,
+        })
+        .collect();
+    Json(SetpointsResponse {
+        component_id: id,
+        events,
+    })
 }

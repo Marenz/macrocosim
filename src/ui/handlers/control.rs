@@ -39,15 +39,15 @@ pub(in crate::ui) struct DriveRequest {
     /// Teleport a battery's state of charge to this percentage.
     soc_pct: Option<f64>,
     /// Constant reactive-power override for a meter (VArs), if driving.
-    reactive_var: Option<f64>,
+    reactive_power_var: Option<f64>,
     /// Hold a meter's reactive power at this power factor (cos phi,
     /// `0.0 < power_factor <= 1.0`), tracking its own live active power.
     power_factor: Option<f64>,
     /// With `power_factor`, capacitive (leading) instead of the
     /// default inductive (lagging). Meaningless without `power_factor`.
     leading: Option<bool>,
-    /// Steam demand for a steam boiler (kg/h), if driving.
-    steam_demand_kg_h: Option<f64>,
+    /// Steam demand for a steam boiler (kg/s), if driving.
+    steam_demand_kg_per_s: Option<f64>,
     /// Constant pressure override for a steam boiler (bar), if driving.
     pressure_bar: Option<f64>,
     /// Drop a meter's active-power override, returning it to
@@ -58,7 +58,7 @@ pub(in crate::ui) struct DriveRequest {
     clear_power: bool,
     /// Drop a meter's reactive-power override (Var or PowerFactor),
     /// returning it to summing children's Q. Mutually exclusive with
-    /// `reactive_var` / `power_factor` in the same request. Plain
+    /// `reactive_power_var` / `power_factor` in the same request. Plain
     /// bool for the same reason as `clear_power`.
     #[serde(default)]
     clear_reactive: bool,
@@ -185,12 +185,12 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> Result<Stat
     {
         return Err(soc_rejection(id, StatusCode::BAD_REQUEST, refusal));
     }
-    // reactive_var and power_factor both drive the meter's Q, through
+    // reactive_power_var and power_factor both drive the meter's Q, through
     // the same `MeterDrive` methods `set-meter-reactive-power` /
     // `set-meter-power-factor` call in Lisp.
-    if req.reactive_var.is_some() && meter.is_none() {
+    if req.reactive_power_var.is_some() && meter.is_none() {
         return Err(ApiError::bad_request(format!(
-            "component {id} does not take reactive_var (not a meter)"
+            "component {id} does not take reactive_power_var (not a meter)"
         )));
     }
     if req.power_factor.is_some() && meter.is_none() {
@@ -198,12 +198,12 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> Result<Stat
             "component {id} does not take power_factor (not a meter)"
         )));
     }
-    // `reactive_var` and `power_factor` set the same slot, so a request
+    // `reactive_power_var` and `power_factor` set the same slot, so a request
     // carrying both would apply one and then overwrite it — a silent
     // no-op for the loser. Same mutual exclusion `%make-meter` enforces.
-    if req.reactive_var.is_some() && req.power_factor.is_some() {
+    if req.reactive_power_var.is_some() && req.power_factor.is_some() {
         return Err(ApiError::bad_request(format!(
-            "component {id}: reactive_var and power_factor are mutually \
+            "component {id}: reactive_power_var and power_factor are mutually \
                  exclusive; send one or the other"
         )));
     }
@@ -217,9 +217,9 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> Result<Stat
     // Like `sunlight`, the apply phase writes the steam fields
     // through this same reference.
     let steam = component.steam_drive();
-    if req.steam_demand_kg_h.is_some() && steam.is_none() {
+    if req.steam_demand_kg_per_s.is_some() && steam.is_none() {
         return Err(ApiError::bad_request(format!(
-            "component {id} does not take steam_demand_kg_h (not a steam boiler)"
+            "component {id} does not take steam_demand_kg_per_s (not a steam boiler)"
         )));
     }
     if req.pressure_bar.is_some() && steam.is_none() {
@@ -257,9 +257,9 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> Result<Stat
                  send one or the other"
         )));
     }
-    if req.clear_reactive && (req.reactive_var.is_some() || req.power_factor.is_some()) {
+    if req.clear_reactive && (req.reactive_power_var.is_some() || req.power_factor.is_some()) {
         return Err(ApiError::bad_request(format!(
-            "component {id}: clear_reactive and reactive_var/power_factor are \
+            "component {id}: clear_reactive and reactive_power_var/power_factor are \
                  mutually exclusive; send one or the other"
         )));
     }
@@ -272,8 +272,13 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> Result<Stat
         ("power_w", req.power_w),
         ("sunlight_pct", req.sunlight_pct),
         ("soc_pct", req.soc_pct),
-        ("reactive_var", req.reactive_var),
-        ("steam_demand_kg_h", req.steam_demand_kg_h),
+        ("reactive_power_var", req.reactive_power_var),
+        // Checked as kg/h, the unit the boiler stores: a finite kg/s can
+        // overflow f32 once multiplied by 3600.
+        (
+            "steam_demand_kg_per_s",
+            req.steam_demand_kg_per_s.map(|v| v * 3600.0),
+        ),
         ("pressure_bar", req.pressure_bar),
     ] {
         if let Some(v) = v
@@ -370,7 +375,7 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> Result<Stat
     {
         return Err(soc_rejection(id, StatusCode::CONFLICT, refusal));
     }
-    if let Some(vars) = req.reactive_var
+    if let Some(vars) = req.reactive_power_var
         && let Some(m) = meter
     {
         site.scenario_snapshot_knob(id, KnobKind::MeterReactive);
@@ -391,12 +396,12 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> Result<Stat
             Some(leading),
         );
     }
-    if let Some(kg_h) = req.steam_demand_kg_h
+    if let Some(kg_per_s) = req.steam_demand_kg_per_s
         && let Some(boiler) = steam
     {
         site.scenario_snapshot_knob(id, KnobKind::BoilerDemand);
-        boiler.set_steam_demand_kg_h(kg_h as f32);
-        site.note_knob_changed(id, "boiler-demand", Some(kg_h as f32), None, None);
+        boiler.set_steam_demand_kg_h((kg_per_s * 3600.0) as f32);
+        site.note_knob_changed(id, "boiler-demand", Some(kg_per_s as f32), None, None);
     }
     if let Some(bar) = req.pressure_bar
         && let Some(boiler) = steam
@@ -447,10 +452,10 @@ mod tests {
             power_w: Some(5_000.0),
             sunlight_pct: None,
             soc_pct: Some(50.0), // not a battery → the whole request rejects
-            reactive_var: None,
+            reactive_power_var: None,
             power_factor: None,
             leading: None,
-            steam_demand_kg_h: None,
+            steam_demand_kg_per_s: None,
             pressure_bar: None,
             clear_power: false,
             clear_reactive: false,
@@ -471,7 +476,7 @@ mod tests {
         ));
     }
 
-    /// `steam_demand_kg_h` on a steam boiler applies immediately — no
+    /// `steam_demand_kg_per_s` on a steam boiler applies immediately — no
     /// tick needed, `demand_reading` reads the source directly.
     #[test]
     fn drive_accepts_steam_demand_on_boiler() {
@@ -482,10 +487,10 @@ mod tests {
             power_w: None,
             sunlight_pct: None,
             soc_pct: None,
-            reactive_var: None,
+            reactive_power_var: None,
             power_factor: None,
             leading: None,
-            steam_demand_kg_h: Some(40.0),
+            steam_demand_kg_per_s: Some(0.5),
             pressure_bar: None,
             clear_power: false,
             clear_reactive: false,
@@ -498,7 +503,7 @@ mod tests {
             .steam_drive()
             .expect("demand reading")
             .demand_reading();
-        assert!((r.value - 40.0).abs() < 1e-6, "{}", r.value);
+        assert!((r.value - 0.5).abs() < 1e-6, "{}", r.value);
     }
 
     /// `pressure_bar` on a steam boiler moves the pressure state.
@@ -511,10 +516,10 @@ mod tests {
             power_w: None,
             sunlight_pct: None,
             soc_pct: None,
-            reactive_var: None,
+            reactive_power_var: None,
             power_factor: None,
             leading: None,
-            steam_demand_kg_h: None,
+            steam_demand_kg_per_s: None,
             pressure_bar: Some(9.0),
             clear_power: false,
             clear_reactive: false,
@@ -548,10 +553,10 @@ mod tests {
             power_w: None,
             sunlight_pct: None,
             soc_pct: None,
-            reactive_var: None,
+            reactive_power_var: None,
             power_factor: None,
             leading: None,
-            steam_demand_kg_h: Some(40.0),
+            steam_demand_kg_per_s: Some(0.5),
             pressure_bar: None,
             clear_power: false,
             clear_reactive: false,
@@ -563,10 +568,10 @@ mod tests {
             power_w: None,
             sunlight_pct: None,
             soc_pct: None,
-            reactive_var: None,
+            reactive_power_var: None,
             power_factor: None,
             leading: None,
-            steam_demand_kg_h: None,
+            steam_demand_kg_per_s: None,
             pressure_bar: Some(9.0),
             clear_power: false,
             clear_reactive: false,
@@ -583,8 +588,14 @@ mod tests {
         let site = MicrogridSite::new();
         register_boiler(&site, 6);
 
-        let req: DriveRequest = serde_json::from_str(r#"{"steam_demand_kg_h": 1e40}"#).unwrap();
-        assert!(apply_drive(&site, 6, &req).is_err());
+        // 1e40 is infinite as f32; 1e36 is finite until it becomes kg/h.
+        for body in [
+            r#"{"steam_demand_kg_per_s": 1e40}"#,
+            r#"{"steam_demand_kg_per_s": 1e36}"#,
+        ] {
+            let req: DriveRequest = serde_json::from_str(body).unwrap();
+            assert!(apply_drive(&site, 6, &req).is_err(), "{body}");
+        }
     }
 
     fn register_meter(site: &MicrogridSite, id: u64) {
@@ -679,13 +690,13 @@ mod tests {
     }
 
     /// `clear_reactive` mirrors `clear_power` for the Q axis: restores
-    /// measuring, and rejects alongside `reactive_var` / `power_factor`
+    /// measuring, and rejects alongside `reactive_power_var` / `power_factor`
     /// in the same request.
     #[test]
     fn drive_clear_reactive_restores_measuring() {
         let site = MicrogridSite::new();
         register_meter(&site, 5);
-        let req: DriveRequest = serde_json::from_str(r#"{"reactive_var": 500.0}"#).unwrap();
+        let req: DriveRequest = serde_json::from_str(r#"{"reactive_power_var": 500.0}"#).unwrap();
         assert!(apply_drive(&site, 5, &req).is_ok());
         let meter = site.get(5).unwrap();
         assert!(
@@ -707,7 +718,7 @@ mod tests {
         );
     }
 
-    /// `clear_reactive` together with `reactive_var` or `power_factor`
+    /// `clear_reactive` together with `reactive_power_var` or `power_factor`
     /// is a 4xx mutual-exclusion rejection.
     #[test]
     fn drive_rejects_clear_reactive_with_reactive_fields() {
@@ -715,7 +726,7 @@ mod tests {
         register_meter(&site, 5);
 
         let req: DriveRequest =
-            serde_json::from_str(r#"{"clear_reactive": true, "reactive_var": 5.0}"#).unwrap();
+            serde_json::from_str(r#"{"clear_reactive": true, "reactive_power_var": 5.0}"#).unwrap();
         assert!(apply_drive(&site, 5, &req).is_err());
 
         let req: DriveRequest =

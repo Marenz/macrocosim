@@ -62,7 +62,13 @@ fn set_boiler_demand(
     if value.numberp() {
         let kg_h = f64::try_from(value)? * per_unit;
         boiler.set_steam_demand_kg_h(kg_h as f32);
-        w.note_knob_changed(id as u64, "boiler-demand", Some(kg_h as f32), None, None);
+        w.note_knob_changed(
+            id as u64,
+            "boiler-demand",
+            Some((kg_h / 3600.0) as f32),
+            None,
+            None,
+        );
     } else if let Some(scalar) = crate::sim::dynamic_scalar::DynamicScalar::from_lisp(value, 0.0) {
         // Printed source and the cached value right after
         // construction — same pattern as set-meter-power.
@@ -73,7 +79,7 @@ fn set_boiler_demand(
         w.note_knob_changed(
             id as u64,
             "boiler-demand",
-            Some(resolved_now),
+            Some(resolved_now / 3600.0),
             Some(printed),
             None,
         );
@@ -1249,9 +1255,9 @@ mod tests {
         assert_eq!(r.value, 63.0);
     }
 
-    /// `(set-boiler-demand id N)` installs a constant kg/h demand,
-    /// read back immediately through `demand_reading` (no tick
-    /// needed — it reads the source directly).
+    /// `(set-boiler-demand id N)` installs a constant kg/h demand, read in
+    /// kg/s, read back immediately through `demand_reading` (no tick needed —
+    /// it reads the source directly).
     #[test]
     fn set_boiler_demand_accepts_a_number() {
         let (cfg, _dir) = config_with("(%make-steam-boiler :id 9)");
@@ -1263,7 +1269,7 @@ mod tests {
             .steam_drive()
             .expect("reading")
             .demand_reading();
-        assert_eq!(r.value, 40.0);
+        assert!((r.value - 40.0 / 3600.0).abs() < 1e-7, "{}", r.value);
     }
 
     /// The kg/s door and the old kg/h door set the same demand.
@@ -1283,7 +1289,7 @@ mod tests {
         let per_s = demand("(set-boiler-demand-kg-per-s 9 0.5)");
         let per_h = demand("(set-boiler-demand 9 1800)");
         assert_eq!(per_s, per_h);
-        assert_eq!(per_s, 1800.0);
+        assert_eq!(per_s, 0.5);
         assert!(
             cfg.eval("(set-boiler-demand-kg-per-s 7 0.5)")
                 .unwrap_err()
@@ -1308,7 +1314,7 @@ mod tests {
             .steam_drive()
             .expect("reading")
             .demand_reading();
-        assert!((r.value - 25.0).abs() < 1e-6, "{}", r.value);
+        assert!((r.value - 25.0 / 3600.0).abs() < 1e-7, "{}", r.value);
     }
 
     /// `(set-boiler-pressure id BAR)` overwrites the pressure state,
@@ -1769,7 +1775,10 @@ mod tests {
         let (cfg, _dir) = config_with("(%make-steam-boiler :id 9)");
         cfg.eval("(set-boiler-demand 9 40.0)").unwrap();
         let b = cfg.site().get(9).unwrap();
-        assert_eq!(b.steam_drive().unwrap().demand_reading().value, 40.0);
+        assert_eq!(
+            b.steam_drive().unwrap().demand_reading().value,
+            40.0 / 3600.0
+        );
         assert!(!b.has_unrenderable_source());
 
         cfg.eval("(scenario-start \"boiler\")").unwrap();
@@ -1777,7 +1786,10 @@ mod tests {
         assert!(b.has_unrenderable_source());
 
         cfg.eval("(scenario-stop)").unwrap();
-        assert_eq!(b.steam_drive().unwrap().demand_reading().value, 40.0);
+        assert_eq!(
+            b.steam_drive().unwrap().demand_reading().value,
+            40.0 / 3600.0
+        );
         assert!(!b.has_unrenderable_source());
     }
 

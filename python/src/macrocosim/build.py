@@ -236,7 +236,7 @@ class Meter(Component):
             await self._live().control_component(
                 self.component_id,
                 "drive",
-                {"reactive_var": value.as_volt_amperes_reactive()},
+                {"reactive_power_var": value.as_volt_amperes_reactive()},
                 self._mg,
             )
 

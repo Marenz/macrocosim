@@ -123,7 +123,7 @@ async fn scenario_endpoints_round_trip_via_eval() {
         report.get("peak_grid_w").is_some(),
         "report should carry the grid peak: {report}"
     );
-    for key in ["peak_grid_var", "site_pf_at_peak_var"] {
+    for key in ["peak_grid_var", "site_pf_at_reactive_peak"] {
         assert!(
             report.get(key).is_some(),
             "report should carry {key}: {report}"
@@ -277,13 +277,13 @@ fn tiny_export(name: &str, mid: Option<u64>, component_id: u64) -> Value {
         ]}
     });
     if let Some(mid) = mid {
-        body["mid"] = serde_json::json!(mid);
+        body["id"] = serde_json::json!(mid);
     }
     body
 }
 
 /// The import dialog asks the user for the microgrid id, so the
-/// import body carries a `mid` — and the microgrid registers under
+/// import body carries an `id` — and the microgrid registers under
 /// exactly that one, not the next free one.
 #[tokio::test(flavor = "multi_thread")]
 async fn site_import_claims_the_requested_microgrid_id() {
@@ -447,7 +447,7 @@ async fn grid_reactive_formula_converges_over_a_site_with_an_ev_charger() {
         .unwrap_or_else(|| panic!("grid_reactive_power never converged: {snapshot}"));
     assert!(value.is_finite(), "value not finite: {snapshot}");
     assert_eq!(entry["quantity"], "ReactivePower", "{snapshot}");
-    assert_eq!(entry["unit"], "var", "{snapshot}");
+    assert_eq!(entry["unit"], "VAr", "{snapshot}");
 
     // Reactive energy (varh) integration is out of scope for this
     // stream — energy_stream_for never maps grid_reactive_power to a
@@ -468,7 +468,7 @@ async fn grid_reactive_formula_converges_over_a_site_with_an_ev_charger() {
         .unwrap_or_else(|| panic!("pv_reactive_power never converged: {snapshot}"));
     assert_eq!(pv_value, 0.0, "{snapshot}");
     assert_eq!(pv_entry["quantity"], "ReactivePower", "{snapshot}");
-    assert_eq!(pv_entry["unit"], "var", "{snapshot}");
+    assert_eq!(pv_entry["unit"], "VAr", "{snapshot}");
 }
 
 /// The metrics panel's Reactive card charts per-source Q: grid, PV,
@@ -522,7 +522,7 @@ async fn per_source_reactive_streams_converge() {
             .filter(|v| v.is_finite())
             .unwrap_or_else(|| panic!("{stream} never converged: {snapshot}"));
         assert_eq!(entry["quantity"], "ReactivePower", "{stream}: {snapshot}");
-        assert_eq!(entry["unit"], "var", "{stream}: {snapshot}");
+        assert_eq!(entry["unit"], "VAr", "{stream}: {snapshot}");
     }
     assert!(
         snapshot.get("pv_reactive_energy").is_none()
@@ -784,8 +784,8 @@ async fn drive_rejects_each_field_on_the_wrong_component_kind() {
         ),
         (
             3,
-            serde_json::json!({"reactive_var": 500.0}),
-            "component 3 does not take reactive_var (not a meter)",
+            serde_json::json!({"reactive_power_var": 500.0}),
+            "component 3 does not take reactive_power_var (not a meter)",
         ),
         (
             3,
@@ -814,8 +814,8 @@ async fn drive_rejects_each_field_on_the_wrong_component_kind() {
         ),
         (
             2,
-            serde_json::json!({"steam_demand_kg_h": 40.0}),
-            "component 2 does not take steam_demand_kg_h (not a steam boiler)",
+            serde_json::json!({"steam_demand_kg_per_s": 40.0}),
+            "component 2 does not take steam_demand_kg_per_s (not a steam boiler)",
         ),
         (
             2,

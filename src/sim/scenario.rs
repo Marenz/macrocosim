@@ -68,6 +68,8 @@ pub struct ScenarioCheck {
     /// Observed value. `None` when the component wasn't registered
     /// or doesn't publish the metric — recorded as a failure.
     pub actual: Option<f32>,
+    /// Unit of `actual` (`Metric::unit`).
+    pub unit: &'static str,
     pub passed: bool,
 }
 
@@ -638,6 +640,7 @@ mod tests {
             metric: "active_power_w".into(),
             expectation: "approx 5000 (tol 100)".into(),
             actual: Some(if passed { 5000.0 } else { 9999.0 }),
+            unit: "W",
             passed,
         }
     }

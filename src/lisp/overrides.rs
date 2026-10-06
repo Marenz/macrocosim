@@ -546,7 +546,7 @@ mod tests {
         for id in [44, 45] {
             let b = site.get(id).unwrap();
             let v = b.steam_drive().unwrap().demand_reading().value;
-            assert!((v - 1800.0).abs() < 1e-3, "{id}: {v}");
+            assert!((v - 0.5).abs() < 1e-6, "{id}: {v}");
         }
     }
 

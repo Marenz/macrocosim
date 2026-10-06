@@ -28,11 +28,13 @@ pub(in crate::ui) struct WeatherResponse {
     sunrise: String,
     sunset: String,
     peak_pct: f32,
-    cloud_rate_per_h: Option<f32>,
-    cloud_depth: (f32, f32),
-    cloud_duration: (f32, f32),
-    cloud_ramp: (f32, f32),
-    pct: f32,
+    /// Mean seconds between ambient clouds; `None` when the site has
+    /// no ambient clouds.
+    cloud_mean_gap_s: Option<f32>,
+    cloud_depth_pct: (f32, f32),
+    cloud_duration_s: (f32, f32),
+    cloud_ramp_s: (f32, f32),
+    sunlight_pct: f32,
     clear_sky_pct: f32,
     /// The instant this snapshot was evaluated at — the same clock
     /// that stamped every `events` start/end below. The panel filters
@@ -69,11 +71,11 @@ fn snapshot(site: &crate::sim::MicrogridSite) -> Option<WeatherResponse> {
             sunrise: fmt_hhmm(cfg.sunrise),
             sunset: fmt_hhmm(cfg.sunset),
             peak_pct: cfg.peak_pct,
-            cloud_rate_per_h: cfg.cloud_rate_per_h,
-            cloud_depth: cfg.cloud_depth,
-            cloud_duration: cfg.cloud_duration,
-            cloud_ramp: cfg.cloud_ramp,
-            pct: w.pct_at(at),
+            cloud_mean_gap_s: cfg.cloud_rate_per_h.map(|rate| 3600.0 / rate),
+            cloud_depth_pct: cfg.cloud_depth,
+            cloud_duration_s: cfg.cloud_duration,
+            cloud_ramp_s: cfg.cloud_ramp,
+            sunlight_pct: w.pct_at(at),
             clear_sky_pct: w.clear_sky_pct(at),
             now: at,
             events: w
@@ -118,10 +120,10 @@ pub(in crate::ui) struct WeatherPostRequest {
     sunrise: Option<String>,
     sunset: Option<String>,
     peak_pct: Option<f64>,
-    cloud_rate_per_h: Option<f64>,
-    cloud_depth: Option<(f32, f32)>,
-    cloud_duration: Option<(f32, f32)>,
-    cloud_ramp: Option<(f32, f32)>,
+    cloud_mean_gap_s: Option<f64>,
+    cloud_depth_pct: Option<(f32, f32)>,
+    cloud_duration_s: Option<(f32, f32)>,
+    cloud_ramp_s: Option<(f32, f32)>,
     pass_cloud: Option<PassCloudRequest>,
 }
 
@@ -134,10 +136,10 @@ impl WeatherPostRequest {
         self.sunrise.is_some()
             || self.sunset.is_some()
             || self.peak_pct.is_some()
-            || self.cloud_rate_per_h.is_some()
-            || self.cloud_depth.is_some()
-            || self.cloud_duration.is_some()
-            || self.cloud_ramp.is_some()
+            || self.cloud_mean_gap_s.is_some()
+            || self.cloud_depth_pct.is_some()
+            || self.cloud_duration_s.is_some()
+            || self.cloud_ramp_s.is_some()
     }
 }
 
@@ -167,10 +169,16 @@ fn patch_of(req: &WeatherPostRequest) -> Result<WeatherPatch, String> {
             .map(|s| hhmm_field("sunset", s))
             .transpose()?,
         peak_pct: req.peak_pct.map(|v| v as f32),
-        cloud_rate_per_h: req.cloud_rate_per_h.map(|v| v as f32),
-        cloud_depth: req.cloud_depth,
-        cloud_duration: req.cloud_duration,
-        cloud_ramp: req.cloud_ramp,
+        cloud_rate_per_h: req
+            .cloud_mean_gap_s
+            .map(|gap_s| {
+                weather::validate::cloud_rate_for_gap(gap_s)
+                    .map_err(|e| format!("cloud_mean_gap_s: {e}"))
+            })
+            .transpose()?,
+        cloud_depth: req.cloud_depth_pct,
+        cloud_duration: req.cloud_duration_s,
+        cloud_ramp: req.cloud_ramp_s,
         // No JSON field for it: re-seeding the ambient generator is a
         // console operation, not something the panel offers.
         seed: None,

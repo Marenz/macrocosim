@@ -518,6 +518,7 @@ pub(super) fn register_lifecycle(
                 metric: metric.as_str().into(),
                 expectation: expectation.describe(),
                 actual,
+                unit: metric.unit(),
                 passed,
             });
             Ok(passed)
@@ -764,7 +765,7 @@ mod tests {
         // pf = |P| / sqrt(P^2 + Q^2) = 3000 / 5000 = 0.6.
         let expected_pf = 3000.0f64 / (3000.0f64.powi(2) + 4000.0f64.powi(2)).sqrt();
         let pf = r
-            .site_pf_at_peak_var
+            .site_pf_at_reactive_peak
             .expect("pf should be present after a sample");
         assert!(
             (pf - expected_pf).abs() < 1e-6,
@@ -776,7 +777,7 @@ mod tests {
         assert!(
             cfg.site()
                 .scenario_report(Utc::now())
-                .site_pf_at_peak_var
+                .site_pf_at_reactive_peak
                 .is_none()
         );
     }
@@ -1035,7 +1036,7 @@ mod tests {
                 .value
         };
         let new = demand("(scenario--drive (drive-boiler-kg-per-s 9 0.5))");
-        assert_eq!(new, 1800.0);
+        assert_eq!(new, 0.5);
         assert_eq!(demand("(scenario--drive (drive-boiler 9 1800))"), new);
         assert_eq!(
             demand("(scenario--drive (drive-boiler 9 (lambda () 1800.0)))"),
@@ -1169,9 +1170,13 @@ mod tests {
         assert_eq!(tl[1].at_s, 60.0);
         assert_eq!(tl[2].at_s, 120.0);
         assert_eq!(tl[2].kind, TimelineKind::Check);
-        assert_eq!(tl[2].component, Some(2));
+        assert_eq!(tl[2].component_id, Some(2));
         assert_eq!(tl[2].metric.as_deref(), Some("active-power"));
-        assert_eq!(tl[3].component, Some(3), "the old :component still shows");
+        assert_eq!(
+            tl[3].component_id,
+            Some(3),
+            "the old :component still shows"
+        );
     }
 
     /// The outage chain keeps exactly one live handle on

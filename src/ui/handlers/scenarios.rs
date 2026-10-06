@@ -51,6 +51,7 @@ pub(in crate::ui) async fn scenario_summary(mg: Mg) -> Json<ScenarioSummary> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::ui) struct ScenarioEventsQuery {
     /// Return events with id strictly greater than this. Default 0
     /// means "everything in the ring".

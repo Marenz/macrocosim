@@ -117,7 +117,7 @@ pub trait SteamDrive: Send + Sync {
     /// Overwrite the pressure state (bar).
     fn set_pressure_bar(&self, bar: f32);
 
-    /// The live demand (kg/h), with the printed Lisp source of a
+    /// The live demand (kg/s), with the printed Lisp source of a
     /// dynamic source (`None` for a constant).
     fn demand_reading(&self) -> ScalarReading;
 
