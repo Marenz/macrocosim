@@ -5,7 +5,7 @@
 import { escapeHtml, mutate, notify } from "./app.js";
 import { evalQuoted } from "./eval.js";
 import { errorText } from "./http.js";
-import { currentMgEntry, mgFetch, readSelectedMg } from "./routing.js";
+import { currentMgEntry, mgFetch, readSelectedMg, scenarioMgId } from "./routing.js";
 import { makeSidePanelToggle } from "./side-panel.js";
 
 export function setupHelpButton() {
@@ -151,17 +151,18 @@ async function renderScenarioReport(contentEl) {
 
 async function refreshScenarioReport() {
   try {
-    const [reportRes, eventsRes] = await Promise.all([
-      mgFetch("scenario/report"),
-      mgFetch("scenario/events?limit=50"),
-    ]);
-    if (reportRes == null || eventsRes == null) {
+    const mg = await scenarioMgId();
+    if (mg == null) {
       const card = document.getElementById("sc-report-card");
-      if (card) card.innerHTML = `<span class="hint">no microgrid selected</span>`;
+      if (card) card.innerHTML = `<span class="hint">no microgrid loaded</span>`;
       const list = document.getElementById("sc-report-events");
       if (list) list.innerHTML = `<li class="hint">—</li>`;
       return;
     }
+    const [reportRes, eventsRes] = await Promise.all([
+      fetch(`/api/mg/${mg}/scenario/report`),
+      fetch(`/api/mg/${mg}/scenario/events?limit=50`),
+    ]);
     if (!reportRes.ok || !eventsRes.ok) return;
     const r = await reportRes.json();
     const ev = await eventsRes.json();

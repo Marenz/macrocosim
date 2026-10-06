@@ -41,6 +41,18 @@ export async function mgFetch(suffix, opts) {
   return res;
 }
 
+// The microgrid the scenario readouts show: the selected one, else
+// the lowest id `/api/microgrids` lists, else null. Display only:
+// the selection and the route stay as they are.
+export async function scenarioMgId() {
+  const id = readSelectedMg();
+  if (id != null) return id;
+  const res = await fetch("/api/microgrids");
+  if (!res.ok) throw new Error(await errorText(res));
+  const ids = (await res.json()).map((m) => m.id);
+  return ids.length ? Math.min(...ids) : null;
+}
+
 // ─── Per-microgrid file flags ──────────────────────────────────────────────
 // The `managed` / `unsaved` / `source` fields off the last
 // /api/microgrids listing, keyed by id. microgridsPanel publishes on

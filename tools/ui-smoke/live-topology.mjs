@@ -1940,6 +1940,72 @@ await page.keyboard.press("Escape");
 await page.keyboard.press("1");
 await page.click(DEMO_CARD).catch(() => {});
 
+// ── e2e: the Scenarios panel with no microgrid selected ──────────
+// A fresh #scenarios has no selection; the panel reads the lowest
+// registered microgrid's journal, and leaves the selection and the
+// route alone.
+{
+  const SCENARIO = "pv-dropout";
+  const lowestMg = await page.evaluate(async () =>
+    Math.min(...(await (await fetch("/api/microgrids")).json()).map((m) => m.id)),
+  );
+  await page.goto(`${BASE}/#scenarios`, { waitUntil: "networkidle" });
+  const read = page
+    .waitForResponse((r) => new URL(r.url()).pathname === `/api/mg/${lowestMg}/scenario`, { timeout: 10000 })
+    .catch(() => null);
+  await page.reload({ waitUntil: "networkidle" });
+  const readRes = await read;
+  check(
+    "e2e: with no microgrid selected, the Scenarios panel reads the lowest microgrid's scenario",
+    readRes?.status() === 200,
+    JSON.stringify({ lowestMg, status: readRes?.status() }),
+  );
+  await page.click(`.sc-row:has(.sc-row-name:text-is("${SCENARIO}")) .sc-row-actions button`);
+  const state = () =>
+    page.evaluate((n) => {
+      const rows = [...document.querySelectorAll(".sc-row")];
+      const mine = rows.find((r) => r.querySelector(".sc-row-name")?.textContent === n);
+      const others = rows.filter((r) => r !== mine).map((r) => r.querySelector(".sc-row-actions button"));
+      return {
+        status: document.getElementById("sc-run-status")?.textContent,
+        badge: !!mine?.querySelector(".sc-badge.running"),
+        othersDisabled: others.length > 0 && others.every((b) => b?.textContent === "Run" && b.disabled),
+        chip: document.getElementById("active-scenarios")?.hidden === false,
+        selected: localStorage.getItem("macrocosim-selected-mg"),
+        hash: location.hash,
+      };
+    }, SCENARIO);
+  const running = await waitFor(async () => {
+    const s = await state();
+    return s.status === "running" && s.badge && s.othersDisabled && s.chip ? s : null;
+  }, 10000).catch(() => null);
+  const after = await state();
+  check(
+    "e2e: with no microgrid selected, a started scenario shows running and the other Run buttons are disabled",
+    running !== null,
+    JSON.stringify(after),
+  );
+  check(
+    "e2e: the Scenarios readout keeps the selection empty and the route on #scenarios",
+    after.selected === null && after.hash === "#scenarios",
+    JSON.stringify(after),
+  );
+  const stopped = page
+    .waitForResponse((r) => new URL(r.url()).pathname === "/api/scenarios/stop", { timeout: 10000 })
+    .catch(() => null);
+  await page.click("#sc-run-stop");
+  const stoppedRes = await stopped;
+  const stoppedView = await waitFor(async () => {
+    const s = await state();
+    return s.status === "stopped" && !s.badge ? s : null;
+  }, 10000).catch(() => null);
+  check(
+    "e2e: with no microgrid selected, Stop ends the run",
+    stoppedRes?.status() === 204 && stoppedView !== null,
+    JSON.stringify({ status: stoppedRes?.status(), view: await state() }),
+  );
+}
+
 // ── e2e: the Scenarios panel, the Report panel and error display ──
 // The scenario readouts and the report are the selected microgrid's
 // (/api/mg/{mg}/scenario…); start and stop are site-wide, and stop
