@@ -256,7 +256,7 @@ fn parse_expect_metric(name: &str) -> Option<Metric> {
 ///
 /// POLICY — `scenario-stop` returns every driven knob (a meter's
 /// `:power-w` / `:reactive-power-var` / power-factor override, a solar
-/// inverter's `:sunlight%`, a boiler's `:demand`) to its
+/// inverter's `:sunlight-pct`, a boiler's `:demand`) to its
 /// PRE-SCENARIO state: the value/source it had the moment BEFORE the
 /// scenario first touched it, captured by `scenario_snapshot_knob`.
 /// This holds even over a mid-scenario manual poke or

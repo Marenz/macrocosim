@@ -432,7 +432,7 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// scheduler holds the interpreter lock and calls this on every
     /// component, in registration order, *before* the tick pass.
     /// Components carrying a [`DynamicScalar`] (lambda- or symbol-
-    /// bound `:power-w`, `:sunlight%`, …) re-evaluate it here and
+    /// bound `:power-w`, `:sunlight-pct`, …) re-evaluate it here and
     /// stash the resolved scalar in an atomic that `tick` then reads.
     /// Default no-op.
     ///
@@ -574,7 +574,7 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
 
     /// Does this component carry an input value the generated block
     /// cannot write down? Two shapes qualify: a `:power-w` /
-    /// `:sunlight%` bound to a lambda or symbol, which only means
+    /// `:sunlight-pct` bound to a lambda or symbol, which only means
     /// something while the interpreter is running, and a value poked
     /// in at runtime over a component that was built without that
     /// kwarg — the renderer writes construction arguments, not

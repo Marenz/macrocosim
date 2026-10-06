@@ -55,7 +55,7 @@ pub(crate) fn ramping_inverter(id: u64) -> BatteryInverter {
 }
 
 /// A 1 kWh battery at 89.5 % SoC, rated ±5 kW, whose window closes at
-/// a 90 % `:soc-upper` with no protect margin.
+/// a 90 % `:soc-upper-pct` with no protect margin.
 pub(crate) fn nearly_full_pack(id: u64) -> Battery {
     Battery::new(
         id,

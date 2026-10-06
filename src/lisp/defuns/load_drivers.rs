@@ -336,7 +336,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     // The way back from set-solar-sunlight — the trip the sunlight
     // knob never had one. Drops whatever is driving the slot and
     // returns the inverter to following the site's weather, exactly
-    // as a freshly-constructed one with no `:sunlight%` does.
+    // as a freshly-constructed one with no `:sunlight-pct` does.
     // Strict: a component without a sunlight knob errors.
     let r = router.clone();
     ctx.defun(
@@ -1035,7 +1035,7 @@ mod tests {
     /// telemetry read reflects it. An unknown id errors.
     #[test]
     fn set_battery_soc_teleports_state() {
-        let (cfg, _dir) = config_with("(%make-battery :id 4 :initial-soc 60.0)");
+        let (cfg, _dir) = config_with("(%make-battery :id 4 :initial-soc-pct 60.0)");
         cfg.eval("(set-battery-soc 4 12.5)").unwrap();
         let site = cfg.site();
         let soc = site.get(4).unwrap().telemetry(&site).soc_pct.unwrap();
@@ -1115,7 +1115,7 @@ mod tests {
     /// a non-solar component errors, and so does an unknown id.
     #[test]
     fn clear_solar_sunlight_returns_to_following_weather() {
-        let (cfg, _dir) = config_with("(%make-solar-inverter :id 8 :sunlight% 40)");
+        let (cfg, _dir) = config_with("(%make-solar-inverter :id 8 :sunlight-pct 40)");
         let site = cfg.site();
         let inv = site.get(8).unwrap();
         assert_eq!(
@@ -1162,14 +1162,14 @@ mod tests {
         assert!(err.contains("not found"), "{err}");
     }
 
-    /// The clear must survive a save/reload: a `:sunlight%`-built
+    /// The clear must survive a save/reload: a `:sunlight-pct`-built
     /// inverter that has been cleared renders WITHOUT the kwarg, and
     /// re-making from those kwargs yields a weather-following
     /// inverter — not a `Manual(100)` one that silently ignores the
     /// sky forever.
     #[test]
     fn cleared_sunlight_round_trips_through_constructor_kwargs() {
-        let (cfg, _dir) = config_with("(%make-solar-inverter :id 8 :sunlight% 40)");
+        let (cfg, _dir) = config_with("(%make-solar-inverter :id 8 :sunlight-pct 40)");
         cfg.eval("(clear-solar-sunlight 8)").unwrap();
         let kwargs = cfg
             .site()
@@ -1181,7 +1181,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         assert!(
-            !kwargs.contains(":sunlight%"),
+            !kwargs.contains(":sunlight-pct"),
             "a Follow source renders as the ABSENT kwarg: {kwargs}"
         );
 
@@ -1335,18 +1335,18 @@ mod tests {
 
     /// The sunlight twin of
     /// `scenario_stop_restores_a_constructed_power_kwarg_a_clear_dropped`:
-    /// a `:sunlight%`-built inverter whose FIRST touch inside the run
+    /// a `:sunlight-pct`-built inverter whose FIRST touch inside the run
     /// is the CLEAR, so the restored baseline can only have come from
     /// the snapshot `clear-solar-sunlight` takes on its way in. The
     /// clear is a user-intent verb — mid-run it really clears (the
     /// source is `Follow`, "weather" marker and all, and the
-    /// `:sunlight%` kwarg is dropped so the inverter would save as
+    /// `:sunlight-pct` kwarg is dropped so the inverter would save as
     /// weather-following) — but a scenario only borrowed the knob, so
     /// `(scenario-stop)` must put the Manual 40 back, markerless, with
     /// its kwarg.
     #[test]
     fn scenario_stop_restores_a_constructed_sunlight_kwarg_a_clear_dropped() {
-        let (cfg, _dir) = config_with("(%make-solar-inverter :id 8 :sunlight% 40)");
+        let (cfg, _dir) = config_with("(%make-solar-inverter :id 8 :sunlight-pct 40)");
         let inv = cfg.site().get(8).unwrap();
         let kwargs = || {
             inv.constructor_kwargs()
@@ -1361,7 +1361,7 @@ mod tests {
             None,
             "the constructed baseline is Manual, markerless"
         );
-        assert!(kwargs().contains(":sunlight% 40"), "{}", kwargs());
+        assert!(kwargs().contains(":sunlight-pct 40"), "{}", kwargs());
 
         cfg.eval("(scenario-start \"clear-sun\")").unwrap();
         cfg.eval("(clear-solar-sunlight 8)").unwrap();
@@ -1371,7 +1371,7 @@ mod tests {
             "the clear must really clear while the scenario runs"
         );
         assert!(
-            !kwargs().contains(":sunlight%"),
+            !kwargs().contains(":sunlight-pct"),
             "the clear drops the constructed kwarg too: {}",
             kwargs()
         );
@@ -1384,7 +1384,7 @@ mod tests {
             "back to Manual 40, not left following the weather"
         );
         assert!(
-            kwargs().contains(":sunlight% 40"),
+            kwargs().contains(":sunlight-pct 40"),
             "the constructed kwarg must come back, not just the live source: {}",
             kwargs()
         );

@@ -1,6 +1,6 @@
 //! Scalar component inputs that may be a constant or a Lisp expression.
 //!
-//! A meter's `:power-w` and a solar inverter's `:sunlight%` are scalar
+//! A meter's `:power-w` and a solar inverter's `:sunlight-pct` are scalar
 //! inputs that scenario scripts often want to drive declaratively:
 //!
 //! ```lisp

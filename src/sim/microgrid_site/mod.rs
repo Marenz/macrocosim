@@ -1229,7 +1229,7 @@ impl MicrogridSite {
     /// meters that aggregate them.
     ///
     /// Pure Rust — does NOT enter the Lisp interpreter. Lambda-bound
-    /// component inputs (`:power-w`, `:sunlight%`, …) are refreshed
+    /// component inputs (`:power-w`, `:sunlight-pct`, …) are refreshed
     /// by `Config`'s dedicated lisp-refresh task on its own 100 ms
     /// cadence; this method only reads the atomic scalars those
     /// refreshes leave behind. Tests that need a synchronous refresh

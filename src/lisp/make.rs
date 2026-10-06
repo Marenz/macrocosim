@@ -93,13 +93,13 @@ AsPlist! {
         name: Option<String> {= None},
         interval_s<":interval-s">: Option<f64> {= None},
         capacity_wh<":capacity-wh">: Option<f64> {= None},
-        initial_soc<":initial-soc">: Option<f64> {= None},
-        soc_lower<":soc-lower">: Option<f64> {= None},
-        soc_upper<":soc-upper">: Option<f64> {= None},
+        initial_soc<":initial-soc-pct">: Option<f64> {= None},
+        soc_lower<":soc-lower-pct">: Option<f64> {= None},
+        soc_upper<":soc-upper-pct">: Option<f64> {= None},
         voltage<":voltage-v">: Option<f64> {= None},
         rated_lower<":rated-lower-w">: Option<f64> {= None},
         rated_upper<":rated-upper-w">: Option<f64> {= None},
-        soc_protect_margin<":soc-protect-margin">: Option<f64> {= None},
+        soc_protect_margin<":soc-protect-margin-pct">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
         operational_mode<":operational-mode">: Option<OperationalMode> {= None},
         health<":health">: Option<Health> {= None},
@@ -158,7 +158,7 @@ AsPlist! {
         /// Leaving it out is the opt-in to the site's weather: the
         /// inverter tracks the sky instead of a driven number, shaped
         /// by `:weather-lag-s` / `:weather-jitter-pct`.
-        sunlight_pct<":sunlight%">: Option<LispValue> {= None},
+        sunlight_pct<":sunlight-pct">: Option<LispValue> {= None},
         rated_lower<":rated-lower-w">: Option<f64> {= None},
         rated_upper<":rated-upper-w">: Option<f64> {= None},
         /// The array's peak DC output (Wp), positive — not an
@@ -169,11 +169,11 @@ AsPlist! {
         /// in seconds. Left out, each inverter gets a small stable
         /// offset derived from its id (0–60 s) so a cloud sweeps
         /// across a multi-PV site; `0` opts out of that. Only
-        /// meaningful without `:sunlight%`.
+        /// meaningful without `:sunlight-pct`.
         weather_lag_s<":weather-lag-s">: Option<f64> {= None},
         /// Per-tick uniform ±roughening of a weather-following
         /// sample, in percent of the value. Only meaningful without
-        /// `:sunlight%`.
+        /// `:sunlight-pct`.
         weather_jitter_pct<":weather-jitter-pct">: Option<f64> {= None},
         command_delay_s<":command-delay-s">: Option<f64> {= None},
         ramp_rate<":ramp-rate-w-per-s">: Option<f64> {= None},
@@ -218,17 +218,17 @@ AsPlist! {
         // now, so these are taken and ignored (with a warning) rather
         // than rejected: a managed file, a snapshot, or an
         // `enterprise.lisp` whose persisted `ev-charger-defaults` still
-        // carries `:soc-protect-margin` was written by the previous
-        // binary and must still load — the same courtesy
-        // `load-overrides` in sim/common.lisp pays a config that
-        // predates managed files. Rejecting them would fail the whole
-        // microgrid, and in the enterprise case every charger in the
-        // process.
+        // carries `:soc-protect-margin` must still load — the same
+        // courtesy `load-overrides` in sim/common.lisp pays a config
+        // that predates managed files. Rejecting them would fail the
+        // whole microgrid, and in the enterprise case every charger in
+        // the process. The old spellings arrive here under these new
+        // names, renamed by the table in `renames.rs`.
         capacity_wh<":capacity-wh">: Option<f64> {= None},
-        initial_soc<":initial-soc">: Option<f64> {= None},
-        soc_lower<":soc-lower">: Option<f64> {= None},
-        soc_upper<":soc-upper">: Option<f64> {= None},
-        soc_protect_margin<":soc-protect-margin">: Option<f64> {= None},
+        initial_soc<":initial-soc-pct">: Option<f64> {= None},
+        soc_lower<":soc-lower-pct">: Option<f64> {= None},
+        soc_upper<":soc-upper-pct">: Option<f64> {= None},
+        soc_protect_margin<":soc-protect-margin-pct">: Option<f64> {= None},
         /// 1 or 3: the phases the charger is wired on.
         phases<":phases">: Option<i64> {= None},
         /// What the charger offers with no command standing: `'paused`
@@ -503,7 +503,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             let id = id_or_next(&r, &w, a.id)?;
             let interval = secs_to_duration(":interval-s", a.interval_s, Duration::from_secs(1))?;
             let mut cfg = SolarInverterConfig::default();
-            // :sunlight% accepts a number, lambda, or symbol. Number
+            // :sunlight-pct accepts a number, lambda, or symbol. Number
             // seeds the initial ramp target on `cfg.sunlight_pct`;
             // lambda / symbol installs a dynamic source that takes
             // effect on the first `refresh_inputs`, over a constant
@@ -512,7 +512,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             // already; per-component plist overrides via last-wins.
             let mut dynamic_sunlight: Option<DynamicScalar> = None;
             match a.sunlight_pct.as_ref() {
-                // No `:sunlight%` at all is the opt-in to weather —
+                // No `:sunlight-pct` at all is the opt-in to weather —
                 // `None` is exactly the config shape that starts the
                 // inverter on a `Follow` slot, and the absent kwarg is
                 // what `constructor_kwargs` renders back for one, so a
@@ -565,7 +565,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                 // A non-finite or non-positive array inverts the band
                 // (min_avail_w goes positive, intersects emptily with
                 // rated) and silently parks the inverter at 0 forever
-                // — the same failure mode :peak% is guarded against
+                // — the same failure mode :peak-pct is guarded against
                 // above, with nothing in telemetry to say why.
                 if !(v.is_finite() && v > 0.0) {
                     return Err(Error::invalid_argument(format!(
@@ -648,10 +648,10 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             // once per charger so the config gets cleaned up eventually.
             let retired: Vec<&str> = [
                 (":capacity-wh", a.capacity_wh.is_some()),
-                (":initial-soc", a.initial_soc.is_some()),
-                (":soc-lower", a.soc_lower.is_some()),
-                (":soc-upper", a.soc_upper.is_some()),
-                (":soc-protect-margin", a.soc_protect_margin.is_some()),
+                (":initial-soc-pct", a.initial_soc.is_some()),
+                (":soc-lower-pct", a.soc_lower.is_some()),
+                (":soc-upper-pct", a.soc_upper.is_some()),
+                (":soc-protect-margin-pct", a.soc_protect_margin.is_some()),
             ]
             .iter()
             .filter(|(_, present)| *present)
@@ -1160,7 +1160,7 @@ mod tests {
         // %make-battery is the primitive — every field arrives as a
         // plist key. Defaults are applied by wrappers, not here.
         let site = run(
-            r#"(%make-battery :id 100 :capacity-wh 50000.0 :initial-soc 20.0
+            r#"(%make-battery :id 100 :capacity-wh 50000.0 :initial-soc-pct 20.0
                               :rated-lower-w -8000.0 :rated-upper-w 8000.0)"#,
         );
         let t = site.get(100).unwrap().telemetry(&site);
@@ -1304,7 +1304,7 @@ mod tests {
         assert!((m.aggregate_reactive_var(&site)).abs() < 1e-3);
     }
 
-    /// `:sunlight%` accepts a lambda the same way meter `:power-w`
+    /// `:sunlight-pct` accepts a lambda the same way meter `:power-w`
     /// does — the make-path detects the non-numeric value and wires
     /// it into the inverter's DynamicScalar. Refresh resolves it
     /// each tick; the resolved sunlight% is the floor for incoming
@@ -1313,7 +1313,7 @@ mod tests {
     fn solar_inverter_sunlight_lambda_clips_setpoint() {
         let (site, mut ctx) = run_with_ctx(
             r#"(%make-solar-inverter :id 11
-                                    :sunlight% (lambda () 25.0)
+                                    :sunlight-pct (lambda () 25.0)
                                     :rated-lower-w -8000.0
                                     :rated-upper-w 0.0)"#,
         );
@@ -1348,7 +1348,7 @@ mod tests {
     fn solar_inverter_array_peak_w_sizes_the_dc_array_separately_from_rated() {
         let (site, mut ctx) = run_with_ctx(
             r#"(%make-solar-inverter :id 12
-                                    :sunlight% 50.0
+                                    :sunlight-pct 50.0
                                     :rated-lower-w -10000.0
                                     :array-peak-w 15000.0)"#,
         );
@@ -1392,15 +1392,15 @@ mod tests {
         assert!(err.contains(":array-peak-w"), "{err}");
     }
 
-    /// Omitting `:sunlight%` is the opt-in to weather: the inverter
+    /// Omitting `:sunlight-pct` is the opt-in to weather: the inverter
     /// starts as a `Follow` source (the "weather" marker in
     /// `sunlight_reading().expr`) and renders back without the kwarg.
-    /// Passing `:sunlight%` — a number or a lambda — keeps the
+    /// Passing `:sunlight-pct` — a number or a lambda — keeps the
     /// historical `Manual` slot.
     #[test]
     fn omitting_sunlight_pct_follows_the_site_weather() {
         let site = run(r#"(%make-solar-inverter :id 13 :rated-lower-w -10000.0)
-               (%make-solar-inverter :id 14 :rated-lower-w -10000.0 :sunlight% 40.0)"#);
+               (%make-solar-inverter :id 14 :rated-lower-w -10000.0 :sunlight-pct 40.0)"#);
         assert_eq!(
             site.get(13)
                 .unwrap()
@@ -1409,7 +1409,7 @@ mod tests {
                 .sunlight_reading()
                 .expr,
             Some("weather".into()),
-            "no :sunlight% ⇒ follows the weather"
+            "no :sunlight-pct ⇒ follows the weather"
         );
         assert_eq!(
             site.get(14)
@@ -1419,7 +1419,7 @@ mod tests {
                 .sunlight_reading()
                 .expr,
             None,
-            "an explicit :sunlight% stays manual"
+            "an explicit :sunlight-pct stays manual"
         );
         let kw = |id: u64| {
             site.get(id)
@@ -1430,8 +1430,8 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        assert!(!kw(13).contains(":sunlight%"), "{}", kw(13));
-        assert!(kw(14).contains(":sunlight% 40"), "{}", kw(14));
+        assert!(!kw(13).contains(":sunlight-pct"), "{}", kw(13));
+        assert!(kw(14).contains(":sunlight-pct 40"), "{}", kw(14));
     }
 
     /// `:weather-lag-s` / `:weather-jitter-pct` shape how a `Follow`
@@ -1834,5 +1834,75 @@ mod tests {
             old.get(1).unwrap().constructor_kwargs(),
             new.get(1).unwrap().constructor_kwargs()
         );
+    }
+
+    #[test]
+    fn percent_keywords_end_in_pct() {
+        let site = run(
+            "(%make-battery :id 1 :initial-soc-pct 20.0 :soc-lower-pct 10.0
+                            :soc-upper-pct 90.0 :soc-protect-margin-pct 5.0)
+             (%make-solar-inverter :id 2 :sunlight-pct 50.0 :rated-lower-w -5000.0)",
+        );
+        for id in [1, 2] {
+            let kw = site.get(id).unwrap().constructor_kwargs();
+            for (name, _) in &kw {
+                assert!(
+                    ![
+                        ":initial-soc",
+                        ":soc-lower",
+                        ":soc-upper",
+                        ":soc-protect-margin",
+                        ":sunlight%"
+                    ]
+                    .contains(name),
+                    "component {id} rendered old keyword {name}"
+                );
+            }
+        }
+        let b = site.get(1).unwrap().constructor_kwargs();
+        assert!(
+            b.contains(&(":initial-soc-pct", "20.0".to_string())),
+            "{b:?}"
+        );
+        assert!(
+            b.contains(&(":soc-protect-margin-pct", "5.0".to_string())),
+            "{b:?}"
+        );
+        let s = site.get(2).unwrap().constructor_kwargs();
+        assert!(s.contains(&(":sunlight-pct", "50.0".to_string())), "{s:?}");
+    }
+
+    #[test]
+    fn old_percent_keywords_build_the_same_components() {
+        let old = run("(%make-battery :id 1 :initial-soc 20.0 :soc-lower 10.0
+                            :soc-upper 90.0 :soc-protect-margin 5.0)
+             (%make-solar-inverter :id 2 :sunlight% 50.0 :rated-lower-w -5000.0)");
+        let new = run(
+            "(%make-battery :id 1 :initial-soc-pct 20.0 :soc-lower-pct 10.0
+                            :soc-upper-pct 90.0 :soc-protect-margin-pct 5.0)
+             (%make-solar-inverter :id 2 :sunlight-pct 50.0 :rated-lower-w -5000.0)",
+        );
+        for id in [1, 2] {
+            assert_eq!(
+                old.get(id).unwrap().constructor_kwargs(),
+                new.get(id).unwrap().constructor_kwargs()
+            );
+        }
+    }
+
+    #[test]
+    fn an_ev_charger_ignores_the_new_pack_keywords_like_the_old_ones() {
+        let build = |src: &str| {
+            let site = run(src);
+            let charger = site.get(1).unwrap();
+            (
+                charger.ev_port().unwrap().ev_info().is_none(),
+                charger.constructor_kwargs(),
+            )
+        };
+        let new = build("(%make-ev-charger :id 1 :capacity-wh 1.0 :initial-soc-pct 5.0)");
+        let old = build("(%make-ev-charger :id 1 :capacity 1.0 :initial-soc 5.0)");
+        assert_eq!(new, old);
+        assert!(new.0, "the pack keywords buy no pack");
     }
 }

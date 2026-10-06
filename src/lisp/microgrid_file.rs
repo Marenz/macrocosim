@@ -817,14 +817,14 @@ mod tests {
     (%make-meter :id 3 :hidden t)
     (%make-battery-inverter :id 4 :rated-lower-w -8000.0 :rated-upper-w 8000.0
                             :reactive-pf-limit 0)
-    (%make-battery :id 5 :capacity-wh 50000.0 :initial-soc 20.0)
-    (%make-solar-inverter :id 6 :sunlight% 40.0)
+    (%make-battery :id 5 :capacity-wh 50000.0 :initial-soc-pct 20.0)
+    (%make-solar-inverter :id 6 :sunlight-pct 40.0)
     (%make-ev-charger :id 7 :resume-on-recovery t :phases 1 :idle 'full)
     (%make-chp :id 8 :name "chp")
     (%make-meter :id 9 :operational-mode 'inactive)
     (%make-meter :id 10 :power-w 2000.0 :reactive-power-var 500.0)
     (%make-meter :id 11 :power-w 2000.0 :power-factor 0.9 :leading t)
-    ;; No `:sunlight%` at all — a weather-FOLLOWING PV inverter,
+    ;; No `:sunlight-pct` at all — a weather-FOLLOWING PV inverter,
     ;; whose rendering is the absence of the kwarg. Round-tripping
     ;; it pins that omission: a render that emitted a number here
     ;; (the cache's seed, say) would reload as a driven inverter and
@@ -850,7 +850,7 @@ mod tests {
         pv.sunlight_drive().unwrap().set_sunlight_pct(30.0);
         assert!(
             pv.has_unrenderable_source(),
-            "a constant poked over an inverter built with no :sunlight% has nowhere to render"
+            "a constant poked over an inverter built with no :sunlight-pct has nowhere to render"
         );
         pv.sunlight_drive().unwrap().clear_sunlight_source();
         assert!(
@@ -925,7 +925,7 @@ mod tests {
                 .sunlight_reading()
                 .expr,
             Some("weather".to_string()),
-            "no :sunlight% must reload as a weather-following slot"
+            "no :sunlight-pct must reload as a weather-following slot"
         );
         // Rendering the reloaded site is byte-stable.
         assert_eq!(block, render_block(&e2.def, &e2.site));
@@ -943,10 +943,10 @@ mod tests {
   :topology
   (lambda ()
     (%make-meter :id 1)
-    (%make-ev-charger :id 2 :rated-lower-w 0.0 :rated-upper-w 22000.0
+    (%make-ev-charger :id 2 :rated-lower 0.0 :rated-upper 22000.0
                       :initial-soc 92.0 :soc-lower 0.0 :soc-upper 100.0
-                      :soc-protect-margin 10.0 :capacity-wh 30000.0
-                      :command-delay-ms 500 :ramp-rate-w-per-s 3000.0
+                      :soc-protect-margin 10.0 :capacity 30000.0
+                      :command-delay-ms 500 :ramp-rate 3000.0
                       :stream-jitter-pct 10.0)
     (connect 1 2)))
 "#;
@@ -974,16 +974,17 @@ mod tests {
         let block = render_block(&def, &site);
         for retired in [
             ":capacity-wh",
-            ":initial-soc",
-            ":soc-lower",
-            ":soc-upper",
-            ":soc-protect-margin",
+            ":initial-soc-pct",
+            ":soc-lower-pct",
+            ":soc-upper-pct",
+            ":soc-protect-margin-pct",
         ] {
             assert!(
                 !block.contains(retired),
                 "{retired} must not be rendered back out:\n{block}"
             );
         }
+        assert_only_new_keywords(&block);
         let (cfg2, _dir2) = config_with(&block);
         let reg2 = cfg2.microgrids();
         let r2 = reg2.lock();
@@ -991,6 +992,80 @@ mod tests {
             r2.get(&2206).is_some(),
             "the rendered block re-registers the microgrid"
         );
+    }
+
+    /// Fails when `block` holds an old keyword from the rename table,
+    /// or any keyword in milliseconds, as a whole keyword.
+    fn assert_only_new_keywords(block: &str) {
+        let olds: Vec<&str> = crate::lisp::renames::RENAMES
+            .iter()
+            .map(|r| r.old)
+            .collect();
+        for kw in block
+            .split(|c: char| c.is_whitespace() || c == '(' || c == ')')
+            .filter(|t| t.starts_with(':'))
+        {
+            assert!(
+                !olds.contains(&kw) && !kw.ends_with("-ms"),
+                "old keyword {kw} rendered back out:\n{block}"
+            );
+        }
+    }
+
+    /// The generated block of the Berlin demo as v0.1.0 shipped it
+    /// loads and renders back with only new keywords.
+    #[test]
+    fn the_v0_1_0_berlin_demo_block_renders_with_new_names() {
+        use super::super::test_support::config_with;
+        let text = include_str!("../../tests/fixtures/berlin-demo-v0.1.0.lisp");
+        let old_block = parse(text).unwrap().generated.expect("managed");
+        assert!(old_block.contains(":capacity 92000.0"), "{old_block}");
+        let (cfg, _dir) = config_with(&old_block);
+        let (def, site) = {
+            let reg = cfg.microgrids();
+            let r = reg.lock();
+            let e = r.get(&2200).expect("the v0.1.0 block registers 2200");
+            (e.def.clone(), e.site.clone())
+        };
+        let block = render_block(&def, &site);
+        assert_only_new_keywords(&block);
+        for new in [
+            ":capacity-wh 92000.0",
+            ":initial-soc-pct 85.0",
+            ":voltage-v 800.0",
+            ":command-delay-s 1.5",
+            ":interval-s 0.2",
+            ":ramp-rate-w-per-s 5000.0",
+            ":rated-fuse-current-a 100",
+            ":power-w -2000.0",
+        ] {
+            assert!(block.contains(new), "{new} missing from:\n{block}");
+        }
+    }
+
+    /// The whole Berlin demo as v0.1.0 shipped it, generated block and
+    /// script section (`every :milliseconds`, `:nominal`, …), loads
+    /// through `(load …)`: the microgrid registers with its old
+    /// keywords converted and every scenario is defined.
+    #[test]
+    fn the_whole_v0_1_0_berlin_demo_loads() {
+        use super::super::test_support::config_with;
+        let (cfg, dir) =
+            config_with("(make-microgrid :id 9 :grpc-port 8810 :topology (lambda () nil))");
+        let text = include_str!("../../tests/fixtures/berlin-demo-v0.1.0.lisp");
+        std::fs::write(dir.join("berlin-v0.1.0.lisp"), text).unwrap();
+        cfg.eval("(load \"berlin-v0.1.0.lisp\")").unwrap();
+        let (def, site) = {
+            let reg = cfg.microgrids();
+            let r = reg.lock();
+            let e = r.get(&2200).expect("the v0.1.0 file registers 2200");
+            (e.def.clone(), e.site.clone())
+        };
+        let block = render_block(&def, &site);
+        assert_only_new_keywords(&block);
+        assert!(block.contains(":capacity-wh 92000.0"), "{block}");
+        let scenarios = crate::sim::scenarios::snapshot(&cfg.scenarios());
+        assert_eq!(scenarios.len(), 7, "{}", scenarios.len());
     }
 
     /// `:device-delay-s` survives a render and reload when it is

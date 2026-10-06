@@ -48,7 +48,7 @@ tulisp::AsPlist! {
 
 /// A `(lo hi)` range kwarg: a plain number means a fixed value
 /// (`(v, v)`), a two-element list means the uniform range. Mirrors
-/// `:sunlight%`'s raw-value dispatch in `make.rs`.
+/// `:sunlight-pct`'s raw-value dispatch in `make.rs`.
 fn range_arg(kw: &str, v: &LispValue) -> Result<(f32, f32), Error> {
     let raw = v.as_inner();
     if raw.numberp() {

@@ -131,7 +131,7 @@ with `--assert` to gate CI.
   when that child is a meter. The scenario reporter tracks its peak.
 - **`(make-meter :power-w N | (lambda () …) | 'symbol)`** — drive the
   meter's published power from a constant, a lambda, or a global
-  symbol. Same on solar inverters via `:sunlight%`.
+  symbol. Same on solar inverters via `:sunlight-pct`.
 - **`(set-meter-power id N | (lambda () …) | 'symbol)`** — same
   polymorphism imperatively, for `(every …)` callbacks or scenario
   scripts. Numeric values collapse any prior dynamic source.

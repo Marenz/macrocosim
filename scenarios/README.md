@@ -56,7 +56,7 @@ exercises the simulator:
 | Defun                                  | Effect                                                   |
 |----------------------------------------|----------------------------------------------------------|
 | `(set-meter-power ID VAL)`             | drive a meter's `:power-w` (number / lambda / `'symbol`)   |
-| `(set-solar-sunlight ID VAL)`          | drive a solar inverter's `:sunlight%` (same polymorphism)|
+| `(set-solar-sunlight ID VAL)`          | drive a solar inverter's `:sunlight-pct` (same polymorphism)|
 | `(set-component-health ID K)`          | flip health to `'ok` / `'error` / `'standby`             |
 | `(set-component-telemetry-mode ID K)`  | `'normal` / `'silent` / `'closed`                        |
 | `(set-component-command-mode ID K)`    | `'normal` / `'timeout` / `'error`                        |
@@ -81,7 +81,7 @@ scenario cue reaches for to script a passing cloud over the array:
 
 It needs weather installed first — `(make-weather)` gives the default
 06:00–20:00 UTC clear-sky day — and only bites a solar inverter that is
-following the sky (no `:sunlight%` of its own); one driven by
+following the sky (no `:sunlight-pct` of its own); one driven by
 `set-solar-sunlight`, like `examples/berlin-demo.lisp`'s PV, is Manual
 and ignores it.
 
@@ -157,7 +157,7 @@ explicit `(load …)` is needed:
   stops it.
 - **Restores every driven knob** — a meter's `:power-w` /
   `:reactive-power-var` / power factor, a solar inverter's
-  `:sunlight%`, a boiler's `:demand` and a charger's plugged car go
+  `:sunlight-pct`, a boiler's `:demand` and a charger's plugged car go
   back to what they were the moment before the run first touched
   them — a car the run plugged comes back out, one it unplugged
   goes back in. First snapshot wins:

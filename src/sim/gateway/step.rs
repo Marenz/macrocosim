@@ -349,7 +349,7 @@ mod tests {
         }
     }
 
-    /// A running charge command tapers to nothing at `:soc-upper`
+    /// A running charge command tapers to nothing at `:soc-upper-pct`
     /// instead of running the battery past it; the command stands,
     /// and the battery never has to clip what it is pushed.
     #[test]
@@ -522,7 +522,7 @@ mod tests {
     }
 
     /// A 1 MWh battery at `soc` %, ±5 kW, tapering over the 10 %
-    /// below a 90 % `:soc-upper`.
+    /// below a 90 % `:soc-upper-pct`.
     fn tapering_battery(id: u64, soc: f32) -> Battery {
         Battery::new(
             id,
@@ -659,7 +659,7 @@ mod tests {
     /// The discharge side of
     /// `a_zero_command_holds_the_window_while_the_output_ramps_down`:
     /// a 0 command on a discharging inverter holds the window at
-    /// `:soc-lower` while the output ramps up to 0.
+    /// `:soc-lower-pct` while the output ramps up to 0.
     #[test]
     fn a_zero_command_holds_the_lower_window_while_the_output_ramps_up() {
         let site = settled_at_the_edge(-5_000.0, 10.1);
@@ -721,7 +721,7 @@ mod tests {
         }
     }
 
-    /// A lifetime that runs out near `:soc-upper` sends the axis to
+    /// A lifetime that runs out near `:soc-upper-pct` sends the axis to
     /// its idle value; the window still holds the output on the way.
     #[test]
     fn an_expiry_near_the_window_edge_holds_the_window() {

@@ -32,7 +32,7 @@
         :stream-jitter-pct 4.0))
 
 (setq battery-defaults
-      '(:soc-protect-margin 10.0
+      '(:soc-protect-margin-pct 10.0
         :stream-jitter-pct  8.0
         :health             ok))
 
@@ -43,7 +43,7 @@
         :reactive-pf-limit     0.0         ;; 0 = disabled
         :reactive-apparent-va 32000.0))    ;; kVA-circle envelope
 
-;; Deliberately NO :sunlight% here — an omitted :sunlight% is what
+;; Deliberately NO :sunlight-pct here — an omitted :sunlight-pct is what
 ;; makes an array follow the site weather, so adding one to this
 ;; plist would pin every solar inverter site-wide to a manual
 ;; constant and silently disable (make-weather).

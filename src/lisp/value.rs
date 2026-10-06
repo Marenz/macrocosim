@@ -6,7 +6,7 @@
 //! `value.try_into()?`, which expects `Error = tulisp::Error`. This
 //! newtype provides the right impls so a plist can carry a raw,
 //! unparsed lisp value through to the make-* defun body — used by
-//! `:power-w` and `:sunlight%`, where the make-* dispatcher inspects
+//! `:power-w` and `:sunlight-pct`, where the make-* dispatcher inspects
 //! the raw shape to decide between a constant and a Lisp-driven
 //! [`DynamicScalar`](crate::sim::dynamic_scalar::DynamicScalar).
 

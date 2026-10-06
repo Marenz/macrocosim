@@ -2,18 +2,18 @@
 (make-microgrid :id 2200 :name "Berlin demo" :grpc-port 8800 :tso "TN"
   :topology
   (lambda ()
-    (%make-battery :id 1000 :capacity-wh 92000.0 :initial-soc-pct 85.0 :soc-lower-pct 10.0 :soc-upper-pct 90.0 :voltage-v 800.0 :rated-lower-w -30000.0 :rated-upper-w 30000.0 :soc-protect-margin-pct 10.0 :stream-jitter-pct 8.0)
-    (%make-battery-inverter :id 1001 :rated-lower-w -30000.0 :rated-upper-w 30000.0 :command-delay-s 1.5 :ramp-rate-w-per-s 5000.0 :stream-jitter-pct 8.0 :reactive-pf-limit 0 :reactive-apparent-va 32000.0 :reactive-command-delay-s 0.1 :reactive-ramp-rate-var-per-s 2000.0)
-    (%make-meter :id 1002 :interval-s 0.2 :stream-jitter-pct 4.0)
-    (%make-solar-inverter :id 200 :rated-lower-w -30000.0 :rated-upper-w 0.0 :command-delay-s 0.0 :ramp-rate-w-per-s 2000.0 :stream-jitter-pct 5.0 :reactive-pf-limit 0.35 :reactive-apparent-va 0 :reactive-command-delay-s 0.1 :reactive-ramp-rate-var-per-s 2000.0 :sunlight-pct 100.0)
-    (%make-meter :id 1003 :interval-s 0.2 :stream-jitter-pct 4.0)
-    (%make-ev-charger :id 1004 :rated-lower-w 0.0 :rated-upper-w 22000.0 :command-delay-s 0.5 :ramp-rate-w-per-s 3000.0 :stream-jitter-pct 10.0)
-    (%make-meter :id 1005 :interval-s 0.2 :stream-jitter-pct 4.0)
+    (%make-battery :id 1000 :capacity 92000.0 :initial-soc 85.0 :soc-lower 10.0 :soc-upper 90.0 :voltage 800.0 :rated-lower -30000.0 :rated-upper 30000.0 :soc-protect-margin 10.0 :stream-jitter-pct 8.0)
+    (%make-battery-inverter :id 1001 :rated-lower -30000.0 :rated-upper 30000.0 :command-delay-ms 1500 :ramp-rate 5000.0 :stream-jitter-pct 8.0 :reactive-pf-limit 0 :reactive-apparent-va 32000.0 :reactive-command-delay-ms 100 :reactive-ramp-rate 2000.0)
+    (%make-meter :id 1002 :interval 200 :stream-jitter-pct 4.0)
+    (%make-solar-inverter :id 200 :rated-lower -30000.0 :rated-upper 0.0 :command-delay-ms 0 :ramp-rate 2000.0 :stream-jitter-pct 5.0 :reactive-pf-limit 0.35 :reactive-apparent-va 0 :reactive-command-delay-ms 100 :reactive-ramp-rate 2000.0 :sunlight% 100.0)
+    (%make-meter :id 1003 :interval 200 :stream-jitter-pct 4.0)
+    (%make-ev-charger :id 1004 :rated-lower 0.0 :rated-upper 22000.0 :initial-soc 92.0 :soc-lower 0.0 :soc-upper 100.0 :soc-protect-margin 10.0 :capacity 30000.0 :command-delay-ms 500 :ramp-rate 3000.0 :stream-jitter-pct 10.0)
+    (%make-meter :id 1005 :interval 200 :stream-jitter-pct 4.0)
     (%make-chp :id 1006)
-    (%make-meter :id 1007 :interval-s 0.2 :power-w -2000.0 :stream-jitter-pct 4.0)
+    (%make-meter :id 1007 :interval 200 :power -2000.0 :stream-jitter-pct 4.0)
     (%make-meter :id 100 :name "consumer" :hidden t)
-    (%make-meter :id 2 :interval-s 0.2 :stream-jitter-pct 4.0)
-    (%make-grid-connection-point :id 1 :rated-fuse-current-a 100 :rated-lower-w -90000.0 :rated-upper-w 100000.0 :stream-jitter-pct 1.0)
+    (%make-meter :id 2 :interval 200 :stream-jitter-pct 4.0)
+    (%make-grid-connection-point :id 1 :rated-fuse-current 100 :rated-lower -90000.0 :rated-upper 100000.0 :stream-jitter-pct 1.0)
     (connect 1001 1000)
     (connect 1002 1001)
     (connect 1003 200)
@@ -84,7 +84,7 @@
 ;; few hundred mV either side of nominal. Applies to the active
 ;; microgrid; the scenarios per-microgrid replay fans it out.
 (every
- :interval-s 0.2
+ :milliseconds 200
  :call (lambda ()
          (set-voltage-per-phase
           (+ 229.0 (/ (random 200) 100.0))
@@ -94,7 +94,7 @@
 ;; PV cloud-cover schedule over a 10-minute window, driving the solar
 ;; inverter (id 200). Sunny first 3 min (80%), 2-min ramp into clouds
 ;; (→ 20%), 2 min cloudy, 2-min ramp back to clear. Installed as the
-;; inverter's :sunlight-pct source below via `set-solar-sunlight` rather
+;; inverter's :sunlight% source below via `set-solar-sunlight` rather
 ;; than an imperative timer: a timer would overwrite a scenario's
 ;; numeric sunlight set within a second, while a scenario's numeric
 ;; set cleanly collapses a source and takes over. A lambda source
@@ -116,14 +116,6 @@
                     (+ 17500.0
                        (* 12500.0 (sin (* 6.2831853 (/ (window-elapsed 900.0) 900.0))))
                        (- (random 1000) 500))))
-
-;; A car on the EV charger (id 1004). The plug is runtime state, not
-;; structure, so it can't live in the generated block above — that
-;; block is rewritten from live state and never renders `:ev`. Here it
-;; re-runs on every load, and the demo's charger always has a car to
-;; show an SoC for. `:idle` is paused, so it draws nothing until
-;; something commands the charger.
-(plug-ev 1004 'sedan :soc 35)
 
 ;; -----------------------------------------------------------------------------
 ;; Scenarios — appear in the Scenarios mode dropdown; run one with

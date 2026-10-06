@@ -1260,7 +1260,7 @@ async fn control_for_mg_requires_a_registered_microgrid() {
 /// nearly-empty or nearly-full pool without simulating the charge.
 #[tokio::test]
 async fn control_drive_sets_battery_soc() {
-    let cfg = config_with("(%make-battery :id 4 :initial-soc 60.0)").await;
+    let cfg = config_with("(%make-battery :id 4 :initial-soc-pct 60.0)").await;
     let (status, _) = call(
         cfg.clone(),
         post_json("/api/mg/2200/component/4/drive", r#"{"soc_pct": 11.5}"#),
@@ -2731,7 +2731,7 @@ async fn control_drive_broadcasts_knob_changed() {
 async fn control_drive_clear_sunlight_broadcasts_weather_marker() {
     use crate::sim::events::SiteEvent;
 
-    let cfg = config_with("(%make-solar-inverter :id 8 :sunlight% 40)").await;
+    let cfg = config_with("(%make-solar-inverter :id 8 :sunlight-pct 40)").await;
     call(
         cfg.clone(),
         post_json(
@@ -2779,7 +2779,7 @@ async fn control_drive_clear_sunlight_broadcasts_weather_marker() {
 /// with can only come back from the snapshot the clear itself took.
 #[tokio::test]
 async fn drive_clear_sunlight_inside_a_scenario_restores_on_stop() {
-    let cfg = config_with("(%make-solar-inverter :id 8 :sunlight% 40)").await;
+    let cfg = config_with("(%make-solar-inverter :id 8 :sunlight-pct 40)").await;
     let knob = |body: Vec<u8>| -> serde_json::Value {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         v["knobs"]

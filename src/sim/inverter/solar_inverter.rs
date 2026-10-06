@@ -47,7 +47,7 @@ const SUNLIGHT_SEED_PCT: f32 = 100.0;
 ///   cloud sweep across a multi-PV site instead of hitting every
 ///   array in the same tick. Nobody has driven this inverter's knob;
 ///   it just tracks the sky.
-/// - [`Self::Manual`] — something drove it: a `:sunlight%` kwarg, a
+/// - [`Self::Manual`] — something drove it: a `:sunlight-pct` kwarg, a
 ///   `(set-solar-sunlight …)` poke, a scenario, the UI. The
 ///   [`DynamicScalar`] underneath covers both a plain constant and a
 ///   Lisp expression re-resolved by `refresh_inputs`.
@@ -100,7 +100,7 @@ pub struct SolarInverterConfig {
     /// Defaults to `Some(100.0)`: an inverter built without saying
     /// anything about weather keeps the historical full-sun constant,
     /// so nothing that never heard of weather changes behaviour. The
-    /// Lisp door maps an absent `:sunlight%` to `None` — the absent
+    /// Lisp door maps an absent `:sunlight-pct` to `None` — the absent
     /// kwarg *is* how a weather-following inverter renders.
     pub sunlight_pct: Option<f32>,
     pub command_delay: Duration,
@@ -114,9 +114,9 @@ pub struct SolarInverterConfig {
     /// Reactive slew rate (VAR/s). 2000 default ≈ 5 s OLRT for a
     /// 10 kVAR window — IEEE 1547-2018 Cat B baseline.
     pub reactive_ramp_rate_var_per_s: f32,
-    /// True when `:sunlight%` was constructed as a lambda or symbol
+    /// True when `:sunlight-pct` was constructed as a lambda or symbol
     /// rather than a plain number. Not a plist kwarg itself — it
-    /// only tells the microgrid-file renderer to omit `:sunlight%`
+    /// only tells the microgrid-file renderer to omit `:sunlight-pct`
     /// (a dynamic source can't round-trip as a static number) rather
     /// than write out `sunlight_pct`'s stale fallback value.
     pub sunlight_dynamic: bool,
@@ -171,8 +171,8 @@ pub struct SolarInverter {
     /// Cloud-cover percentage — see [`SunlightSource`]. Either
     /// `Follow` (tracking the site's weather, resolved in `tick`) or
     /// `Manual`: a constant (the cfg default or a numeric
-    /// `:sunlight%`) or a Lisp expression (`:sunlight% (lambda () …)`
-    /// / `:sunlight% 'symbol`) re-resolved each tick by
+    /// `:sunlight-pct`) or a Lisp expression (`:sunlight-pct (lambda () …)`
+    /// / `:sunlight-pct 'symbol`) re-resolved each tick by
     /// `refresh_inputs`. Lisp timers can also push values via
     /// `(set-solar-sunlight ID PCT)`, which collapses any prior
     /// source — dynamic or weather-following — to a constant;
@@ -449,7 +449,7 @@ impl SimulatedComponent for SolarInverter {
     fn has_unrenderable_source(&self) -> bool {
         match &*self.sunlight_source.read() {
             // A `Follow` source is NEVER unrenderable: omitting
-            // `:sunlight%` *is* its rendering, and a reloaded config
+            // `:sunlight-pct` *is* its rendering, and a reloaded config
             // with no kwarg reconstructs a weather-following inverter
             // exactly. This arm deliberately ignores
             // `cfg.sunlight_dynamic`, which is sticky-true for the
@@ -461,14 +461,14 @@ impl SimulatedComponent for SolarInverter {
             // Three ways a driven slot outruns what can be written
             // back. The first two are dynamic sources, which have no
             // static number at all: constructed dynamic (which
-            // `constructor_kwargs` already omits `:sunlight%` for)
+            // `constructor_kwargs` already omits `:sunlight-pct` for)
             // and a runtime `(set-solar-sunlight ID (lambda …))`
             // poke, whose expression the generated block cannot carry
             // either — the same case Meter reports for
             // `set-meter-power`.
             //
             // The third is a plain CONSTANT poked over an inverter
-            // built with no `:sunlight%` at all (`sunlight_pct` is
+            // built with no `:sunlight-pct` at all (`sunlight_pct` is
             // `None`). There is a number to write, but nowhere to
             // write it from: the renderer emits the constructed
             // kwarg, and this inverter never had one, so the poke
@@ -496,7 +496,7 @@ impl SimulatedComponent for SolarInverter {
             device_delay: self.cfg.device_delay,
         });
         // A dynamic sunlight source can't round-trip as a static
-        // number — the renderer omits :sunlight% entirely rather
+        // number — the renderer omits :sunlight-pct entirely rather
         // than writing the (possibly stale) fallback value. An
         // inverter built to follow the weather (`sunlight_pct: None`)
         // omits it too, but for the opposite reason: the absent kwarg
@@ -509,7 +509,7 @@ impl SimulatedComponent for SolarInverter {
             && !self.cfg.sunlight_dynamic
             && manual
         {
-            kw.push((":sunlight%", crate::lisp::lisp_float32(pct)));
+            kw.push((":sunlight-pct", crate::lisp::lisp_float32(pct)));
         }
         // Only write :array-peak-w when it diverges from the matched-array
         // default (|rated-lower|) — a matched config round-trips with
@@ -984,7 +984,7 @@ mod tests {
         assert!((w.get(1).unwrap().aggregate_power_w(&w) - (-6_000.0)).abs() < 1.0);
     }
 
-    /// A static `:sunlight%` renders as its own kwarg, sharing the
+    /// A static `:sunlight-pct` renders as its own kwarg, sharing the
     /// same rated / command-delay / reactive kwargs as the battery
     /// inverter.
     #[test]
@@ -999,12 +999,12 @@ mod tests {
             .map(|(k, v)| format!("{k} {v}"))
             .collect::<Vec<_>>()
             .join(" ");
-        assert!(s.contains(":sunlight% 42.0"));
+        assert!(s.contains(":sunlight-pct 42.0"));
         assert!(s.contains(":rated-lower-w -12000.0"));
     }
 
     /// A lambda- or symbol-driven sunlight source can't round-trip
-    /// as a static number, so `:sunlight%` is omitted entirely.
+    /// as a static number, so `:sunlight-pct` is omitted entirely.
     #[test]
     fn constructor_kwargs_omits_sunlight_pct_when_dynamic() {
         let mut cfg = cfg_with_sun(100.0);
@@ -1016,7 +1016,7 @@ mod tests {
             .map(|(k, v)| format!("{k} {v}"))
             .collect::<Vec<_>>()
             .join(" ");
-        assert!(!s.contains(":sunlight%"));
+        assert!(!s.contains(":sunlight-pct"));
         assert!(inv.has_unrenderable_source());
     }
 
@@ -1038,8 +1038,8 @@ mod tests {
 
     /// The other unwritable poke, and the one a lambda check alone
     /// misses: a plain CONSTANT driven over an inverter built with no
-    /// `:sunlight%` at all. The number is perfectly renderable in the
-    /// abstract, but this inverter has no constructed `:sunlight%`
+    /// `:sunlight-pct` at all. The number is perfectly renderable in the
+    /// abstract, but this inverter has no constructed `:sunlight-pct`
     /// for the renderer to write it into — `constructor_kwargs` omits
     /// the kwarg, so a save would drop the poke and reload as a
     /// weather-following inverter. Reporting it unrenderable is what
@@ -1073,7 +1073,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         assert!(
-            !s.contains(":sunlight%"),
+            !s.contains(":sunlight-pct"),
             "…and the renderer really has nowhere to put it, got {s}",
         );
     }
@@ -1081,7 +1081,7 @@ mod tests {
     /// `cfg.sunlight_dynamic` is sticky — it records how the inverter
     /// was BUILT and never clears. Clearing the slot back to `Follow`
     /// leaves no expression to lose, so the inverter is renderable
-    /// again: the omitted `:sunlight%` is exactly how a Follow slot
+    /// again: the omitted `:sunlight-pct` is exactly how a Follow slot
     /// is written. Consulting the stale flag on a Follow source would
     /// wrongly mark a perfectly renderable microgrid unsaveable.
     #[test]
@@ -1102,7 +1102,7 @@ mod tests {
             .map(|(k, _)| *k)
             .collect::<Vec<_>>()
             .join(" ");
-        assert!(!s.contains(":sunlight%"), "and the kwarg stays omitted");
+        assert!(!s.contains(":sunlight-pct"), "and the kwarg stays omitted");
     }
 
     /// Snapshot/restore round-trip for the sunlight knob: a dynamic

@@ -470,7 +470,7 @@ mod tests {
             // Battery inverter: ±5 kVAr at P = 0. Its child solar
             // inverter carries a 1 kVA cap -> ±1 kVAr, so the
             // combined Q envelope is ±1 kVAr.
-            "(setq pv (%make-solar-inverter :id 3 :sunlight% 0
+            "(setq pv (%make-solar-inverter :id 3 :sunlight-pct 0
                                             :rated-lower-w -1000.0 :rated-upper-w 0.0
                                             :reactive-pf-limit 0
                                             :reactive-apparent-va 1000.0))

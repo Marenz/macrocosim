@@ -68,7 +68,7 @@ pub(crate) struct CommonInverterCfg {
 /// Construction kwargs shared by `BatteryInverter` and
 /// `SolarInverter`: rated bounds, command-delay, ramp rate, interval,
 /// jitter, and the reactive envelope. `SolarInverter` appends its own
-/// `:sunlight%` kwarg on top of this.
+/// `:sunlight-pct` kwarg on top of this.
 pub(crate) fn common_inverter_kwargs(cfg: CommonInverterCfg) -> Vec<(&'static str, String)> {
     let lf = crate::lisp::lisp_float32;
     let mut kw = vec![

@@ -24,8 +24,8 @@ pub trait DcStorage: Send + Sync {
     /// The state of charge in %.
     fn soc_pct(&self) -> f32;
 
-    /// The usable SoC window (`:soc-lower`, `:soc-upper`,
-    /// `:soc-protect-margin`) the gateway throttles the bounds by.
+    /// The usable SoC window (`:soc-lower-pct`, `:soc-upper-pct`,
+    /// `:soc-protect-margin-pct`) the gateway throttles the bounds by.
     fn soc_window(&self) -> SocProtect;
 
     /// Teleport the state of charge to `pct` (clamped to 0..=100; a

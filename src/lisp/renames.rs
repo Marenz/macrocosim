@@ -147,6 +147,31 @@ pub(crate) const RENAMES: &[Rename] = &[
         new: ":reactive-ramp-rate-var-per-s",
         convert: Convert::None,
     },
+    Rename {
+        old: ":initial-soc",
+        new: ":initial-soc-pct",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":soc-lower",
+        new: ":soc-lower-pct",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":soc-upper",
+        new: ":soc-upper-pct",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":soc-protect-margin",
+        new: ":soc-protect-margin-pct",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":sunlight%",
+        new: ":sunlight-pct",
+        convert: Convert::None,
+    },
 ];
 
 /// Remembers which keys already warned.

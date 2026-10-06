@@ -22,8 +22,8 @@
 //!   rated range is a DC quantity)
 //! - `metricConfigBounds[METRIC_BATTERY_CAPACITY]` → `:capacity-wh` (Wh)
 //!   — batteries only
-//! - `metricConfigBounds[METRIC_BATTERY_SOC_PCT]` → `:soc-lower` /
-//!   `:soc-upper` — batteries only; an EV charger's pack belongs to
+//! - `metricConfigBounds[METRIC_BATTERY_SOC_PCT]` → `:soc-lower-pct` /
+//!   `:soc-upper-pct` — batteries only; an EV charger's pack belongs to
 //!   the car plugged into it, so these are dropped there
 //! - `operationalMode` → `:operational-mode` (config; the simulator
 //!   derives the runtime knobs from it)
@@ -247,10 +247,10 @@ fn storage_kwargs(c: &ApiComponent, out: &mut Vec<(&'static str, String)>) {
     }
     if let Some(b) = bounds_for(c, "BATTERY_SOC_PCT") {
         if let Some(l) = b.lower {
-            out.push((":soc-lower", lisp_float(l)));
+            out.push((":soc-lower-pct", lisp_float(l)));
         }
         if let Some(u) = b.upper {
-            out.push((":soc-upper", lisp_float(u)));
+            out.push((":soc-upper-pct", lisp_float(u)));
         }
     }
 }
@@ -312,7 +312,7 @@ fn lift(c: &ApiComponent) -> Result<ImportedComponent, String> {
         }
         // No `storage_kwargs`: the charger has no pack of its own —
         // the car plugged into it does — so `%make-ev-charger`
-        // rejects `:capacity-wh` / `:soc-lower` / `:soc-upper`, and an
+        // rejects `:capacity-wh` / `:soc-lower-pct` / `:soc-upper-pct`, and an
         // export carrying them would abort the import's whole form.
         "EV_CHARGER" => {
             rated_kwargs(c, &mut kwargs, &["AC_POWER_ACTIVE"]);
@@ -605,7 +605,7 @@ mod tests {
             "(make-battery-inverter :id 3 :name \"inverter A\" :rated-lower-w -30000.0 :rated-upper-w 30000.0)"
         ));
         assert!(forms.contains(
-            "(make-battery :id 4 :name \"battery A\" :capacity-wh 40000.0 :soc-lower 5.0 :soc-upper 95.0)"
+            "(make-battery :id 4 :name \"battery A\" :capacity-wh 40000.0 :soc-lower-pct 5.0 :soc-upper-pct 95.0)"
         ));
         assert!(forms.contains("(make-solar-inverter :id 5)"));
         assert!(forms.contains("(connect 3 4)"));
@@ -703,8 +703,8 @@ mod tests {
     }
 
     /// A charger has no pack of its own — the car it charges does —
-    /// so `%make-ev-charger` rejects `:capacity-wh` / `:soc-lower` /
-    /// `:soc-upper`. An export whose charger carries the battery
+    /// so `%make-ev-charger` rejects `:capacity-wh` / `:soc-lower-pct` /
+    /// `:soc-upper-pct`. An export whose charger carries the battery
     /// bounds (exports do, for chargers that report an SoC) must
     /// therefore drop them rather than emit a form that aborts the
     /// import's whole `(progn …)`.
@@ -727,8 +727,8 @@ mod tests {
             "{forms}"
         );
         assert!(!forms.contains(":capacity-wh"), "{forms}");
-        assert!(!forms.contains(":soc-lower"), "{forms}");
-        assert!(!forms.contains(":soc-upper"), "{forms}");
+        assert!(!forms.contains(":soc-lower-pct"), "{forms}");
+        assert!(!forms.contains(":soc-upper-pct"), "{forms}");
     }
 
     /// The operational mode is a config parameter and stays one:

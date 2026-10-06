@@ -426,7 +426,7 @@ impl Config {
         // Lisp refresh loop. One tokio task at 100 ms cadence holds
         // the interpreter lock once per pass, walks every registered
         // microgrid's components calling `refresh_inputs` (which
-        // re-resolves any lambda-bound `:power-w` / `:sunlight%` / …
+        // re-resolves any lambda-bound `:power-w` / `:sunlight-pct` / …
         // into `DynamicScalar`'s atomic), and drains the
         // tulisp-async timer mailbox so `(every …)` / `(run-with-
         // timer …)` callbacks fire.
@@ -789,7 +789,7 @@ impl Config {
     /// Acquires the interpreter lock, walks every registered
     /// microgrid's components calling `refresh_inputs`, then drains
     /// the timer mailbox once. Tests that drive `tick_once` directly
-    /// call this first so lambda-bound `:power-w` / `:sunlight%` /
+    /// call this first so lambda-bound `:power-w` / `:sunlight-pct` /
     /// `(run-with-timer 0 …)` values are visible before the synthetic
     /// physics tick.
     pub fn refresh_once(&self) {
@@ -1666,7 +1666,7 @@ mod tests {
       :successors (list (%make-meter :id 2
         :successors (list (%make-battery-inverter :id 3 :rated-lower-w -5000.0 :rated-upper-w 5000.0
           :successors (list (%make-battery :id 4 :rated-lower-w -5000.0 :rated-upper-w 5000.0
-            :capacity-wh 1000.0 :initial-soc 50.0)))))))))
+            :capacity-wh 1000.0 :initial-soc-pct 50.0)))))))))
 (setq fired 0)
 (run-with-timer 30 nil (lambda () (setq fired 1)))
 (scenario-start \"sim\")

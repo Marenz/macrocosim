@@ -248,7 +248,7 @@ UI").
   gateway's.** The battery's `tick` clamps the summed inverter pushes
   to the rated band, refusing charge at 100 % and discharge at 0 %.
   The gateway throttles each battery's bounds from its SoC
-  (`:soc-lower`, `:soc-upper`, `:soc-protect-margin`, taper base 1.2,
+  (`:soc-lower-pct`, `:soc-upper-pct`, `:soc-protect-margin-pct`, taper base 1.2,
   floor 0.3) and, each step, shares the room between the inverters
   pushing into it in proportion to their pushes (same sign only), so a
   running setpoint tapers and holds inside the window within one
@@ -280,13 +280,13 @@ UI").
   generator; `(set-weather …)` retunes any of it in place; `(pass-cloud
   DEPTH DURATION &optional RAMP)` scripts one deterministic cloud;
   `(weather-status)` reads the sky back as an alist (`src/lisp/defuns/weather.rs`,
-  `src/sim/weather.rs`). A solar inverter with no `:sunlight%` follows the
+  `src/sim/weather.rs`). A solar inverter with no `:sunlight-pct` follows the
   site's weather (`:weather-lag-s` / `:weather-jitter-pct` lag and roughen
   the sample it reads — Follow-only; with no explicit lag each inverter
   gets a stable id-derived 0–60 s offset so a cloud sweeps across a
   multi-PV site, and `:weather-lag-s 0` opts out; `:array-peak-w` sizes
   the DC array whichever source the sunlight comes from); passing
-  `:sunlight%` explicitly makes it Manual instead, and
+  `:sunlight-pct` explicitly makes it Manual instead, and
   `(clear-solar-sunlight ID)` is the way back to Follow.
   `GET`/`POST /api/mg/{mg}/weather` mirror the same four doors for the
   weather panel (day curve, live site-% readout, pass-a-cloud
@@ -482,7 +482,7 @@ rebuild; a script that wants live defaults-editing can still
 - `LispValue` (`src/lisp/value.rs`) — passthrough wrapper that lets a
   raw `TulispObject` ride through `AsPlist!` (works around the
   blanket-`From<T> for T` `Infallible` mismatch). Used for `:power-w`
-  and `:sunlight%`, where the make-* dispatcher inspects the raw
+  and `:sunlight-pct`, where the make-* dispatcher inspects the raw
   shape to pick between a constant and a `DynamicScalar`.
 
 ## Lisp gotchas (current tulisp-vm)
@@ -531,8 +531,8 @@ wiring, which both divides the offered limit into a per-phase current
 and caps how many of the car's phases can be used) and `:idle`
 (`'paused`, the default, offers nothing with no command standing;
 `'full` offers the full rating). It has no pack of its own: the
-pack kwargs (`:capacity-wh`, `:initial-soc`, `:soc-lower`,
-`:soc-upper`, `:soc-protect-margin`) are accepted with a warning
+pack kwargs (`:capacity-wh`, `:initial-soc-pct`, `:soc-lower-pct`,
+`:soc-upper-pct`, `:soc-protect-margin-pct`) are accepted with a warning
 and ignored, so older files still load, and the site import drops
 them from an export's charger.
 

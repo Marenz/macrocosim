@@ -73,7 +73,7 @@ pub trait MeterDrive: Send + Sync {
 }
 
 /// The solar inverter's sunlight knob: the cloud-cover percentage
-/// that caps its output. One built without `:sunlight%` follows the
+/// that caps its output. One built without `:sunlight-pct` follows the
 /// site's weather until something drives it.
 pub trait SunlightDrive: Send + Sync {
     /// Drive the sunlight percentage with a constant. Used by
@@ -84,7 +84,7 @@ pub trait SunlightDrive: Send + Sync {
 
     /// Drive the sunlight percentage with a Lisp expression that
     /// `refresh_inputs` re-resolves each tick. Used by
-    /// `(set-solar-sunlight id (lambda () …))` and by a `:sunlight%`
+    /// `(set-solar-sunlight id (lambda () …))` and by a `:sunlight-pct`
     /// bound to a lambda or symbol at construction.
     fn set_sunlight_source(&self, scalar: DynamicScalar);
 
@@ -92,7 +92,7 @@ pub trait SunlightDrive: Send + Sync {
     /// a Lisp expression — and go back to following the site's
     /// weather: the way back from [`Self::set_sunlight_pct`] and
     /// [`Self::set_sunlight_source`]. A cleared inverter renders
-    /// without `:sunlight%`, so a save/reload follows the weather
+    /// without `:sunlight-pct`, so a save/reload follows the weather
     /// too.
     fn clear_sunlight_source(&self);
 

@@ -8,7 +8,7 @@ use crate::sim::{
     decay::{SocProtect, integrate_soc_pct, sanitize_soc_pct},
 };
 
-/// Tunables exposed via `(make-battery :soc-protect-margin 10.0 …)`.
+/// Tunables exposed via `(make-battery :soc-protect-margin-pct 10.0 …)`.
 #[derive(Clone, Debug)]
 pub struct BatteryConfig {
     pub capacity_wh: f32,
@@ -213,13 +213,16 @@ impl SimulatedComponent for Battery {
         let lf = crate::lisp::lisp_float32;
         let mut kw = vec![
             (":capacity-wh", lf(self.cfg.capacity_wh)),
-            (":initial-soc", lf(self.cfg.initial_soc_pct)),
-            (":soc-lower", lf(self.cfg.soc_lower_pct)),
-            (":soc-upper", lf(self.cfg.soc_upper_pct)),
+            (":initial-soc-pct", lf(self.cfg.initial_soc_pct)),
+            (":soc-lower-pct", lf(self.cfg.soc_lower_pct)),
+            (":soc-upper-pct", lf(self.cfg.soc_upper_pct)),
             (":voltage-v", lf(self.cfg.voltage_v)),
             (":rated-lower-w", lf(self.cfg.rated_lower_w)),
             (":rated-upper-w", lf(self.cfg.rated_upper_w)),
-            (":soc-protect-margin", lf(self.cfg.soc_protect_margin_pct)),
+            (
+                ":soc-protect-margin-pct",
+                lf(self.cfg.soc_protect_margin_pct),
+            ),
         ];
         if self.interval != Duration::from_millis(1000) {
             kw.push((
@@ -367,7 +370,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         assert!(s.contains(":capacity-wh 50000.0"));
-        assert!(s.contains(":initial-soc 20.0"));
+        assert!(s.contains(":initial-soc-pct 20.0"));
         assert!(s.contains(":interval-s 0.5"));
         assert!(s.contains(":rated-lower-w -30000.0"));
     }

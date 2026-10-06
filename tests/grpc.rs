@@ -985,7 +985,7 @@ const NESTED_REACTIVE_TOPOLOGY: &str = r#"
                                       :successors
                                       (list (%make-solar-inverter
                                              :id 3
-                                             :sunlight% 0
+                                             :sunlight-pct 0
                                              :rated-lower-w -1000.0
                                              :rated-upper-w  0.0
                                              :reactive-pf-limit 0
@@ -1175,7 +1175,7 @@ async fn telemetry_stream_emits_samples_for_a_component() {
 }
 
 /// A battery's DC power sample carries the SoC-throttled bounds: at
-/// 85 % with the default 90 % `:soc-upper` and 10 % margin, the
+/// 85 % with the default 90 % `:soc-upper-pct` and 10 % margin, the
 /// charge side is tapered and the discharge side is rated.
 #[tokio::test(flavor = "multi_thread")]
 async fn battery_telemetry_carries_the_throttled_bounds() {
@@ -1191,7 +1191,7 @@ async fn battery_telemetry_carries_the_throttled_bounds() {
                    :successors
                    (list (%make-battery
                           :id 3
-                          :initial-soc 85.0
+                          :initial-soc-pct 85.0
                           :rated-lower-w -5000.0
                           :rated-upper-w  5000.0)))))
 "#,
