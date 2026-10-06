@@ -48,8 +48,8 @@ fn soc(cfg: &Config, id: u64) -> f32 {
 const TICK: Duration = Duration::from_millis(100);
 
 const INVERTER_AND_BATTERY: &str =
-    "(%make-battery-inverter :id 3 :rated-lower -5000.0 :rated-upper 5000.0
-   :successors (list (%make-battery :id 4 :rated-lower -5000.0 :rated-upper 5000.0)))";
+    "(%make-battery-inverter :id 3 :rated-lower-w -5000.0 :rated-upper-w 5000.0
+   :successors (list (%make-battery :id 4 :rated-lower-w -5000.0 :rated-upper-w 5000.0)))";
 
 /// A setpoint and an augmentation both lapse after their lifetime of
 /// sim time, though almost no wall time passes.
@@ -81,10 +81,11 @@ fn headless_setpoint_and_augmentation_expire_on_sim_time() {
     );
 }
 
-const SMALL_PACK: &str = "(%make-battery-inverter :id 3 :rated-lower -5000.0 :rated-upper 5000.0
-   :successors (list (%make-battery :id 4 :capacity 1000.0 :initial-soc 80.0
+const SMALL_PACK: &str =
+    "(%make-battery-inverter :id 3 :rated-lower-w -5000.0 :rated-upper-w 5000.0
+   :successors (list (%make-battery :id 4 :capacity-wh 1000.0 :initial-soc 80.0
                                     :soc-upper 90.0 :soc-protect-margin 5.0
-                                    :rated-lower -5000.0 :rated-upper 5000.0)))";
+                                    :rated-lower-w -5000.0 :rated-upper-w 5000.0)))";
 
 /// Charging toward `:soc-upper`, the inverter's output tapers inside
 /// the margin and stops at the window, within one device delay; the
@@ -154,7 +155,7 @@ fn the_hardware_alone_charges_to_full() {
 fn trips_follow_each_components_rules() {
     let (cfg, _dir) = headless(
         "(%make-battery-inverter :id 3 :successors (list (%make-battery :id 4)))
-         (%make-solar-inverter :id 5 :sunlight% 100.0 :rated-lower -10000.0 :rated-upper 0.0
+         (%make-solar-inverter :id 5 :sunlight% 100.0 :rated-lower-w -10000.0 :rated-upper-w 0.0
                                :reactive-pf-limit 0 :reactive-apparent-va 10000.0
                                :reactive-command-delay-s 0)
          (%make-ev-charger :id 6 :command-delay-s 0 :resume-on-recovery t)",
@@ -264,8 +265,8 @@ fn the_hardware_alone_stops_discharging_at_empty() {
 #[test]
 fn pv_output_follows_sunlight_cuts_at_once_and_climbs_at_the_ramp() {
     let (cfg, _dir) = headless(
-        "(%make-solar-inverter :id 5 :sunlight% 100.0 :rated-lower -10000.0 :rated-upper 0.0
-                               :array-peak-w 10000.0 :ramp-rate 1000.0)",
+        "(%make-solar-inverter :id 5 :sunlight% 100.0 :rated-lower-w -10000.0 :rated-upper-w 0.0
+                               :array-peak-w 10000.0 :ramp-rate-w-per-s 1000.0)",
     );
     cfg.sim_run(Duration::from_secs(30), TICK);
     let full = num(&cfg, "(component-active-power 5)");
@@ -366,10 +367,10 @@ const AGREEMENT_TOPOLOGY: &str = r#"
 (%make-grid-connection-point :id 1
   :successors (list (%make-meter :id 2
     :successors (list
-      (%make-battery-inverter :id 4 :rated-lower -10000.0 :rated-upper 10000.0
+      (%make-battery-inverter :id 4 :rated-lower-w -10000.0 :rated-upper-w 10000.0
         :successors (list (%make-battery :id 3 :initial-soc 87.5 :soc-upper 90.0
                                          :soc-protect-margin 5.0
-                                         :rated-lower -10000.0 :rated-upper 10000.0)))
+                                         :rated-lower-w -10000.0 :rated-upper-w 10000.0)))
       (%make-steam-boiler :id 6 :demand 100.0)))))
 "#;
 

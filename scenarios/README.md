@@ -55,7 +55,7 @@ exercises the simulator:
 
 | Defun                                  | Effect                                                   |
 |----------------------------------------|----------------------------------------------------------|
-| `(set-meter-power ID VAL)`             | drive a meter's `:power` (number / lambda / `'symbol`)   |
+| `(set-meter-power ID VAL)`             | drive a meter's `:power-w` (number / lambda / `'symbol`)   |
 | `(set-solar-sunlight ID VAL)`          | drive a solar inverter's `:sunlight%` (same polymorphism)|
 | `(set-component-health ID K)`          | flip health to `'ok` / `'error` / `'standby`             |
 | `(set-component-telemetry-mode ID K)`  | `'normal` / `'silent` / `'closed`                        |
@@ -64,7 +64,7 @@ exercises the simulator:
 | `(set-reactive-power ID VAR &key :lifetime-s :clamp)` | same for the reactive axis; `:clamp` pulls into the gateway's setpoint envelope (own PF / kVA band at the live P ∩ live augmentations ∩ children's Q bands), falling back to the component's own band when no child reports one; an empty envelope yields 0 |
 | `(augment-active-bounds ID BOUNDS &key :lifetime-s)` | gRPC-style bounds augmentation: BOUNDS is `(LO HI)` or a list of bands, e.g. `'((-10000 -1000) (1000 10000))` for an exclusion zone; nil edge = unbounded; `:lifetime-s` = lifetime in seconds (default `default-augment-lifetime-s`; the old positional `LIFETIME-MS` still works and warns) |
 | `(augment-reactive-bounds ID BOUNDS &key :lifetime-s)` | same for the reactive axis |
-| `(set-meter-reactive-power ID VAL)`    | drive a meter's `:reactive-power` (number / lambda / `'symbol`)  |
+| `(set-meter-reactive-power ID VAL)`    | drive a meter's `:reactive-power-var` (number / lambda / `'symbol`)  |
 | `(set-meter-power-factor ID PF &OPTIONAL LEADING)` | drive a meter's `:power-factor` (true cos φ in `(0, 1]`); non-nil LEADING negates the derived Q |
 | `(plug-ev ID PRESET &rest OVERRIDES)`  | plug a preset car (`'phev` `'city` `'sedan` `'van`) into a charger; overrides `:soc :target-soc :phases :max-current-a :capacity-kwh :taper-start :taper-floor` |
 | `(unplug-ev ID)`                       | unplug the car                                            |
@@ -155,8 +155,8 @@ explicit `(load …)` is needed:
   top-level `(random-outage …)`, say) is ambient: it keeps going,
   restores its own victims on schedule, and only `reset-state`
   stops it.
-- **Restores every driven knob** — a meter's `:power` /
-  `:reactive-power` / power factor, a solar inverter's
+- **Restores every driven knob** — a meter's `:power-w` /
+  `:reactive-power-var` / power factor, a solar inverter's
   `:sunlight%`, a boiler's `:demand` and a charger's plugged car go
   back to what they were the moment before the run first touched
   them — a car the run plugged comes back out, one it unplugged

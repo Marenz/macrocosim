@@ -18,7 +18,7 @@
 ;; topology:
 ;;
 ;;   id 2    main meter (the grid's sole child)
-;;   id 100  hidden consumer meter (driven by its inline :power lambda)
+;;   id 100  hidden consumer meter (driven by its inline :power-w lambda)
 ;;   id 200  solar inverter
 ;;   id 1000 battery, 1001 battery-inverter
 
@@ -52,7 +52,7 @@
 (scenario-end-after-s 1800)
 
 ;; ── Consumer load: end-of-window spike ─────────────────────────
-;; Replaces berlin-demo.lisp's gentler inline :power profile with a sharper
+;; Replaces berlin-demo.lisp's gentler inline :power-w profile with a sharper
 ;; profile: 5 kW base for the first 13 minutes of every 15-minute
 ;; window, then a 25 kW spike for the last 100 seconds. This is the
 ;; classic "demand peak right before the billing window closes"

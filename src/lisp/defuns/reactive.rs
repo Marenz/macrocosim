@@ -63,7 +63,7 @@ mod tests {
     /// limits returns t, changes nothing, and still broadcasts.
     #[test]
     fn set_reactive_pf_limit_without_limits_is_a_lenient_noop() {
-        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 1500.0)");
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power-w 1500.0)");
         assert_lenient_noop(
             &cfg,
             7,
@@ -76,7 +76,7 @@ mod tests {
     /// limits returns t, changes nothing, and still broadcasts.
     #[test]
     fn set_reactive_apparent_va_without_limits_is_a_lenient_noop() {
-        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 1500.0)");
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power-w 1500.0)");
         assert_lenient_noop(
             &cfg,
             7,

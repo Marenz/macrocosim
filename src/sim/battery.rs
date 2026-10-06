@@ -212,13 +212,13 @@ impl SimulatedComponent for Battery {
     fn constructor_kwargs(&self) -> Vec<(&'static str, String)> {
         let lf = crate::lisp::lisp_float32;
         let mut kw = vec![
-            (":capacity", lf(self.cfg.capacity_wh)),
+            (":capacity-wh", lf(self.cfg.capacity_wh)),
             (":initial-soc", lf(self.cfg.initial_soc_pct)),
             (":soc-lower", lf(self.cfg.soc_lower_pct)),
             (":soc-upper", lf(self.cfg.soc_upper_pct)),
-            (":voltage", lf(self.cfg.voltage_v)),
-            (":rated-lower", lf(self.cfg.rated_lower_w)),
-            (":rated-upper", lf(self.cfg.rated_upper_w)),
+            (":voltage-v", lf(self.cfg.voltage_v)),
+            (":rated-lower-w", lf(self.cfg.rated_lower_w)),
+            (":rated-upper-w", lf(self.cfg.rated_upper_w)),
             (":soc-protect-margin", lf(self.cfg.soc_protect_margin_pct)),
         ];
         if self.interval != Duration::from_millis(1000) {
@@ -366,10 +366,10 @@ mod tests {
             .map(|(k, v)| format!("{k} {v}"))
             .collect::<Vec<_>>()
             .join(" ");
-        assert!(s.contains(":capacity 50000.0"));
+        assert!(s.contains(":capacity-wh 50000.0"));
         assert!(s.contains(":initial-soc 20.0"));
         assert!(s.contains(":interval-s 0.5"));
-        assert!(s.contains(":rated-lower -30000.0"));
+        assert!(s.contains(":rated-lower-w -30000.0"));
     }
 
     /// The pack takes up to its rating anywhere between empty and

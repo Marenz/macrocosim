@@ -675,7 +675,10 @@ mod tests {
             s.contains(":reactive-pf-limit 0"),
             "None must pin as 0, got {s}"
         );
-        assert!(!s.contains(":ramp-rate"), "infinite ramp is omitted");
+        assert!(
+            !s.contains(":ramp-rate-w-per-s"),
+            "infinite ramp is omitted"
+        );
         assert!(s.contains(":command-delay-s 0.0"));
     }
 

@@ -413,8 +413,9 @@ mod tests {
     /// scenario harness.
     #[test]
     fn stepped_run_sweeps_a_scripted_cloud() {
-        let (cfg, _dir) =
-            config_with(r#"(%make-solar-inverter :id 3 :rated-lower -10000.0 :rated-upper 0.0)"#);
+        let (cfg, _dir) = config_with(
+            r#"(%make-solar-inverter :id 3 :rated-lower-w -10000.0 :rated-upper-w 0.0)"#,
+        );
         cfg.eval(r#"(make-weather :sunrise "00:00" :sunset "23:59" :peak% 100)"#)
             .unwrap();
         let site = cfg.site();

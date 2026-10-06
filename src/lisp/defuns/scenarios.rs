@@ -255,7 +255,7 @@ fn parse_expect_metric(name: &str) -> Option<Metric> {
 /// `scenario/events` endpoints under `/api/mg/{mg}`.
 ///
 /// POLICY — `scenario-stop` returns every driven knob (a meter's
-/// `:power` / `:reactive-power` / power-factor override, a solar
+/// `:power-w` / `:reactive-power-var` / power-factor override, a solar
 /// inverter's `:sunlight%`, a boiler's `:demand`) to its
 /// PRE-SCENARIO state: the value/source it had the moment BEFORE the
 /// scenario first touched it, captured by `scenario_snapshot_knob`.
@@ -627,9 +627,9 @@ mod tests {
         use chrono::Utc;
         let (cfg, dir) = config_with(
             "(%make-battery :id 2
-                            :capacity 100000.0
-                            :rated-lower -10000.0
-                            :rated-upper 10000.0)",
+                            :capacity-wh 100000.0
+                            :rated-lower-w -10000.0
+                            :rated-upper-w 10000.0)",
         );
         let csv_dir = dir.join("csvs");
         cfg.eval("(scenario-start \"io\")").unwrap();
@@ -709,12 +709,12 @@ mod tests {
     fn reactive_bounds_csv_records_the_live_q_envelope() {
         use chrono::Utc;
         let (cfg, dir) = config_with(
-            "(setq b1 (%make-battery :id 1 :rated-lower -5000.0 :rated-upper 5000.0))
-             (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
+            "(setq b1 (%make-battery :id 1 :rated-lower-w -5000.0 :rated-upper-w 5000.0))
+             (%make-battery-inverter :id 2 :rated-lower-w -5000.0 :rated-upper-w 5000.0
                                        :reactive-pf-limit 0
                                        :reactive-apparent-va 5000.0
                                        :reactive-command-delay-s 0
-                                       :reactive-ramp-rate 1e9
+                                       :reactive-ramp-rate-var-per-s 1e9
                                        :successors (list b1))",
         );
         let csv_dir = dir.join("csvs");
@@ -750,7 +750,7 @@ mod tests {
         let (cfg, _dir) = config_with(
             "(%make-grid-connection-point
                :id 1
-               :successors (list (%make-meter :id 2 :power 3000.0)))",
+               :successors (list (%make-meter :id 2 :power-w 3000.0)))",
         );
         cfg.eval("(scenario-start \"pf\")").unwrap();
         cfg.site().record_grid_power_sample(3000.0, Utc::now());
@@ -788,9 +788,9 @@ mod tests {
     fn scenario_expect_records_checks_in_report() {
         let (cfg, _dir) = config_with(
             "(%make-battery :id 2
-                            :capacity 100000.0
-                            :rated-lower -10000.0
-                            :rated-upper 10000.0)",
+                            :capacity-wh 100000.0
+                            :rated-lower-w -10000.0
+                            :rated-upper-w 10000.0)",
         );
         cfg.eval("(scenario-start \"checks\")").unwrap();
 
@@ -849,7 +849,7 @@ mod tests {
     /// :min/:max, and :tol without :approx.
     #[test]
     fn scenario_expect_rejects_malformed_calls() {
-        let (cfg, _dir) = config_with("(%make-battery :id 2 :capacity 1000.0)");
+        let (cfg, _dir) = config_with("(%make-battery :id 2 :capacity-wh 1000.0)");
         for bad in [
             "(scenario-expect :component 2 :metric 'warp-factor :min 1.0)",
             "(scenario-expect :component 2 :metric 'soc)",
@@ -1172,10 +1172,10 @@ mod tests {
     /// start route — gets the same teardown a `define-scenario` run
     /// gets. Without it the fresh start clears the knob baseline
     /// Rust-side and the first run's driven meter could never be
-    /// restored: its pre-scenario `:power` would be lost for good.
+    /// restored: its pre-scenario `:power-w` would be lost for good.
     #[test]
     fn a_second_scenario_start_tears_the_running_one_down() {
-        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 1234.0)");
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power-w 1234.0)");
         let m = cfg.site().get(7).unwrap();
 
         cfg.eval("(scenario-start \"a\")").unwrap();
@@ -1199,7 +1199,7 @@ mod tests {
                 .unwrap()
                 .value,
             1234.0,
-            "starting B must restore A's pre-scenario :power, not strand it"
+            "starting B must restore A's pre-scenario :power-w, not strand it"
         );
         let summary = cfg.site().scenario_summary(chrono::Utc::now());
         assert_eq!(summary.name.as_deref(), Some("b"));
@@ -1302,12 +1302,12 @@ mod tests {
     fn battery_charge_discharge_integrates_through_snapshot() {
         let (cfg, _dir) = config_with(
             "(setq b (%make-battery :id 100
-                                    :capacity 100000.0
-                                    :rated-lower -10000.0
-                                    :rated-upper 10000.0))
+                                    :capacity-wh 100000.0
+                                    :rated-lower-w -10000.0
+                                    :rated-upper-w 10000.0))
              (%make-battery-inverter :id 200
-                                     :rated-lower -10000.0
-                                     :rated-upper 10000.0
+                                     :rated-lower-w -10000.0
+                                     :rated-upper-w 10000.0
                                      :successors (list b))",
         );
         cfg.eval("(scenario-start \"integrate\")").unwrap();
@@ -1359,7 +1359,7 @@ mod tests {
         let (cfg, _dir) = config_with(
             "(%make-grid-connection-point
                :id 1
-               :successors (list (%make-meter :id 2 :power 1000.0)))",
+               :successors (list (%make-meter :id 2 :power-w 1000.0)))",
         );
         // Pre-start, samples shouldn't update the peak — the
         // scenario hasn't begun.

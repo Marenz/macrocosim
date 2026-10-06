@@ -320,9 +320,9 @@ impl SimulatedComponent for SteamBoiler {
         let d = SteamBoilerConfig::default();
         let mut kw = Vec::new();
         if self.cfg.rated_lower_w != d.rated_lower_w {
-            kw.push((":rated-lower", lf(self.cfg.rated_lower_w)));
+            kw.push((":rated-lower-w", lf(self.cfg.rated_lower_w)));
         }
-        kw.push((":rated-upper", lf(self.cfg.rated_upper_w)));
+        kw.push((":rated-upper-w", lf(self.cfg.rated_upper_w)));
         kw.push((":target-bar", lf(self.cfg.target_bar)));
         kw.push((":max-bar", lf(self.cfg.max_bar)));
         if self.cfg.capacity_wh_per_bar != d.capacity_wh_per_bar {
@@ -344,7 +344,7 @@ impl SimulatedComponent for SteamBoiler {
             crate::lisp::lisp_float(self.cfg.command_delay.as_secs_f64()),
         ));
         if self.cfg.ramp_rate_w_per_s.is_finite() {
-            kw.push((":ramp-rate", lf(self.cfg.ramp_rate_w_per_s)));
+            kw.push((":ramp-rate-w-per-s", lf(self.cfg.ramp_rate_w_per_s)));
         }
         kw.extend(crate::sim::inverter::device_delay_kw(self.cfg.device_delay));
         if self.interval != Duration::from_millis(1000) {
@@ -745,7 +745,7 @@ mod tests {
         assert_eq!(b.pressure_target_bar(), 8.0);
     }
 
-    /// Every construction kwarg round-trips; :ramp-rate renders only
+    /// Every construction kwarg round-trips; :ramp-rate-w-per-s renders only
     /// when finite, :interval-s only off-default, :demand only when
     /// the source is a plain number, :initial-bar only when it
     /// departs from target.
@@ -770,13 +770,13 @@ mod tests {
             .map(|(k, v)| format!("{k} {v}"))
             .collect::<Vec<_>>()
             .join(" ");
-        assert!(s.contains(":rated-upper 100000.0"));
+        assert!(s.contains(":rated-upper-w 100000.0"));
         assert!(s.contains(":target-bar 6.0"));
         assert!(s.contains(":max-bar 9.0"));
         assert!(s.contains(":demand 40.0"));
         assert!(s.contains(":interval-s 0.5"));
         assert!(s.contains(":stream-jitter-pct 5.0"));
-        assert!(!s.contains(":ramp-rate"), "infinite ramp omitted");
+        assert!(!s.contains(":ramp-rate-w-per-s"), "infinite ramp omitted");
         assert!(!s.contains(":initial-bar"), "default initial omitted");
 
         // Dynamic demand is omitted entirely (unrenderable source).

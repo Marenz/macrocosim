@@ -144,8 +144,8 @@ mod tests {
 
     fn rig() -> (crate::lisp::Config, std::path::PathBuf) {
         config_with(
-            "(setq b1 (%make-battery :id 1 :rated-lower -5000.0 :rated-upper 5000.0))
-             (%make-battery-inverter :id 2 :rated-lower -4000.0 :rated-upper 4000.0
+            "(setq b1 (%make-battery :id 1 :rated-lower-w -5000.0 :rated-upper-w 5000.0))
+             (%make-battery-inverter :id 2 :rated-lower-w -4000.0 :rated-upper-w 4000.0
                                        :successors (list b1))",
         )
     }
@@ -200,12 +200,12 @@ mod tests {
     #[test]
     fn reactive_queries_mirror_active() {
         let (cfg, _dir) = config_with(
-            "(setq b1 (%make-battery :id 1 :rated-lower -5000.0 :rated-upper 5000.0))
-             (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
+            "(setq b1 (%make-battery :id 1 :rated-lower-w -5000.0 :rated-upper-w 5000.0))
+             (%make-battery-inverter :id 2 :rated-lower-w -5000.0 :rated-upper-w 5000.0
                                        :reactive-pf-limit 0
                                        :reactive-apparent-va 5000.0
                                        :reactive-command-delay-s 0
-                                       :reactive-ramp-rate 1e9
+                                       :reactive-ramp-rate-var-per-s 1e9
                                        :successors (list b1))",
         );
         // Arm a Q setpoint and let it settle so component-reactive-power
@@ -251,12 +251,12 @@ mod tests {
     #[test]
     fn reactive_bound_queries_collapse_every_band() {
         let (cfg, _dir) = config_with(
-            "(setq b1 (%make-battery :id 1 :rated-lower -5000.0 :rated-upper 5000.0))
-             (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
+            "(setq b1 (%make-battery :id 1 :rated-lower-w -5000.0 :rated-upper-w 5000.0))
+             (%make-battery-inverter :id 2 :rated-lower-w -5000.0 :rated-upper-w 5000.0
                                        :reactive-pf-limit 0
                                        :reactive-apparent-va 5000.0
                                        :reactive-command-delay-s 0
-                                       :reactive-ramp-rate 1e9
+                                       :reactive-ramp-rate-var-per-s 1e9
                                        :successors (list b1))",
         );
         // ±5 kVAr caps ∩ {[-2 kVAr, -0.5 kVAr], [0.5 kVAr, 2 kVAr]}

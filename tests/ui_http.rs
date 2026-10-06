@@ -261,8 +261,8 @@ async fn site_import_creates_microgrid_with_working_formulas() {
     // parameters, so they come back at every boot.
     let saved = std::fs::read_to_string(s.config.state_dir().join(format!("microgrids/{id}.lisp")))
         .unwrap();
-    assert!(saved.contains(":capacity 40000.0"), "{saved}");
-    assert!(saved.contains(":rated-fuse-current 125"), "{saved}");
+    assert!(saved.contains(":capacity-wh 40000.0"), "{saved}");
+    assert!(saved.contains(":rated-fuse-current-a 125"), "{saved}");
 }
 
 /// A one-component site export — the smallest thing the importer
@@ -700,7 +700,7 @@ async fn weather_http_round_trip() {
 const SOLAR_TOPOLOGY: &str = r#"
 (%make-grid-connection-point :id 1
     :successors
-    (list (%make-solar-inverter :id 2 :rated-lower -10000.0 :rated-upper 0.0)
+    (list (%make-solar-inverter :id 2 :rated-lower-w -10000.0 :rated-upper-w 0.0)
           (%make-meter :id 3)))
 "#;
 

@@ -148,8 +148,8 @@ mod tests {
 
     fn rig() -> (crate::lisp::Config, std::path::PathBuf) {
         config_with(
-            "(setq b1 (%make-battery :id 1 :rated-lower -10000.0 :rated-upper 10000.0))
-             (%make-battery-inverter :id 2 :rated-lower -10000.0 :rated-upper 10000.0
+            "(setq b1 (%make-battery :id 1 :rated-lower-w -10000.0 :rated-upper-w 10000.0))
+             (%make-battery-inverter :id 2 :rated-lower-w -10000.0 :rated-upper-w 10000.0
                                      :reactive-pf-limit 0
                                      :reactive-apparent-va 5000.0
                                      :successors (list b1))",

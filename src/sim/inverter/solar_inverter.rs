@@ -1000,7 +1000,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         assert!(s.contains(":sunlight% 42.0"));
-        assert!(s.contains(":rated-lower -12000.0"));
+        assert!(s.contains(":rated-lower-w -12000.0"));
     }
 
     /// A lambda- or symbol-driven sunlight source can't round-trip
@@ -1045,7 +1045,7 @@ mod tests {
     /// weather-following inverter. Reporting it unrenderable is what
     /// makes that loss visible instead of silent, exactly as Meter
     /// does for a `set-meter-power` over a meter built without
-    /// `:power`.
+    /// `:power-w`.
     #[test]
     fn a_constant_poked_over_a_follow_built_inverter_reports_unrenderable() {
         let inv = SolarInverter::new(

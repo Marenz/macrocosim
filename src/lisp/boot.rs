@@ -426,7 +426,7 @@ impl Config {
         // Lisp refresh loop. One tokio task at 100 ms cadence holds
         // the interpreter lock once per pass, walks every registered
         // microgrid's components calling `refresh_inputs` (which
-        // re-resolves any lambda-bound `:power` / `:sunlight%` / …
+        // re-resolves any lambda-bound `:power-w` / `:sunlight%` / …
         // into `DynamicScalar`'s atomic), and drains the
         // tulisp-async timer mailbox so `(every …)` / `(run-with-
         // timer …)` callbacks fire.
@@ -783,13 +783,13 @@ impl Config {
     /// what the background loop does once per 100 ms, but on the
     /// caller's thread — tests reach for this when they need a
     /// `(run-with-timer 0 …)` fire to be visible before the next
-    /// `tick_once`, or a lambda-bound `:power` value to resolve
+    /// `tick_once`, or a lambda-bound `:power-w` value to resolve
     /// before reading `aggregate_power_w`.
     ///
     /// Acquires the interpreter lock, walks every registered
     /// microgrid's components calling `refresh_inputs`, then drains
     /// the timer mailbox once. Tests that drive `tick_once` directly
-    /// call this first so lambda-bound `:power` / `:sunlight%` /
+    /// call this first so lambda-bound `:power-w` / `:sunlight%` /
     /// `(run-with-timer 0 …)` values are visible before the synthetic
     /// physics tick.
     pub fn refresh_once(&self) {
@@ -1664,9 +1664,9 @@ mod tests {
   (lambda ()
     (%make-grid-connection-point :id 1
       :successors (list (%make-meter :id 2
-        :successors (list (%make-battery-inverter :id 3 :rated-lower -5000.0 :rated-upper 5000.0
-          :successors (list (%make-battery :id 4 :rated-lower -5000.0 :rated-upper 5000.0
-            :capacity 1000.0 :initial-soc 50.0)))))))))
+        :successors (list (%make-battery-inverter :id 3 :rated-lower-w -5000.0 :rated-upper-w 5000.0
+          :successors (list (%make-battery :id 4 :rated-lower-w -5000.0 :rated-upper-w 5000.0
+            :capacity-wh 1000.0 :initial-soc 50.0)))))))))
 (setq fired 0)
 (run-with-timer 30 nil (lambda () (setq fired 1)))
 (scenario-start \"sim\")
@@ -1786,7 +1786,7 @@ mod tests {
 (make-microgrid :id 9 :grpc-port 18903 :topology
   (lambda ()
     (%make-grid-connection-point :id 1
-      :successors (list (%make-meter :id 2 :power 0.0)))))
+      :successors (list (%make-meter :id 2 :power-w 0.0)))))
 (define-scenario :name \"ramp\"
   :schedule 'relative :clock 'stepped :length \"60s\" :seed 7
   :drive (list (drive-meter 2 (timeline (hold 1000.0 :for-s 30)
@@ -1857,8 +1857,8 @@ mod tests {
 (make-microgrid :id 9 :grpc-port 18904 :topology
   (lambda ()
     (%make-grid-connection-point :id 1
-      :successors (list (%make-meter :id 2 :power 0.0)
-                        (%make-meter :id 3 :power 8000.0)))))
+      :successors (list (%make-meter :id 2 :power-w 0.0)
+                        (%make-meter :id 3 :power-w 8000.0)))))
 (define-scenario :name \"q-ramp\"
   :schedule 'relative :clock 'stepped :length \"60s\" :seed 7
   :drive (list (drive-meter-reactive 2 (timeline (hold 500.0 :for-s 30)
@@ -1891,7 +1891,7 @@ mod tests {
     /// Pins the stepped-runner half of scenario teardown:
     /// `run_scenario_stepped` now evals `(scenario-stop)` after
     /// `sim_run` completes, so a driven knob is back to its
-    /// pre-scenario state (here, meter 2's constructed `:power`) by
+    /// pre-scenario state (here, meter 2's constructed `:power-w`) by
     /// the time the call returns — not left at the scenario's final
     /// driven value.
     #[test]
@@ -1905,7 +1905,7 @@ mod tests {
 (make-microgrid :id 9 :grpc-port 18905 :topology
   (lambda ()
     (%make-grid-connection-point :id 1
-      :successors (list (%make-meter :id 2 :power 1234.0)))))
+      :successors (list (%make-meter :id 2 :power-w 1234.0)))))
 (define-scenario :name \"restore-check\"
   :schedule 'relative :clock 'stepped :length \"5s\"
   :drive (list (drive-meter 2 9999.0)))",
@@ -1921,10 +1921,10 @@ mod tests {
             .meter_drive()
             .unwrap()
             .meter_power_reading()
-            .expect("meter still has a source — the constructed :power");
+            .expect("meter still has a source — the constructed :power-w");
         assert_eq!(
             reading.value, 1234.0,
-            "run_scenario_stepped must restore the pre-scenario :power after stopping"
+            "run_scenario_stepped must restore the pre-scenario :power-w after stopping"
         );
     }
 
@@ -1947,7 +1947,7 @@ mod tests {
 (make-microgrid :id 9 :grpc-port 18906 :topology
   (lambda ()
     (%make-grid-connection-point :id 1
-      :successors (list (%make-meter :id 2 :power 0.0)))))
+      :successors (list (%make-meter :id 2 :power-w 0.0)))))
 (setq tick-count 0)
 (define-scenario :name \"agent-cancel\"
   :schedule 'relative :clock 'stepped :length \"20s\"
@@ -2085,7 +2085,7 @@ mod tests {
 (make-microgrid :id 9 :grpc-port 18907 :topology
   (lambda ()
     (%make-grid-connection-point :id 1
-      :successors (list (%make-meter :id 2 :power 0.0)))))
+      :successors (list (%make-meter :id 2 :power-w 0.0)))))
 (define-scenario :name \"outage-setup\"
   :schedule 'relative :clock 'stepped :length \"30s\" :seed 7
   :setup (lambda () (random-outage (list 2)
@@ -2165,7 +2165,7 @@ mod tests {
 (make-microgrid :id 9 :grpc-port 18914 :topology
   (lambda ()
     (%make-grid-connection-point :id 1
-      :successors (list (%make-meter :id 2 :power 0.0)))))
+      :successors (list (%make-meter :id 2 :power-w 0.0)))))
 (define-scenario :name \"mid-outage\"
   :schedule 'relative :clock 'stepped :length \"30s\" :seed 7
   :setup (lambda () (random-outage (list 2)
@@ -2234,8 +2234,8 @@ mod tests {
 (make-microgrid :id 9 :grpc-port 18915 :topology
   (lambda ()
     (%make-grid-connection-point :id 1
-      :successors (list (%make-meter :id 2 :power 0.0)
-                        (%make-meter :id 3 :power 0.0)))))
+      :successors (list (%make-meter :id 2 :power-w 0.0)
+                        (%make-meter :id 3 :power-w 0.0)))))
 (random-outage (list 2) :min-every-s 2.0 :max-every-s 2.0
                         :min-duration-s 60.0 :max-duration-s 60.0)
 (define-scenario :name \"later\"
@@ -2319,7 +2319,7 @@ mod tests {
 (make-microgrid :id 9 :grpc-port 18909 :topology
   (lambda ()
     (%make-grid-connection-point :id 1
-      :successors (list (%make-meter :id 2 :power 0.0)))))
+      :successors (list (%make-meter :id 2 :power-w 0.0)))))
 (random-outage (list 2) :min-every-s 2.0 :max-every-s 2.0
                         :min-duration-s 2.0 :max-duration-s 2.0)
 (define-scenario :name \"unrelated\"
@@ -2385,7 +2385,7 @@ mod tests {
 (make-microgrid :id 9 :grpc-port 18910 :topology
   (lambda ()
     (%make-grid-connection-point :id 1
-      :successors (list (%make-meter :id 2 :power 0.0)))))",
+      :successors (list (%make-meter :id 2 :power-w 0.0)))))",
         );
         assert_eq!(cfg.eval("(scenario-running-p)").unwrap(), "nil");
         cfg.eval("(scenario--track-timer (run-with-timer 9999 nil (lambda () nil)))")
@@ -2412,7 +2412,7 @@ mod tests {
     /// clears the knob baseline Rust-side and `scenario--run` resets
     /// the armed-timer list, so without the stop scenario A's driven
     /// meter could never be restored and A's agent would keep firing
-    /// through B's run and beyond. Drives A (a constructed-`:power`
+    /// through B's run and beyond. Drives A (a constructed-`:power-w`
     /// meter + a 1 s agent), starts B with no stop in between, and
     /// checks both halves.
     #[test]
@@ -2426,7 +2426,7 @@ mod tests {
 (make-microgrid :id 9 :grpc-port 18911 :topology
   (lambda ()
     (%make-grid-connection-point :id 1
-      :successors (list (%make-meter :id 2 :power 1234.0)))))
+      :successors (list (%make-meter :id 2 :power-w 1234.0)))))
 (setq a-ticks 0)
 (define-scenario :name \"a\"
   :schedule 'relative :clock 'stepped :length \"60s\"
@@ -2457,7 +2457,7 @@ mod tests {
         assert_eq!(
             power(),
             1234.0,
-            "A's teardown must restore the meter's PRE-A :power as B begins"
+            "A's teardown must restore the meter's PRE-A :power-w as B begins"
         );
         let ticks_at_b_start = cfg.eval("a-ticks").unwrap();
         cfg.sim_run(Duration::from_secs(3), Duration::from_secs(1));
@@ -2490,7 +2490,7 @@ mod tests {
 (make-microgrid :id 9 :grpc-port 18912 :topology
   (lambda ()
     (%make-grid-connection-point :id 1
-      :successors (list (%make-meter :id 2 :power 0.0)))))
+      :successors (list (%make-meter :id 2 :power-w 0.0)))))
 (setq cue-count 0)
 (define-scenario :name \"cue-cancel\"
   :schedule 'relative :clock 'stepped :length \"30s\"
@@ -2536,7 +2536,7 @@ mod tests {
 (make-microgrid :id 9 :grpc-port 18913 :topology
   (lambda ()
     (%make-grid-connection-point :id 1
-      :successors (list (%make-meter :id 2 :power 'load-w)))))
+      :successors (list (%make-meter :id 2 :power-w 'load-w)))))
 (define-scenario :name \"refresh\"
   :schedule 'relative :clock 'stepped :length \"5s\"
   :drive (list (drive-meter 2 9999.0))
@@ -2660,7 +2660,7 @@ mod tests {
     fn managed_script_section_runs_in_its_own_microgrids_scope() {
         let (cfg, dir) = config_with(
             "(make-microgrid :id 9 :grpc-port 8800 :topology \
-             (lambda () (%make-meter :id 1 :power 10.0)))",
+             (lambda () (%make-meter :id 1 :power-w 10.0)))",
         );
         // Component 50 exists only in microgrid 20; microgrid 9 is
         // the lower id, so it is what an unscoped script would hit.
@@ -3023,7 +3023,7 @@ mod tests {
     fn enterprise_state_survives_a_restart() {
         let (cfg, dir) =
             config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))");
-        cfg.eval("(setq battery-defaults '(:capacity 12345.0))")
+        cfg.eval("(setq battery-defaults '(:capacity-wh 12345.0))")
             .unwrap();
         cfg.eval("(set-enterprise-id 77)").unwrap();
         cfg.eval("(set-default-augment-lifetime-ms 7000)").unwrap();
@@ -3061,7 +3061,7 @@ mod tests {
         // silently falling back to the built-in defaults.
         std::fs::write(
             dir.join("enterprise.lisp"),
-            "(setq battery-defaults '(:capacity",
+            "(setq battery-defaults '(:capacity-wh",
         )
         .unwrap();
         assert!(

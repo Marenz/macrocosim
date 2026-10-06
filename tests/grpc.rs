@@ -103,13 +103,13 @@ const TINY_TOPOLOGY: &str = r#"
                                :successors
                                (list (%make-battery-inverter
                                       :id 4
-                                      :rated-lower -5000.0
-                                      :rated-upper  5000.0
+                                      :rated-lower-w -5000.0
+                                      :rated-upper-w  5000.0
                                       :successors
                                       (list (%make-battery
                                              :id 3
-                                             :rated-lower -5000.0
-                                             :rated-upper  5000.0)))))))
+                                             :rated-lower-w -5000.0
+                                             :rated-upper-w  5000.0)))))))
 "#;
 
 async fn connect(s: &TestServer) -> MicrogridClient<tonic::transport::Channel> {
@@ -170,13 +170,13 @@ const ERRORED_INVERTER_TOPOLOGY: &str = r#"
                                :successors
                                (list (%make-battery-inverter
                                       :id 4 :health 'error
-                                      :rated-lower -5000.0
-                                      :rated-upper  5000.0
+                                      :rated-lower-w -5000.0
+                                      :rated-upper-w  5000.0
                                       :successors
                                       (list (%make-battery
                                              :id 3
-                                             :rated-lower -5000.0
-                                             :rated-upper  5000.0)))))))
+                                             :rated-lower-w -5000.0
+                                             :rated-upper-w  5000.0)))))))
 "#;
 
 /// Inverter rated ±5 kW but its battery only ±1 kW, so the combined
@@ -189,13 +189,13 @@ const NARROW_BATTERY_TOPOLOGY: &str = r#"
                                :successors
                                (list (%make-battery-inverter
                                       :id 4
-                                      :rated-lower -5000.0
-                                      :rated-upper  5000.0
+                                      :rated-lower-w -5000.0
+                                      :rated-upper-w  5000.0
                                       :successors
                                       (list (%make-battery
                                              :id 3
-                                             :rated-lower -1000.0
-                                             :rated-upper  1000.0)))))))
+                                             :rated-lower-w -1000.0
+                                             :rated-upper-w  1000.0)))))))
 "#;
 
 /// A boiler at its default 8 bar target with no steam demand: it needs
@@ -807,15 +807,15 @@ const REACTIVE_TOPOLOGY: &str = r#"
                                :successors
                                (list (%make-battery-inverter
                                       :id 4
-                                      :rated-lower -5000.0
-                                      :rated-upper  5000.0
+                                      :rated-lower-w -5000.0
+                                      :rated-upper-w  5000.0
                                       :reactive-pf-limit 0
                                       :reactive-apparent-va 5000.0
                                       :successors
                                       (list (%make-battery
                                              :id 3
-                                             :rated-lower -5000.0
-                                             :rated-upper  5000.0)))))))
+                                             :rated-lower-w -5000.0
+                                             :rated-upper-w  5000.0)))))))
 "#;
 
 /// An `AC_POWER_REACTIVE` augmentation is accepted end-to-end: the
@@ -978,16 +978,16 @@ const NESTED_REACTIVE_TOPOLOGY: &str = r#"
                                :successors
                                (list (%make-battery-inverter
                                       :id 4
-                                      :rated-lower -5000.0
-                                      :rated-upper  5000.0
+                                      :rated-lower-w -5000.0
+                                      :rated-upper-w  5000.0
                                       :reactive-pf-limit 0
                                       :reactive-apparent-va 5000.0
                                       :successors
                                       (list (%make-solar-inverter
                                              :id 3
                                              :sunlight% 0
-                                             :rated-lower -1000.0
-                                             :rated-upper  0.0
+                                             :rated-lower-w -1000.0
+                                             :rated-upper-w  0.0
                                              :reactive-pf-limit 0
                                              :reactive-apparent-va 1000.0)))))))
 "#;
@@ -1186,14 +1186,14 @@ async fn battery_telemetry_carries_the_throttled_bounds() {
             :successors
             (list (%make-battery-inverter
                    :id 4
-                   :rated-lower -5000.0
-                   :rated-upper  5000.0
+                   :rated-lower-w -5000.0
+                   :rated-upper-w  5000.0
                    :successors
                    (list (%make-battery
                           :id 3
                           :initial-soc 85.0
-                          :rated-lower -5000.0
-                          :rated-upper  5000.0)))))
+                          :rated-lower-w -5000.0
+                          :rated-upper-w  5000.0)))))
 "#,
     )
     .await;

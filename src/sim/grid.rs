@@ -81,11 +81,11 @@ impl SimulatedComponent for Grid {
     fn constructor_kwargs(&self) -> Vec<(&'static str, String)> {
         let mut kw = Vec::new();
         if self.rated_fuse_current != 0 {
-            kw.push((":rated-fuse-current", self.rated_fuse_current.to_string()));
+            kw.push((":rated-fuse-current-a", self.rated_fuse_current.to_string()));
         }
         if let Some((l, u)) = self.rated_active_bounds {
-            kw.push((":rated-lower", crate::lisp::lisp_float32(l)));
-            kw.push((":rated-upper", crate::lisp::lisp_float32(u)));
+            kw.push((":rated-lower-w", crate::lisp::lisp_float32(l)));
+            kw.push((":rated-upper-w", crate::lisp::lisp_float32(u)));
         }
         if self.stream_jitter_pct != 0.0 {
             kw.push((
@@ -121,9 +121,9 @@ mod tests {
             .map(|(k, v)| format!("{k} {v}"))
             .collect::<Vec<_>>()
             .join(" ");
-        assert!(s.contains(":rated-fuse-current 200"));
-        assert!(s.contains(":rated-lower -50000.0"));
-        assert!(s.contains(":rated-upper 50000.0"));
+        assert!(s.contains(":rated-fuse-current-a 200"));
+        assert!(s.contains(":rated-lower-w -50000.0"));
+        assert!(s.contains(":rated-upper-w 50000.0"));
         assert!(s.contains(":stream-jitter-pct 2.5"));
     }
 }

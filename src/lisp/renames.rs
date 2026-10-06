@@ -102,6 +102,51 @@ pub(crate) const RENAMES: &[Rename] = &[
         new: ":reactive-command-delay-s",
         convert: Convert::MsToS,
     },
+    Rename {
+        old: ":rated-fuse-current",
+        new: ":rated-fuse-current-a",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":rated-lower",
+        new: ":rated-lower-w",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":rated-upper",
+        new: ":rated-upper-w",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":power",
+        new: ":power-w",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":reactive-power",
+        new: ":reactive-power-var",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":capacity",
+        new: ":capacity-wh",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":voltage",
+        new: ":voltage-v",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":ramp-rate",
+        new: ":ramp-rate-w-per-s",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":reactive-ramp-rate",
+        new: ":reactive-ramp-rate-var-per-s",
+        convert: Convert::None,
+    },
 ];
 
 /// Remembers which keys already warned.

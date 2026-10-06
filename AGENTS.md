@@ -260,10 +260,10 @@ UI").
   publishes 0 (P and Q) when it is tripped or when no healthy child
   took its push. Reactive power terminates at the inverter: a DC bus
   carries no Q. A meter's own reactive source is the real thing:
-  mutually-exclusive `:reactive-power` (a VAr constant, lambda, or
+  mutually-exclusive `:reactive-power-var` (a VAr constant, lambda, or
   symbol) or `:power-factor` + `:leading` (true cos φ in `(0, 1]`,
   deriving `Q = P·tan(acos(pf))` off the meter's own live P, negated
-  when leading). Like `:power`, a fixed numeric reactive source
+  when leading). Like `:power-w`, a fixed numeric reactive source
   freezes into the persisted managed file; a lambda or symbol source
   doesn't, and leaves the meter unrenderable.
 - **Single physics tick, registration order = tick order.** `MicrogridSite::spawn_physics`
@@ -481,7 +481,7 @@ rebuild; a script that wants live defaults-editing can still
   depend on it.
 - `LispValue` (`src/lisp/value.rs`) — passthrough wrapper that lets a
   raw `TulispObject` ride through `AsPlist!` (works around the
-  blanket-`From<T> for T` `Infallible` mismatch). Used for `:power`
+  blanket-`From<T> for T` `Infallible` mismatch). Used for `:power-w`
   and `:sunlight%`, where the make-* dispatcher inspects the raw
   shape to pick between a constant and a `DynamicScalar`.
 
@@ -531,7 +531,7 @@ wiring, which both divides the offered limit into a per-phase current
 and caps how many of the car's phases can be used) and `:idle`
 (`'paused`, the default, offers nothing with no command standing;
 `'full` offers the full rating). It has no pack of its own: the
-pack kwargs (`:capacity`, `:initial-soc`, `:soc-lower`,
+pack kwargs (`:capacity-wh`, `:initial-soc`, `:soc-lower`,
 `:soc-upper`, `:soc-protect-margin`) are accepted with a warning
 and ignored, so older files still load, and the site import drops
 them from an export's charger.
@@ -590,10 +590,10 @@ GCP active-power limiter is the motivating case).
   pressure at target. A request lifetime expiring on any of them
   (granularity: the physics tick, on the site clock — sim time when
   headless) retargets the ramp instead of snapping it: with a
-  `:ramp-rate` the P output moves back to idle at that rate (a PV
+  `:ramp-rate-w-per-s` the P output moves back to idle at that rate (a PV
   inverter's idle is its sunlight floor), without one it still gets
   there in one tick. The inverters' Q axes ramp at
-  `:reactive-ramp-rate`, 2000 VAr/s unless set. A charger's car
+  `:reactive-ramp-rate-var-per-s`, 2000 VAr/s unless set. A charger's car
   survives a trip; by default charging resumes with the next command,
   and with `:resume-on-recovery t` it ramps back on its own. Every
   command reaches the output after the gateway delay plus a device

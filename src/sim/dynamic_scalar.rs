@@ -1,11 +1,11 @@
 //! Scalar component inputs that may be a constant or a Lisp expression.
 //!
-//! A meter's `:power` and a solar inverter's `:sunlight%` are scalar
+//! A meter's `:power-w` and a solar inverter's `:sunlight%` are scalar
 //! inputs that scenario scripts often want to drive declaratively:
 //!
 //! ```lisp
-//! (make-meter :power (lambda () (csv-lookup curve (now-seconds))))
-//! (make-meter :power 'consumer-power)              ; deref a global
+//! (make-meter :power-w (lambda () (csv-lookup curve (now-seconds))))
+//! (make-meter :power-w 'consumer-power)              ; deref a global
 //! ```
 //!
 //! `DynamicScalar` is the storage shape that lets a component carry
@@ -29,7 +29,7 @@ enum Source {
     /// value; arithmetic forms compute; numeric literals self-evaluate.
     Eval(TulispObject),
     /// Call the source with no arguments. For lambda values supplied
-    /// directly as a plist value (`:power (lambda () …)`) — in tulisp
+    /// directly as a plist value (`:power-w (lambda () …)`) — in tulisp
     /// such a lambda is self-evaluating, so eval would just hand back
     /// the lambda; funcall actually runs it.
     Funcall(TulispObject),
@@ -114,7 +114,7 @@ impl DynamicScalar {
     ///   handle) → [`Self::from_funcall`].
     ///
     /// Pass a lambda value *unquoted* in the plist —
-    /// `:power (lambda () …)` — so the plist evaluator hands back the
+    /// `:power-w (lambda () …)` — so the plist evaluator hands back the
     /// compiled function rather than the literal list.
     pub fn from_lisp(obj: &TulispObject, fallback: f32) -> Option<Self> {
         if obj.null() {

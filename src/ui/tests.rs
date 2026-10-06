@@ -1062,7 +1062,7 @@ async fn control_drive_sets_meter_power() {
 #[tokio::test]
 async fn drive_op_accepts_reactive_var_and_power_factor() {
     let cfg = config_with(
-        "(%make-meter :id 7 :power 8000.0)
+        "(%make-meter :id 7 :power-w 8000.0)
                             (%make-solar-inverter :id 8)",
     )
     .await;
@@ -1140,7 +1140,7 @@ async fn drive_op_accepts_reactive_var_and_power_factor() {
 /// first. Validate-first: the meter's existing Q override is untouched.
 #[tokio::test]
 async fn drive_op_rejects_reactive_var_with_power_factor() {
-    let cfg = config_with("(%make-meter :id 7 :power 8000.0)").await;
+    let cfg = config_with("(%make-meter :id 7 :power-w 8000.0)").await;
 
     // Land a Q override first, so a silent overwrite would be visible.
     let (status, _) = call(
@@ -1466,9 +1466,9 @@ async fn microgrids_import_creates_entry_and_managed_file() {
     // …and the eval regenerated the managed file, with the export's
     // physical parameters, so the next boot loads them back.
     let saved = std::fs::read_to_string(cfg.microgrids_dir().join(format!("{id}.lisp"))).unwrap();
-    assert!(saved.contains(":rated-fuse-current 125"), "{saved}");
+    assert!(saved.contains(":rated-fuse-current-a 125"), "{saved}");
     assert!(saved.contains("(%make-battery :id 13"), "{saved}");
-    assert!(saved.contains(":capacity 40000.0"), "{saved}");
+    assert!(saved.contains(":capacity-wh 40000.0"), "{saved}");
     assert!(saved.contains("(connect 12 13)"), "{saved}");
 
     // The registry lists it.
@@ -1508,7 +1508,7 @@ async fn ui_created_microgrid_survives_a_restart() {
         config.clone(),
         post(
             &format!("/api/mg/{id}/eval"),
-            "(%make-grid-connection-point :id 300 :successors (list (%make-meter :id 301 :power 250.0)))",
+            "(%make-grid-connection-point :id 300 :successors (list (%make-meter :id 301 :power-w 250.0)))",
         ),
     )
     .await;
@@ -1517,7 +1517,7 @@ async fn ui_created_microgrid_survives_a_restart() {
     // allocator picks one, and that pick has to survive the restart.
     let (st, _) = call(
         config.clone(),
-        post(&format!("/api/mg/{id}/eval"), "(%make-meter :power 75.0)"),
+        post(&format!("/api/mg/{id}/eval"), "(%make-meter :power-w 75.0)"),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
@@ -1981,7 +1981,7 @@ async fn snapshots_are_per_microgrid() {
 async fn adopt_makes_an_unmanaged_single_mg_file_managed() {
     let (config, dir) = config_with_dir(
         "(make-microgrid :id 9 :grpc-port 8800 :topology \
-                                         (lambda () (%make-meter :id 700 :power 100.0)))",
+                                         (lambda () (%make-meter :id 700 :power-w 100.0)))",
     )
     .await;
     let (st, body) = call(config.clone(), post("/api/mg/9/adopt", "")).await;
@@ -2856,8 +2856,8 @@ async fn component_snapshot_lists_exactly_the_knobs_each_kind_has() {
     let cfg = config_with(
         "(%make-grid-connection-point :id 1
            :successors
-           (list (%make-meter :id 2 :power 1000.0 :reactive-power 200.0)
-                 (%make-meter :id 3 :power 1000.0 :power-factor 0.9)
+           (list (%make-meter :id 2 :power-w 1000.0 :reactive-power-var 200.0)
+                 (%make-meter :id 3 :power-w 1000.0 :power-factor 0.9)
                  (%make-solar-inverter :id 4)
                  (%make-battery-inverter :id 5
                    :successors (list (%make-battery :id 6)))

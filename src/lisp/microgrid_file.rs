@@ -812,18 +812,18 @@ mod tests {
 (make-microgrid :id 2205 :name "rt" :grpc-port 8815 :tso "TN"
   :topology
   (lambda ()
-    (%make-grid-connection-point :id 1 :rated-fuse-current 100)
-    (%make-meter :id 2 :name "main" :power 1500.0 :interval-s 0.5)
+    (%make-grid-connection-point :id 1 :rated-fuse-current-a 100)
+    (%make-meter :id 2 :name "main" :power-w 1500.0 :interval-s 0.5)
     (%make-meter :id 3 :hidden t)
-    (%make-battery-inverter :id 4 :rated-lower -8000.0 :rated-upper 8000.0
+    (%make-battery-inverter :id 4 :rated-lower-w -8000.0 :rated-upper-w 8000.0
                             :reactive-pf-limit 0)
-    (%make-battery :id 5 :capacity 50000.0 :initial-soc 20.0)
+    (%make-battery :id 5 :capacity-wh 50000.0 :initial-soc 20.0)
     (%make-solar-inverter :id 6 :sunlight% 40.0)
     (%make-ev-charger :id 7 :resume-on-recovery t :phases 1 :idle 'full)
     (%make-chp :id 8 :name "chp")
     (%make-meter :id 9 :operational-mode 'inactive)
-    (%make-meter :id 10 :power 2000.0 :reactive-power 500.0)
-    (%make-meter :id 11 :power 2000.0 :power-factor 0.9 :leading t)
+    (%make-meter :id 10 :power-w 2000.0 :reactive-power-var 500.0)
+    (%make-meter :id 11 :power-w 2000.0 :power-factor 0.9 :leading t)
     ;; No `:sunlight%` at all — a weather-FOLLOWING PV inverter,
     ;; whose rendering is the absence of the kwarg. Round-tripping
     ;; it pins that omission: a render that emitted a number here
@@ -943,10 +943,10 @@ mod tests {
   :topology
   (lambda ()
     (%make-meter :id 1)
-    (%make-ev-charger :id 2 :rated-lower 0.0 :rated-upper 22000.0
+    (%make-ev-charger :id 2 :rated-lower-w 0.0 :rated-upper-w 22000.0
                       :initial-soc 92.0 :soc-lower 0.0 :soc-upper 100.0
-                      :soc-protect-margin 10.0 :capacity 30000.0
-                      :command-delay-ms 500 :ramp-rate 3000.0
+                      :soc-protect-margin 10.0 :capacity-wh 30000.0
+                      :command-delay-ms 500 :ramp-rate-w-per-s 3000.0
                       :stream-jitter-pct 10.0)
     (connect 1 2)))
 "#;
@@ -966,14 +966,14 @@ mod tests {
         // ignore is surgical rather than a swallowed form.
         let kw = ev.constructor_kwargs();
         assert!(
-            kw.contains(&(":rated-upper", "22000.0".to_string())),
+            kw.contains(&(":rated-upper-w", "22000.0".to_string())),
             "{kw:?}"
         );
         // And what comes back out carries none of the retired names,
         // so one load-and-save cleans the file up.
         let block = render_block(&def, &site);
         for retired in [
-            ":capacity",
+            ":capacity-wh",
             ":initial-soc",
             ":soc-lower",
             ":soc-upper",

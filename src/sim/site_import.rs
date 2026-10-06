@@ -16,11 +16,11 @@
 //! `submodules/`:
 //! - `categorySpecificInfo.inverter.type` → battery vs solar make fn
 //! - `categorySpecificInfo.gridConnectionPoint.ratedFuseCurrent`
-//!   → `:rated-fuse-current`
-//! - `metricConfigBounds[METRIC_AC_POWER_ACTIVE]` → `:rated-lower` /
-//!   `:rated-upper` (batteries prefer `METRIC_DC_POWER` — their
+//!   → `:rated-fuse-current-a`
+//! - `metricConfigBounds[METRIC_AC_POWER_ACTIVE]` → `:rated-lower-w` /
+//!   `:rated-upper-w` (batteries prefer `METRIC_DC_POWER` — their
 //!   rated range is a DC quantity)
-//! - `metricConfigBounds[METRIC_BATTERY_CAPACITY]` → `:capacity` (Wh)
+//! - `metricConfigBounds[METRIC_BATTERY_CAPACITY]` → `:capacity-wh` (Wh)
 //!   — batteries only
 //! - `metricConfigBounds[METRIC_BATTERY_SOC_PCT]` → `:soc-lower` /
 //!   `:soc-upper` — batteries only; an EV charger's pack belongs to
@@ -33,8 +33,8 @@
 //! Wind turbines, power transformers and breakers import as marker
 //! components (see [`crate::sim::marker`]): present in the topology,
 //! no physics. Steam boilers carry their electric rating —
-//! `metricConfigBounds[METRIC_AC_POWER_ACTIVE]` → `:rated-lower` /
-//! `:rated-upper`, same as an EV charger.
+//! `metricConfigBounds[METRIC_AC_POWER_ACTIVE]` → `:rated-lower-w` /
+//! `:rated-upper-w`, same as an EV charger.
 
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -156,7 +156,7 @@ struct ApiConnection {
 pub struct ImportedComponent {
     pub id: u64,
     make_fn: &'static str,
-    /// Rendered kwarg pairs, e.g. `(":capacity", "40000")`. Values
+    /// Rendered kwarg pairs, e.g. `(":capacity-wh", "40000")`. Values
     /// are already Lisp-syntax; names come from a fixed set.
     kwargs: Vec<(&'static str, String)>,
 }
@@ -193,7 +193,7 @@ fn bounds_for<'a>(c: &'a ApiComponent, suffix: &str) -> Option<&'a Bounds> {
     })
 }
 
-/// The `:rated-lower` / `:rated-upper` pair from the first metric in
+/// The `:rated-lower-w` / `:rated-upper-w` pair from the first metric in
 /// `metrics` the export configures bounds for. AC components pass
 /// only `AC_POWER_ACTIVE`; a battery prefers `DC_POWER` (its rated
 /// range is a DC quantity) with the AC bounds as fallback.
@@ -202,10 +202,10 @@ fn rated_kwargs(c: &ApiComponent, out: &mut Vec<(&'static str, String)>, metrics
         return;
     };
     if let Some(l) = b.lower {
-        out.push((":rated-lower", lisp_float(l)));
+        out.push((":rated-lower-w", lisp_float(l)));
     }
     if let Some(u) = b.upper {
-        out.push((":rated-upper", lisp_float(u)));
+        out.push((":rated-upper-w", lisp_float(u)));
     }
 }
 
@@ -243,7 +243,7 @@ fn mode_kwargs(c: &ApiComponent, out: &mut Vec<(&'static str, String)>) -> Resul
 /// Batteries and EV chargers both take them.
 fn storage_kwargs(c: &ApiComponent, out: &mut Vec<(&'static str, String)>) {
     if let Some(cap) = bounds_for(c, "BATTERY_CAPACITY").and_then(|b| b.upper.or(b.lower)) {
-        out.push((":capacity", lisp_float(cap)));
+        out.push((":capacity-wh", lisp_float(cap)));
     }
     if let Some(b) = bounds_for(c, "BATTERY_SOC_PCT") {
         if let Some(l) = b.lower {
@@ -277,7 +277,7 @@ fn lift(c: &ApiComponent) -> Result<ImportedComponent, String> {
                 .and_then(|i| i.grid_connection_point.as_ref())
                 .and_then(|g| g.rated_fuse_current)
             {
-                kwargs.push((":rated-fuse-current", fuse.to_string()));
+                kwargs.push((":rated-fuse-current-a", fuse.to_string()));
             }
             rated_kwargs(c, &mut kwargs, &["AC_POWER_ACTIVE"]);
             "make-grid-connection-point"
@@ -312,7 +312,7 @@ fn lift(c: &ApiComponent) -> Result<ImportedComponent, String> {
         }
         // No `storage_kwargs`: the charger has no pack of its own —
         // the car plugged into it does — so `%make-ev-charger`
-        // rejects `:capacity` / `:soc-lower` / `:soc-upper`, and an
+        // rejects `:capacity-wh` / `:soc-lower` / `:soc-upper`, and an
         // export carrying them would abort the import's whole form.
         "EV_CHARGER" => {
             rated_kwargs(c, &mut kwargs, &["AC_POWER_ACTIVE"]);
@@ -598,16 +598,14 @@ mod tests {
         assert_eq!(import.connections.len(), 4);
         assert_eq!(import.max_id(), 5);
         let forms = import.forms();
-        assert!(
-            forms.contains(
-                "(make-grid-connection-point :id 1 :name \"grid\" :rated-fuse-current 100)"
-            )
-        );
         assert!(forms.contains(
-            "(make-battery-inverter :id 3 :name \"inverter A\" :rated-lower -30000.0 :rated-upper 30000.0)"
+            "(make-grid-connection-point :id 1 :name \"grid\" :rated-fuse-current-a 100)"
         ));
         assert!(forms.contains(
-            "(make-battery :id 4 :name \"battery A\" :capacity 40000.0 :soc-lower 5.0 :soc-upper 95.0)"
+            "(make-battery-inverter :id 3 :name \"inverter A\" :rated-lower-w -30000.0 :rated-upper-w 30000.0)"
+        ));
+        assert!(forms.contains(
+            "(make-battery :id 4 :name \"battery A\" :capacity-wh 40000.0 :soc-lower 5.0 :soc-upper 95.0)"
         ));
         assert!(forms.contains("(make-solar-inverter :id 5)"));
         assert!(forms.contains("(connect 3 4)"));
@@ -677,7 +675,9 @@ mod tests {
         .unwrap();
         let forms = parse(file, None).unwrap().forms();
         assert!(forms.contains("(make-wind-turbine :id 1)"));
-        assert!(forms.contains("(make-steam-boiler :id 2 :rated-lower 0.0 :rated-upper 500000.0)"));
+        assert!(
+            forms.contains("(make-steam-boiler :id 2 :rated-lower-w 0.0 :rated-upper-w 500000.0)")
+        );
         assert!(forms.contains("(make-power-transformer :id 3)"));
         assert!(forms.contains("(make-breaker :id 4)"));
     }
@@ -697,11 +697,13 @@ mod tests {
         )
         .unwrap();
         let forms = parse(file, None).unwrap().forms();
-        assert!(forms.contains("(make-battery :id 1 :rated-lower -50000.0 :rated-upper 50000.0)"));
+        assert!(
+            forms.contains("(make-battery :id 1 :rated-lower-w -50000.0 :rated-upper-w 50000.0)")
+        );
     }
 
     /// A charger has no pack of its own — the car it charges does —
-    /// so `%make-ev-charger` rejects `:capacity` / `:soc-lower` /
+    /// so `%make-ev-charger` rejects `:capacity-wh` / `:soc-lower` /
     /// `:soc-upper`. An export whose charger carries the battery
     /// bounds (exports do, for chargers that report an SoC) must
     /// therefore drop them rather than emit a form that aborts the
@@ -721,10 +723,10 @@ mod tests {
         .unwrap();
         let forms = parse(file, None).unwrap().forms();
         assert!(
-            forms.contains("(make-ev-charger :id 1 :rated-lower 0.0 :rated-upper 22000.0)"),
+            forms.contains("(make-ev-charger :id 1 :rated-lower-w 0.0 :rated-upper-w 22000.0)"),
             "{forms}"
         );
-        assert!(!forms.contains(":capacity"), "{forms}");
+        assert!(!forms.contains(":capacity-wh"), "{forms}");
         assert!(!forms.contains(":soc-lower"), "{forms}");
         assert!(!forms.contains(":soc-upper"), "{forms}");
     }

@@ -19,14 +19,14 @@ const TOPOLOGY: &str = r#"
                    :successors
                    (list (%make-battery-inverter
                           :id 4
-                          :rated-lower -10000.0
-                          :rated-upper  10000.0
+                          :rated-lower-w -10000.0
+                          :rated-upper-w  10000.0
                           :successors
                           (list (%make-battery
                                  :id 3
-                                 :capacity 100000.0
-                                 :rated-lower -10000.0
-                                 :rated-upper  10000.0)))))))
+                                 :capacity-wh 100000.0
+                                 :rated-lower-w -10000.0
+                                 :rated-upper-w  10000.0)))))))
 "#;
 
 async fn report(client: &reqwest::Client, s: &TestServer) -> Value {

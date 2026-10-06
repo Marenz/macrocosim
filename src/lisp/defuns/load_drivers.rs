@@ -39,11 +39,11 @@ AsPlist! {
 }
 
 pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
-    // Drive a meter's `:power` slot from Lisp. Accepts a number, a
+    // Drive a meter's `:power-w` slot from Lisp. Accepts a number, a
     // lambda, or a symbol — numeric values land as a constant
     // override (microsim-style timer-driven load curve); lambda /
     // symbol values install a DynamicScalar that the scheduler
-    // re-resolves on every tick. UI's `:power` text input piggy-
+    // re-resolves on every tick. UI's `:power-w` text input piggy-
     // backs on this: whatever the user types becomes the second
     // argument here.
     let r = router.clone();
@@ -92,7 +92,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
         },
     );
 
-    // Drive a meter's `:reactive-power` slot from Lisp. The Q twin of
+    // Drive a meter's `:reactive-power-var` slot from Lisp. The Q twin of
     // set-meter-power above — same number / lambda / symbol dispatch,
     // equally lenient on a non-meter (the typed control API is the
     // strict door).
@@ -663,7 +663,7 @@ mod tests {
     #[test]
     fn set_solar_sunlight_accepts_a_lambda() {
         let (cfg, _dir) =
-            config_with("(%make-solar-inverter :id 8 :rated-lower -8000.0 :rated-upper 0.0)");
+            config_with("(%make-solar-inverter :id 8 :rated-lower-w -8000.0 :rated-upper-w 0.0)");
         cfg.eval("(set-solar-sunlight 8 (lambda () 25.0))").unwrap();
         cfg.refresh_once();
         let inv = cfg.site().get(8).unwrap();
@@ -690,7 +690,7 @@ mod tests {
     #[test]
     fn set_solar_sunlight_rejects_a_non_finite_number() {
         let (cfg, _dir) =
-            config_with("(%make-solar-inverter :id 8 :rated-lower -8000.0 :rated-upper 0.0)");
+            config_with("(%make-solar-inverter :id 8 :rated-lower-w -8000.0 :rated-upper-w 0.0)");
         cfg.eval("(set-solar-sunlight 8 25.0)").unwrap();
         for bad in ["(/ 0.0 0.0)", "1e300"] {
             let err = cfg
@@ -758,7 +758,7 @@ mod tests {
     /// PF input needs it to render the lagging/leading toggle.
     #[test]
     fn set_meter_power_factor_broadcasts_knob_changed() {
-        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 8000.0)");
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power-w 8000.0)");
         let mut rx = cfg.site().subscribe_events();
         cfg.eval("(set-meter-power-factor 7 0.8 t)").unwrap();
         let mut seen = Vec::new();
@@ -889,7 +889,7 @@ mod tests {
     /// showing a stale number until the next full snapshot.
     #[test]
     fn clear_meter_reactive_broadcasts_both_knob_tokens() {
-        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 8000.0)");
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power-w 8000.0)");
         cfg.eval("(set-meter-power-factor 7 0.8 t)").unwrap();
         let mut rx = cfg.site().subscribe_events();
         cfg.eval("(clear-meter-reactive 7)").unwrap();
@@ -926,7 +926,7 @@ mod tests {
     }
 
     /// `(clear-meter-power id)` broadcasts a `KnobChanged` with a
-    /// `None` value so a live inspector tab blanks the `:power`
+    /// `None` value so a live inspector tab blanks the `:power-w`
     /// input instead of showing a stale number.
     #[test]
     fn clear_meter_power_broadcasts_knob_changed_with_none() {
@@ -1009,7 +1009,7 @@ mod tests {
     /// touching the meter.
     #[test]
     fn set_meter_power_factor_derives_from_live_p() {
-        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 8000.0)");
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power-w 8000.0)");
         let m = cfg.site().get(7).unwrap();
 
         cfg.eval("(set-meter-power-factor 7 0.8)").unwrap();
@@ -1043,7 +1043,7 @@ mod tests {
         assert!(cfg.eval("(set-battery-soc 99 50.0)").is_err());
     }
 
-    /// `meter_power_reading` round-trips a constant `:power` override
+    /// `meter_power_reading` round-trips a constant `:power-w` override
     /// (no source text) and a dynamic lambda override (some source
     /// text, opaque as it is — see the `expr` assertion below) — the
     /// knob read-back Task 6's inspector snapshot pulls from.
@@ -1297,7 +1297,7 @@ mod tests {
     fn scenario_stop_restores_a_dynamic_sunlight_source() {
         let (cfg, _dir) = config_with(
             "(setq sun-src 40.0)
-             (%make-solar-inverter :id 8 :rated-lower -8000.0 :rated-upper 0.0)",
+             (%make-solar-inverter :id 8 :rated-lower-w -8000.0 :rated-upper-w 0.0)",
         );
         cfg.eval("(set-solar-sunlight 8 'sun-src)").unwrap();
         cfg.refresh_once();
@@ -1414,15 +1414,15 @@ mod tests {
         );
     }
 
-    /// A meter constructed with `:power 5000.0`, driven by a scenario
+    /// A meter constructed with `:power-w 5000.0`, driven by a scenario
     /// to a dynamic source, then stopped: the reading AND the
-    /// `:power` constructor kwarg both come back — restore is
+    /// `:power-w` constructor kwarg both come back — restore is
     /// mechanical (unlike `clear-meter-power`, which would drop the
     /// kwarg), and `has_unrenderable_source` reports the meter is
     /// plain-savable again.
     #[test]
     fn scenario_stop_restores_constructed_meter_power_and_kwarg() {
-        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 5000.0)");
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power-w 5000.0)");
         let m = cfg.site().get(7).unwrap();
         assert_eq!(
             m.meter_drive()
@@ -1461,7 +1461,7 @@ mod tests {
             .map(|(k, v)| format!("{k} {v}"))
             .collect::<Vec<_>>()
             .join(" ");
-        assert!(kw.contains(":power 5000"), "{kw}");
+        assert!(kw.contains(":power-w 5000"), "{kw}");
     }
 
     /// PF/Var aliasing: a baseline `Var` reactive source, driven to a
@@ -1470,7 +1470,7 @@ mod tests {
     /// round-trips, not just a number.
     #[test]
     fn scenario_stop_restores_var_reactive_after_power_factor_drive() {
-        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 8000.0)");
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power-w 8000.0)");
         cfg.eval("(set-meter-reactive-power 7 500.0)").unwrap();
         let m = cfg.site().get(7).unwrap();
         match m.meter_drive().unwrap().meter_reactive_reading().unwrap() {
@@ -1501,7 +1501,7 @@ mod tests {
     /// value.
     #[test]
     fn scenario_stop_restores_first_snapshot_despite_repeated_drives() {
-        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 1200.0)");
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power-w 1200.0)");
         let m = cfg.site().get(7).unwrap();
 
         cfg.eval("(scenario-start \"first-wins\")").unwrap();
@@ -1534,7 +1534,7 @@ mod tests {
     /// later poke exactly as the user left it.
     #[test]
     fn scenario_stop_is_idempotent_and_a_post_stop_poke_sticks() {
-        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 1500.0)");
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power-w 1500.0)");
         let m = cfg.site().get(7).unwrap();
 
         cfg.eval("(scenario-start \"idempotent\")").unwrap();
@@ -1577,15 +1577,15 @@ mod tests {
 
     /// The case restore exists for, on its real path: a scenario
     /// CLEARS a knob the component was constructed with. `clear` is a
-    /// user-intent verb — it drops the `:power` kwarg too, so the
+    /// user-intent verb — it drops the `:power-w` kwarg too, so the
     /// component saves as "measuring" — which is right for a user and
     /// wrong for a scenario that only borrowed the knob. Mid-scenario
     /// the clear must take full effect (no reading, no kwarg); at stop
     /// BOTH halves must come back, or the meter is left permanently
-    /// unable to write its own `:power` back to disk.
+    /// unable to write its own `:power-w` back to disk.
     #[test]
     fn scenario_stop_restores_a_constructed_power_kwarg_a_clear_dropped() {
-        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 5000.0)");
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power-w 5000.0)");
         let m = cfg.site().get(7).unwrap();
         let kwargs = || {
             cfg.site()
@@ -1597,7 +1597,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        assert!(kwargs().contains(":power 5000"), "{}", kwargs());
+        assert!(kwargs().contains(":power-w 5000"), "{}", kwargs());
 
         cfg.eval("(scenario-start \"clear-p\")").unwrap();
         cfg.eval("(clear-meter-power 7)").unwrap();
@@ -1606,7 +1606,7 @@ mod tests {
             "the clear must really clear while the scenario runs"
         );
         assert!(
-            !kwargs().contains(":power"),
+            !kwargs().contains(":power-w"),
             "the clear drops the constructed kwarg too: {}",
             kwargs()
         );
@@ -1621,18 +1621,19 @@ mod tests {
             5000.0
         );
         assert!(
-            kwargs().contains(":power 5000"),
+            kwargs().contains(":power-w 5000"),
             "the constructed kwarg must come back, not just the live source: {}",
             kwargs()
         );
     }
 
-    /// The reactive twin: a `:reactive-power`-constructed meter,
+    /// The reactive twin: a `:reactive-power-var`-constructed meter,
     /// cleared mid-scenario, gets both its `Var` source and its
-    /// `:reactive-power` kwarg back at stop.
+    /// `:reactive-power-var` kwarg back at stop.
     #[test]
     fn scenario_stop_restores_a_constructed_reactive_kwarg_a_clear_dropped() {
-        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 8000.0 :reactive-power 500.0)");
+        let (cfg, _dir) =
+            config_with("(%make-meter :id 7 :power-w 8000.0 :reactive-power-var 500.0)");
         let m = cfg.site().get(7).unwrap();
         let kwargs = || {
             cfg.site()
@@ -1644,12 +1645,12 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        assert!(kwargs().contains(":reactive-power 500"), "{}", kwargs());
+        assert!(kwargs().contains(":reactive-power-var 500"), "{}", kwargs());
 
         cfg.eval("(scenario-start \"clear-q\")").unwrap();
         cfg.eval("(clear-meter-reactive 7)").unwrap();
         assert!(m.meter_drive().unwrap().meter_reactive_reading().is_none());
-        assert!(!kwargs().contains(":reactive-power"), "{}", kwargs());
+        assert!(!kwargs().contains(":reactive-power-var"), "{}", kwargs());
 
         cfg.eval("(scenario-stop)").unwrap();
         match m.meter_drive().unwrap().meter_reactive_reading().unwrap() {
@@ -1657,12 +1658,12 @@ mod tests {
             ReactiveReading::PowerFactor { .. } => panic!("expected the constructed Var back"),
         }
         assert!(
-            kwargs().contains(":reactive-power 500"),
+            kwargs().contains(":reactive-power-var 500"),
             "the constructed kwarg must come back: {}",
             kwargs()
         );
         // The active axis was never touched, so its own kwarg stands.
-        assert!(kwargs().contains(":power 8000"), "{}", kwargs());
+        assert!(kwargs().contains(":power-w 8000"), "{}", kwargs());
     }
 
     /// Same again for the OTHER `ConstructedReactive` shape: a meter
@@ -1671,7 +1672,7 @@ mod tests {
     #[test]
     fn scenario_stop_restores_a_constructed_power_factor_a_clear_dropped() {
         let (cfg, _dir) =
-            config_with("(%make-meter :id 7 :power 8000.0 :power-factor 0.8 :leading t)");
+            config_with("(%make-meter :id 7 :power-w 8000.0 :power-factor 0.8 :leading t)");
         let m = cfg.site().get(7).unwrap();
         let kwargs = || {
             cfg.site()
@@ -2028,7 +2029,7 @@ mod tests {
     /// `set-solar-sunlight` on a meter, numeric and lambda.
     #[test]
     fn set_solar_sunlight_on_a_non_solar_is_a_lenient_noop() {
-        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 1500.0)");
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power-w 1500.0)");
         assert_lenient_noop(
             &cfg,
             7,
@@ -2047,7 +2048,7 @@ mod tests {
     /// a charger. The defun broadcasts no knob, so none is checked.
     #[test]
     fn set_battery_soc_on_a_non_battery_is_a_lenient_noop() {
-        let (cfg, _dir) = config_with("(%make-meter :id 7 :power 1500.0)");
+        let (cfg, _dir) = config_with("(%make-meter :id 7 :power-w 1500.0)");
         assert_lenient_noop(&cfg, 7, "(set-battery-soc 7 50)", None);
     }
 

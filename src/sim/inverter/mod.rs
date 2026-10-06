@@ -72,15 +72,15 @@ pub(crate) struct CommonInverterCfg {
 pub(crate) fn common_inverter_kwargs(cfg: CommonInverterCfg) -> Vec<(&'static str, String)> {
     let lf = crate::lisp::lisp_float32;
     let mut kw = vec![
-        (":rated-lower", lf(cfg.rated_lower_w)),
-        (":rated-upper", lf(cfg.rated_upper_w)),
+        (":rated-lower-w", lf(cfg.rated_lower_w)),
+        (":rated-upper-w", lf(cfg.rated_upper_w)),
         (
             ":command-delay-s",
             crate::lisp::lisp_float(cfg.command_delay.as_secs_f64()),
         ),
     ];
     if cfg.ramp_rate_w_per_s.is_finite() {
-        kw.push((":ramp-rate", lf(cfg.ramp_rate_w_per_s)));
+        kw.push((":ramp-rate-w-per-s", lf(cfg.ramp_rate_w_per_s)));
     }
     if cfg.interval != Duration::from_millis(1000) {
         kw.push((
@@ -109,7 +109,10 @@ pub(crate) fn common_inverter_kwargs(cfg: CommonInverterCfg) -> Vec<(&'static st
         crate::lisp::lisp_float(cfg.reactive_command_delay.as_secs_f64()),
     ));
     if cfg.reactive_ramp_rate_var_per_s.is_finite() {
-        kw.push((":reactive-ramp-rate", lf(cfg.reactive_ramp_rate_var_per_s)));
+        kw.push((
+            ":reactive-ramp-rate-var-per-s",
+            lf(cfg.reactive_ramp_rate_var_per_s),
+        ));
     }
     kw.extend(device_delay_kw(cfg.device_delay));
     kw

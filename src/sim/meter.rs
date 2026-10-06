@@ -11,7 +11,7 @@ use crate::sim::{
 };
 
 /// A meter's reactive-power (Q) source — the VAr twin of the
-/// `:power` active-power source. Either a direct VAr value (constant,
+/// `:power-w` active-power source. Either a direct VAr value (constant,
 /// lambda, or symbol) or a derivation from the meter's own live P via
 /// a power factor.
 #[derive(Clone)]
@@ -48,14 +48,14 @@ pub enum ConstructedReactive {
 
 /// A power meter sums its successors' active and reactive power, then
 /// voltage-splits the totals across the three phases. If the parent
-/// registered with explicit `:power` — a constant, a lambda, or a
+/// registered with explicit `:power-w` — a constant, a lambda, or a
 /// symbol — that value is used verbatim instead, modelling a
 /// headless consumer / CHP load. Lisp timers can also push a value
 /// in via `(set-meter-power id W)`, which collapses the source back
 /// to a constant. The reactive axis mirrors this: an explicit
-/// `:reactive-power` or `:power-factor` source overrides the
+/// `:reactive-power-var` or `:power-factor` source overrides the
 /// aggregate-from-successors path independently of the active axis,
-/// so a `:power` override no longer forces Q to zero (todo #537).
+/// so a `:power-w` override no longer forces Q to zero (todo #537).
 pub struct Meter {
     id: u64,
     name: String,
@@ -77,7 +77,7 @@ pub struct Meter {
     /// loads / generators that present as a power flow without being
     /// a discrete addressable component.
     hidden: bool,
-    /// The `:power` value this meter was constructed with, when it
+    /// The `:power-w` value this meter was constructed with, when it
     /// was a plain constant — `None` for a dynamic (lambda / symbol)
     /// source or no source at all. Only construction-time state:
     /// later pokes via `set_active_power_override` /
@@ -89,7 +89,7 @@ pub struct Meter {
     /// just the live slot, so a save/reload agrees with a cleared
     /// meter instead of resurrecting the override.
     constructed_power: RwLock<Option<f32>>,
-    /// The `:reactive-power` / `:power-factor` this meter was
+    /// The `:reactive-power-var` / `:power-factor` this meter was
     /// constructed with — the Q twin of `constructed_power`. See
     /// there for why this is construction-only state, and why it's
     /// an RwLock (`clear_reactive_power_source` drops it too).
@@ -334,7 +334,7 @@ impl SimulatedComponent for Meter {
 
     fn has_unrenderable_source(&self) -> bool {
         // `constructed_power` / `constructed_reactive` hold the
-        // constant `:power` / `:reactive-power` / `:power-factor`
+        // constant `:power-w` / `:reactive-power-var` / `:power-factor`
         // this meter was BUILT with, so an unset one with a live
         // source means the value came from somewhere the renderer
         // cannot write: a lambda / symbol binding, or a runtime poke
@@ -354,7 +354,7 @@ impl SimulatedComponent for Meter {
             ));
         }
         if let Some(p) = self.constructed_power.read().filter(|p| p.is_finite()) {
-            kw.push((":power", crate::lisp::lisp_float32(p)));
+            kw.push((":power-w", crate::lisp::lisp_float32(p)));
         }
         // Hoisted out of the match scrutinee: a place-expression match
         // on `*self.constructed_reactive.read()` would hold the read
@@ -364,7 +364,7 @@ impl SimulatedComponent for Meter {
         let ctor = *self.constructed_reactive.read();
         match ctor {
             Some(ConstructedReactive::Var(v)) if v.is_finite() => {
-                kw.push((":reactive-power", crate::lisp::lisp_float32(v)));
+                kw.push((":reactive-power-var", crate::lisp::lisp_float32(v)));
             }
             Some(ConstructedReactive::PowerFactor { pf, leading }) => {
                 kw.push((":power-factor", crate::lisp::lisp_float32(pf)));
@@ -689,7 +689,7 @@ mod tests {
         assert!((m.aggregate_power_w(&w) - 2_000.0).abs() < 1e-3);
     }
 
-    /// A constant `:power` DynamicScalar bypasses children-aggregation
+    /// A constant `:power-w` DynamicScalar bypasses children-aggregation
     /// and reads through directly. set_fixed_power replaces the slot
     /// with a fresh constant.
     #[test]
@@ -713,7 +713,7 @@ mod tests {
         assert!((m.aggregate_power_w(&w) - 4100.0).abs() < 1e-3);
     }
 
-    /// A lambda-bound `:power` resolves through `refresh_inputs` and
+    /// A lambda-bound `:power-w` resolves through `refresh_inputs` and
     /// the new value lands in subsequent `aggregate_power_w` reads.
     #[test]
     fn lambda_power_source_refreshes_each_tick() {
@@ -766,10 +766,10 @@ mod tests {
         assert_eq!(w.hidden_connections(), vec![(2, 9000)]);
     }
 
-    /// `constructed_power` captures only the constant `:power` a
+    /// `constructed_power` captures only the constant `:power-w` a
     /// meter was built with — later pokes via
     /// `set_active_power_override` must not leak into it. A meter
-    /// with no power source at all renders no `:power` kwarg.
+    /// with no power source at all renders no `:power-w` kwarg.
     #[test]
     fn meter_records_constructed_power_constant_only() {
         // Constant power → kwarg present; poked value must NOT change it.
@@ -788,21 +788,21 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        assert!(kw(&m).contains(":power 1875.0"));
+        assert!(kw(&m).contains(":power-w 1875.0"));
         m.set_active_power_override(9999.0);
         assert!(
-            kw(&m).contains(":power 1875.0"),
+            kw(&m).contains(":power-w 1875.0"),
             "pokes are not construction"
         );
-        // No power source → no :power kwarg; hidden renders.
+        // No power source → no :power-w kwarg; hidden renders.
         let h = Meter::new(2, Duration::from_secs(1), None, None, 0.0, true);
-        assert!(!kw(&h).contains(":power"));
+        assert!(!kw(&h).contains(":power-w"));
         assert!(kw(&h).contains(":hidden t"));
     }
 
-    /// A `:power` override no longer zeroes Q (todo #537 fix): a
-    /// meter with BOTH a `:power` override and a `Var` reactive
-    /// source reports the Var value, not 0. A meter with a `:power`
+    /// A `:power-w` override no longer zeroes Q (todo #537 fix): a
+    /// meter with BOTH a `:power-w` override and a `Var` reactive
+    /// source reports the Var value, not 0. A meter with a `:power-w`
     /// override but NO reactive source still sums its children's Q —
     /// the two axes are independent.
     #[test]
@@ -847,7 +847,7 @@ mod tests {
     }
 
     /// A `PowerFactor` reactive source derives Q from this meter's
-    /// OWN live P on every read: `pf 0.8` lagging on `:power 8000` →
+    /// OWN live P on every read: `pf 0.8` lagging on `:power-w 8000` →
     /// `Q ≈ 8000·tan(acos(0.8)) = 6000`; leading negates it; and
     /// moving the P override moves Q on the next read.
     #[test]
@@ -888,11 +888,11 @@ mod tests {
     }
 
     /// `constructed_reactive` freezes the SAME way `constructed_power`
-    /// does: a `:reactive-power` kwarg survives into `constructor_kwargs`,
+    /// does: a `:reactive-power-var` kwarg survives into `constructor_kwargs`,
     /// and a later runtime poke (`set_fixed_reactive_power`) doesn't
     /// leak into it. A meter built with no reactive source, then
     /// given a runtime PF source, becomes unrenderable — the same
-    /// rule that already applies to a runtime `:power` poke.
+    /// rule that already applies to a runtime `:power-w` poke.
     #[test]
     fn constructed_reactive_freezes_for_rendering() {
         let m = Meter::new(
@@ -910,10 +910,10 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        assert!(kw(&m).contains(":reactive-power 500.0"));
+        assert!(kw(&m).contains(":reactive-power-var 500.0"));
         m.set_fixed_reactive_power(999.0);
         assert!(
-            kw(&m).contains(":reactive-power 500.0"),
+            kw(&m).contains(":reactive-power-var 500.0"),
             "pokes are not construction"
         );
 
@@ -1020,8 +1020,8 @@ mod tests {
         assert!(m.meter_drive().unwrap().meter_reactive_reading().is_none());
     }
 
-    /// A meter CONSTRUCTED with `:power` then cleared emits no
-    /// `:power` kwarg on the next render, and `has_unrenderable_source`
+    /// A meter CONSTRUCTED with `:power-w` then cleared emits no
+    /// `:power-w` kwarg on the next render, and `has_unrenderable_source`
     /// stays false — "clear means cleared" extends to the construction
     /// kwarg, so a save/reload agrees with the live (measuring) state
     /// instead of resurrecting the override.
@@ -1042,14 +1042,14 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        assert!(kw(&m).contains(":power 1875.0"));
+        assert!(kw(&m).contains(":power-w 1875.0"));
         m.clear_active_power_source();
-        assert!(!kw(&m).contains(":power"), "{}", kw(&m));
+        assert!(!kw(&m).contains(":power-w"), "{}", kw(&m));
         assert!(!m.has_unrenderable_source());
     }
 
     /// Same round-trip for the reactive axis, constructed with
-    /// `:reactive-power`.
+    /// `:reactive-power-var`.
     #[test]
     fn clear_reactive_power_source_drops_constructed_kwarg() {
         let m = Meter::new(
@@ -1067,9 +1067,9 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        assert!(kw(&m).contains(":reactive-power 500.0"));
+        assert!(kw(&m).contains(":reactive-power-var 500.0"));
         m.clear_reactive_power_source();
-        assert!(!kw(&m).contains(":reactive-power"), "{}", kw(&m));
+        assert!(!kw(&m).contains(":reactive-power-var"), "{}", kw(&m));
         assert!(!m.has_unrenderable_source());
     }
 
@@ -1095,9 +1095,9 @@ mod tests {
         assert!((m.aggregate_reactive_var(&w) - 50.0).abs() < 1e-3);
     }
 
-    /// A meter constructed with `:power`, then driven by a scenario
+    /// A meter constructed with `:power-w`, then driven by a scenario
     /// installing a dynamic source: `restore_knob` must bring back
-    /// BOTH the live constant source AND the `:power` constructor
+    /// BOTH the live constant source AND the `:power-w` constructor
     /// kwarg — restore is not `clear_active_power_source`, which
     /// would drop the kwarg for good.
     #[test]
@@ -1128,13 +1128,13 @@ mod tests {
             .map(|(k, v)| format!("{k} {v}"))
             .collect::<Vec<_>>()
             .join(" ");
-        assert!(kw.contains(":power 1875.0"), "{kw}");
+        assert!(kw.contains(":power-w 1875.0"), "{kw}");
     }
 
     /// A meter with NO reactive override snapshots as empty; after a
     /// scenario fakes one in, restore puts it back to measuring —
     /// and, crucially, never touches the unrelated active axis's own
-    /// constructed `:power` kwarg.
+    /// constructed `:power-w` kwarg.
     #[test]
     fn snapshot_restore_round_trip_meter_reactive_empty_baseline() {
         let m = Meter::new(
@@ -1163,7 +1163,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         assert!(
-            kw.contains(":power 1875.0"),
+            kw.contains(":power-w 1875.0"),
             "restoring the reactive axis must not disturb the active axis's kwarg: {kw}"
         );
     }

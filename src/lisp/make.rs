@@ -38,9 +38,9 @@ AsPlist! {
     pub struct GridArgs {
         id: Option<i64> {= None},
         name: Option<String> {= None},
-        rated_fuse_current<":rated-fuse-current">: Option<i64> {= None},
-        rated_lower<":rated-lower">: Option<f64> {= None},
-        rated_upper<":rated-upper">: Option<f64> {= None},
+        rated_fuse_current<":rated-fuse-current-a">: Option<i64> {= None},
+        rated_lower<":rated-lower-w">: Option<f64> {= None},
+        rated_upper<":rated-upper-w">: Option<f64> {= None},
         successors: Option<Vec<ComponentHandle>> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
         operational_mode<":operational-mode">: Option<OperationalMode> {= None},
@@ -62,13 +62,13 @@ AsPlist! {
         /// Constant, lambda, or symbol. Resolved into a
         /// [`DynamicScalar`] in the constructor — see
         /// [`crate::sim::dynamic_scalar::DynamicScalar::from_lisp`].
-        power: Option<LispValue> {= None},
+        power<":power-w">: Option<LispValue> {= None},
         /// Direct VAr source: constant, lambda, or symbol. Mutually
         /// exclusive with `:power-factor`.
-        reactive_power<":reactive-power">: Option<LispValue> {= None},
+        reactive_power<":reactive-power-var">: Option<LispValue> {= None},
         /// Derive Q from this meter's own live P via a power factor
         /// (true cos φ) in `(0.0, 1.0]`. Mutually exclusive with
-        /// `:reactive-power`.
+        /// `:reactive-power-var`.
         power_factor<":power-factor">: Option<f64> {= None},
         /// Whether the power-factor-derived Q is leading (negative)
         /// rather than lagging. Requires `:power-factor`.
@@ -92,13 +92,13 @@ AsPlist! {
         id: Option<i64> {= None},
         name: Option<String> {= None},
         interval_s<":interval-s">: Option<f64> {= None},
-        capacity_wh<":capacity">: Option<f64> {= None},
+        capacity_wh<":capacity-wh">: Option<f64> {= None},
         initial_soc<":initial-soc">: Option<f64> {= None},
         soc_lower<":soc-lower">: Option<f64> {= None},
         soc_upper<":soc-upper">: Option<f64> {= None},
-        voltage: Option<f64> {= None},
-        rated_lower<":rated-lower">: Option<f64> {= None},
-        rated_upper<":rated-upper">: Option<f64> {= None},
+        voltage<":voltage-v">: Option<f64> {= None},
+        rated_lower<":rated-lower-w">: Option<f64> {= None},
+        rated_upper<":rated-upper-w">: Option<f64> {= None},
         soc_protect_margin<":soc-protect-margin">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
         operational_mode<":operational-mode">: Option<OperationalMode> {= None},
@@ -118,10 +118,10 @@ AsPlist! {
         name: Option<String> {= None},
         interval_s<":interval-s">: Option<f64> {= None},
         successors: Option<Vec<ComponentHandle>> {= None},
-        rated_lower<":rated-lower">: Option<f64> {= None},
-        rated_upper<":rated-upper">: Option<f64> {= None},
+        rated_lower<":rated-lower-w">: Option<f64> {= None},
+        rated_upper<":rated-upper-w">: Option<f64> {= None},
         command_delay_s<":command-delay-s">: Option<f64> {= None},
-        ramp_rate<":ramp-rate">: Option<f64> {= None},
+        ramp_rate<":ramp-rate-w-per-s">: Option<f64> {= None},
         /// Time a command takes to reach the output once the
         /// component has it, in seconds, on both axes. 0.1 unless set.
         device_delay_s<":device-delay-s">: Option<f64> {= None},
@@ -139,7 +139,7 @@ AsPlist! {
         reactive_command_delay_s<":reactive-command-delay-s">: Option<f64> {= None},
         /// Reactive slew rate (VAR/s). Default 2000 ≈ IEEE 1547-2018
         /// Cat B 5 s OLRT for a 10 kVAR window.
-        reactive_ramp_rate<":reactive-ramp-rate">: Option<f64> {= None},
+        reactive_ramp_rate<":reactive-ramp-rate-var-per-s">: Option<f64> {= None},
     }
 }
 
@@ -159,10 +159,10 @@ AsPlist! {
         /// inverter tracks the sky instead of a driven number, shaped
         /// by `:weather-lag-s` / `:weather-jitter-pct`.
         sunlight_pct<":sunlight%">: Option<LispValue> {= None},
-        rated_lower<":rated-lower">: Option<f64> {= None},
-        rated_upper<":rated-upper">: Option<f64> {= None},
+        rated_lower<":rated-lower-w">: Option<f64> {= None},
+        rated_upper<":rated-upper-w">: Option<f64> {= None},
         /// The array's peak DC output (Wp), positive — not an
-        /// instantaneous power. Defaults to |:rated-lower|: a matched
+        /// instantaneous power. Defaults to |:rated-lower-w|: a matched
         /// array. Oversizing produces midday clipping.
         array_peak_w<":array-peak-w">: Option<f64> {= None},
         /// How far behind the sky a weather-following array samples,
@@ -176,7 +176,7 @@ AsPlist! {
         /// `:sunlight%`.
         weather_jitter_pct<":weather-jitter-pct">: Option<f64> {= None},
         command_delay_s<":command-delay-s">: Option<f64> {= None},
-        ramp_rate<":ramp-rate">: Option<f64> {= None},
+        ramp_rate<":ramp-rate-w-per-s">: Option<f64> {= None},
         /// Time a command takes to reach the output once the
         /// component has it, in seconds, on both axes. 0.1 unless set.
         device_delay_s<":device-delay-s">: Option<f64> {= None},
@@ -193,7 +193,7 @@ AsPlist! {
         /// tracked, in seconds. Defaults to 0.1.
         reactive_command_delay_s<":reactive-command-delay-s">: Option<f64> {= None},
         /// Reactive slew rate (VAR/s). Default 2000.
-        reactive_ramp_rate<":reactive-ramp-rate">: Option<f64> {= None},
+        reactive_ramp_rate<":reactive-ramp-rate-var-per-s">: Option<f64> {= None},
     }
 }
 
@@ -206,10 +206,10 @@ AsPlist! {
         id: Option<i64> {= None},
         name: Option<String> {= None},
         interval_s<":interval-s">: Option<f64> {= None},
-        rated_lower<":rated-lower">: Option<f64> {= None},
-        rated_upper<":rated-upper">: Option<f64> {= None},
+        rated_lower<":rated-lower-w">: Option<f64> {= None},
+        rated_upper<":rated-upper-w">: Option<f64> {= None},
         command_delay_s<":command-delay-s">: Option<f64> {= None},
-        ramp_rate<":ramp-rate">: Option<f64> {= None},
+        ramp_rate<":ramp-rate-w-per-s">: Option<f64> {= None},
         /// Time a command takes to reach the output once the
         /// component has it, in seconds, on both axes. 0.1 unless set.
         device_delay_s<":device-delay-s">: Option<f64> {= None},
@@ -224,7 +224,7 @@ AsPlist! {
         // predates managed files. Rejecting them would fail the whole
         // microgrid, and in the enterprise case every charger in the
         // process.
-        capacity_wh<":capacity">: Option<f64> {= None},
+        capacity_wh<":capacity-wh">: Option<f64> {= None},
         initial_soc<":initial-soc">: Option<f64> {= None},
         soc_lower<":soc-lower">: Option<f64> {= None},
         soc_upper<":soc-upper">: Option<f64> {= None},
@@ -257,15 +257,15 @@ AsPlist! {
         /// kg/h; number seeds a constant, lambda/symbol installs a
         /// dynamic source resolved each tick.
         demand<":demand">: Option<LispValue> {= None},
-        rated_lower<":rated-lower">: Option<f64> {= None},
-        rated_upper<":rated-upper">: Option<f64> {= None},
+        rated_lower<":rated-lower-w">: Option<f64> {= None},
+        rated_upper<":rated-upper-w">: Option<f64> {= None},
         target_bar<":target-bar">: Option<f64> {= None},
         max_bar<":max-bar">: Option<f64> {= None},
         initial_bar<":initial-bar">: Option<f64> {= None},
         capacity_wh_per_bar<":capacity-wh-per-bar">: Option<f64> {= None},
         wh_per_kg<":wh-per-kg">: Option<f64> {= None},
         command_delay_s<":command-delay-s">: Option<f64> {= None},
-        ramp_rate<":ramp-rate">: Option<f64> {= None},
+        ramp_rate<":ramp-rate-w-per-s">: Option<f64> {= None},
         /// Time a command takes to reach the output once the
         /// component has it, in seconds, on both axes. 0.1 unless set.
         device_delay_s<":device-delay-s">: Option<f64> {= None},
@@ -316,7 +316,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                 // silent; one-sided support is a todo.org item.
                 (l, u) => {
                     log::warn!(
-                        "make-grid-connection-point: only one of :rated-lower/:rated-upper \
+                        "make-grid-connection-point: only one of :rated-lower-w/:rated-upper-w \
                          given ({l:?}, {u:?}); the grid stays unbounded"
                     );
                     None
@@ -327,7 +327,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                 // wrap through `as u32` into a ~4 GA fuse.
                 f if f < 0 => {
                     return Err(Error::invalid_argument(format!(
-                        ":rated-fuse-current must be non-negative, got {f}"
+                        ":rated-fuse-current-a must be non-negative, got {f}"
                     )));
                 }
                 f => f as u32,
@@ -361,7 +361,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             let id = id_or_next(&r, &w, a.id)?;
             let interval = secs_to_duration(":interval-s", a.interval_s, Duration::from_secs(1))?;
             let hidden = a.hidden.unwrap_or(false);
-            // :power may be a number, a lambda, or a symbol. The
+            // :power-w may be a number, a lambda, or a symbol. The
             // wrapper-expanded category default lands in `a.power`
             // when no per-component value was passed; otherwise the
             // per-component value overrides via AsPlist's last-wins.
@@ -462,7 +462,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             cfg.command_delay =
                 secs_to_duration(":command-delay-s", a.command_delay_s, cfg.command_delay)?;
             if let Some(v) = a.ramp_rate {
-                cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate", v)?;
+                cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate-w-per-s", v)?;
             }
             cfg.device_delay =
                 secs_to_duration(":device-delay-s", a.device_delay_s, cfg.device_delay)?;
@@ -559,8 +559,8 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             if let Some(v) = a.rated_lower {
                 cfg.rated_lower_w = v as f32;
             }
-            // Defaults to a matched array (|:rated-lower|) now that
-            // :rated-lower has landed on cfg above.
+            // Defaults to a matched array (|:rated-lower-w|) now that
+            // :rated-lower-w has landed on cfg above.
             if let Some(v) = a.array_peak_w {
                 // A non-finite or non-positive array inverts the band
                 // (min_avail_w goes positive, intersects emptily with
@@ -583,7 +583,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             cfg.command_delay =
                 secs_to_duration(":command-delay-s", a.command_delay_s, cfg.command_delay)?;
             if let Some(v) = a.ramp_rate {
-                cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate", v)?;
+                cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate-w-per-s", v)?;
             }
             cfg.device_delay =
                 secs_to_duration(":device-delay-s", a.device_delay_s, cfg.device_delay)?;
@@ -636,7 +636,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             cfg.command_delay =
                 secs_to_duration(":command-delay-s", a.command_delay_s, cfg.command_delay)?;
             if let Some(v) = a.ramp_rate {
-                cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate", v)?;
+                cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate-w-per-s", v)?;
             }
             cfg.device_delay =
                 secs_to_duration(":device-delay-s", a.device_delay_s, cfg.device_delay)?;
@@ -647,7 +647,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             // loads, ignored because the charger has no pack, and named
             // once per charger so the config gets cleaned up eventually.
             let retired: Vec<&str> = [
-                (":capacity", a.capacity_wh.is_some()),
+                (":capacity-wh", a.capacity_wh.is_some()),
                 (":initial-soc", a.initial_soc.is_some()),
                 (":soc-lower", a.soc_lower.is_some()),
                 (":soc-upper", a.soc_upper.is_some()),
@@ -729,7 +729,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             cfg.command_delay =
                 secs_to_duration(":command-delay-s", a.command_delay_s, cfg.command_delay)?;
             if let Some(v) = a.ramp_rate {
-                cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate", v)?;
+                cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate-w-per-s", v)?;
             }
             cfg.device_delay =
                 secs_to_duration(":device-delay-s", a.device_delay_s, cfg.device_delay)?;
@@ -879,7 +879,7 @@ impl ReactiveKwargs {
             *command_delay,
         )?;
         if let Some(v) = self.ramp_rate {
-            *ramp_rate = checked_ramp_rate(":reactive-ramp-rate", v)?;
+            *ramp_rate = checked_ramp_rate(":reactive-ramp-rate-var-per-s", v)?;
         }
         Ok(())
     }
@@ -912,7 +912,7 @@ pub(crate) fn preset_from_lisp(raw: &LispValue, label: &str) -> Result<&'static 
         .ok_or_else(|| Error::invalid_argument(format!("{label}: unknown preset '{name}'")))
 }
 
-/// Build a meter's `ReactiveSource` from its `:reactive-power` /
+/// Build a meter's `ReactiveSource` from its `:reactive-power-var` /
 /// `:power-factor` / `:leading` kwargs. The two source kwargs are
 /// mutually exclusive; `:leading` only makes sense alongside
 /// `:power-factor`; and `:power-factor` must be a true cos φ in
@@ -926,7 +926,7 @@ fn meter_reactive_source(
 ) -> Result<Option<ReactiveSource>, Error> {
     if reactive_power.is_some() && power_factor.is_some() {
         return Err(Error::invalid_argument(
-            "make-meter: :reactive-power and :power-factor are mutually exclusive",
+            "make-meter: :reactive-power-var and :power-factor are mutually exclusive",
         ));
     }
     if leading.is_some() && power_factor.is_none() {
@@ -1101,7 +1101,7 @@ mod tests {
     }
 
     /// Like [`run`] but also surfaces the context — needed for tests
-    /// that drive `refresh_inputs` (lambda / symbol `:power` etc.)
+    /// that drive `refresh_inputs` (lambda / symbol `:power-w` etc.)
     /// after the components have registered.
     fn run_with_ctx(src: &str) -> (MicrogridSite, TulispContext) {
         use crate::sim::microgrids::{SiteRouter, new_current_microgrid, new_registry};
@@ -1160,8 +1160,8 @@ mod tests {
         // %make-battery is the primitive — every field arrives as a
         // plist key. Defaults are applied by wrappers, not here.
         let site = run(
-            r#"(%make-battery :id 100 :capacity 50000.0 :initial-soc 20.0
-                              :rated-lower -8000.0 :rated-upper 8000.0)"#,
+            r#"(%make-battery :id 100 :capacity-wh 50000.0 :initial-soc 20.0
+                              :rated-lower-w -8000.0 :rated-upper-w 8000.0)"#,
         );
         let t = site.get(100).unwrap().telemetry(&site);
         assert_eq!(t.capacity_wh, Some(50_000.0));
@@ -1174,7 +1174,7 @@ mod tests {
         // literal in sim/defaults.lisp) to the caller's args. AsPlist's
         // last-occurrence-wins resolution lets the per-component plist
         // override individual default fields while inheriting the rest.
-        let site = run(r#"(make-battery :id 200 :capacity 50000.0)"#);
+        let site = run(r#"(make-battery :id 200 :capacity-wh 50000.0)"#);
         let t = site.get(200).unwrap().telemetry(&site);
         // From per-component plist:
         assert_eq!(t.capacity_wh, Some(50_000.0));
@@ -1220,23 +1220,23 @@ mod tests {
         assert_eq!(ok.command, CommandMode::Timeout);
     }
 
-    /// `:power N` lands as a constant DynamicScalar — aggregate_power_w
+    /// `:power-w N` lands as a constant DynamicScalar — aggregate_power_w
     /// reads it through immediately, no refresh required.
     #[test]
     fn meter_power_constant_reads_through() {
-        let site = run("(%make-meter :id 7 :power 1875.0)");
+        let site = run("(%make-meter :id 7 :power-w 1875.0)");
         let m = site.get(7).unwrap();
         assert!((m.aggregate_power_w(&site) - 1875.0).abs() < 1e-3);
     }
 
-    /// `:power (lambda () N)` produces a dynamic source that the
+    /// `:power-w (lambda () N)` produces a dynamic source that the
     /// scheduler-driven refresh path resolves on each pass. The
     /// fallback (0.0) is what aggregate_power_w sees before the
     /// first refresh; after one refresh it matches the lambda's
     /// return.
     #[test]
     fn meter_power_lambda_resolves_each_refresh() {
-        let (site, mut ctx) = run_with_ctx(r#"(%make-meter :id 8 :power (lambda () 1234.5))"#);
+        let (site, mut ctx) = run_with_ctx(r#"(%make-meter :id 8 :power-w (lambda () 1234.5))"#);
         let m = site.get(8).unwrap();
         // Pre-refresh: cached fallback.
         assert_eq!(m.aggregate_power_w(&site), 0.0);
@@ -1245,14 +1245,14 @@ mod tests {
         assert!((m.aggregate_power_w(&site) - 1234.5).abs() < 1e-3);
     }
 
-    /// `:power 'symbol` derefs the variable each refresh — mutating
+    /// `:power-w 'symbol` derefs the variable each refresh — mutating
     /// the bound value between refreshes is what scenarios use to
     /// drive consumer load curves declaratively.
     #[test]
     fn meter_power_symbol_derefs_each_refresh() {
         let (site, mut ctx) = run_with_ctx(
             r#"(setq consumer-power 1500.0)
-               (%make-meter :id 9 :power 'consumer-power)"#,
+               (%make-meter :id 9 :power-w 'consumer-power)"#,
         );
         let m = site.get(9).unwrap();
         m.refresh_inputs(&mut ctx);
@@ -1263,7 +1263,7 @@ mod tests {
         assert!((m.aggregate_power_w(&site) - 2750.0).abs() < 1e-3);
     }
 
-    /// `:reactive-power` / `:power-factor` / `:leading` validation:
+    /// `:reactive-power-var` / `:power-factor` / `:leading` validation:
     /// the two source kwargs are mutually exclusive, `:leading`
     /// requires `:power-factor`, and `:power-factor` must land in
     /// `(0.0, 1.0]` — 0 and > 1 are rejected, 1.0 is accepted and
@@ -1278,7 +1278,7 @@ mod tests {
         register(&mut ctx, router);
 
         let err = ctx
-            .eval_string("(%make-meter :id 1 :reactive-power 500.0 :power-factor 0.9)")
+            .eval_string("(%make-meter :id 1 :reactive-power-var 500.0 :power-factor 0.9)")
             .unwrap_err();
         assert!(format!("{err}").contains("mutually exclusive"), "{err}");
 
@@ -1298,13 +1298,13 @@ mod tests {
         assert!(format!("{err}").contains(":power-factor"), "{err}");
 
         // 1.0 is a valid (unity) power factor — Q collapses to 0.
-        ctx.eval_string("(%make-meter :id 5 :power 1000.0 :power-factor 1.0)")
+        ctx.eval_string("(%make-meter :id 5 :power-w 1000.0 :power-factor 1.0)")
             .expect("pf 1.0 is valid");
         let m = site.get(5).unwrap();
         assert!((m.aggregate_reactive_var(&site)).abs() < 1e-3);
     }
 
-    /// `:sunlight%` accepts a lambda the same way meter `:power`
+    /// `:sunlight%` accepts a lambda the same way meter `:power-w`
     /// does — the make-path detects the non-numeric value and wires
     /// it into the inverter's DynamicScalar. Refresh resolves it
     /// each tick; the resolved sunlight% is the floor for incoming
@@ -1314,8 +1314,8 @@ mod tests {
         let (site, mut ctx) = run_with_ctx(
             r#"(%make-solar-inverter :id 11
                                     :sunlight% (lambda () 25.0)
-                                    :rated-lower -8000.0
-                                    :rated-upper 0.0)"#,
+                                    :rated-lower-w -8000.0
+                                    :rated-upper-w 0.0)"#,
         );
         let inv = site.get(11).unwrap();
         // Refresh runs the lambda → sunlight_pct = 25 →
@@ -1339,7 +1339,7 @@ mod tests {
         );
     }
 
-    /// `:array-peak-w` sizes the DC array separately from `:rated-lower`'s
+    /// `:array-peak-w` sizes the DC array separately from `:rated-lower-w`'s
     /// AC clamp: a 15 kW array on a 10 kW inverter at 50% sun clamps
     /// production to 7.5 kW, not 5 kW. Omitting `:array-peak-w` leaves
     /// behavior identical to a matched array — the lambda test above
@@ -1349,7 +1349,7 @@ mod tests {
         let (site, mut ctx) = run_with_ctx(
             r#"(%make-solar-inverter :id 12
                                     :sunlight% 50.0
-                                    :rated-lower -10000.0
+                                    :rated-lower-w -10000.0
                                     :array-peak-w 15000.0)"#,
         );
         let inv = site.get(12).unwrap();
@@ -1379,12 +1379,14 @@ mod tests {
     fn array_peak_w_rejects_non_positive_values() {
         let (_s, mut ctx) = run_with_ctx("");
         let err = ctx
-            .eval_string("(%make-solar-inverter :id 30 :rated-lower -10000.0 :array-peak-w -5000)")
+            .eval_string(
+                "(%make-solar-inverter :id 30 :rated-lower-w -10000.0 :array-peak-w -5000)",
+            )
             .unwrap_err()
             .to_string();
         assert!(err.contains(":array-peak-w"), "{err}");
         let err = ctx
-            .eval_string("(%make-solar-inverter :id 31 :rated-lower -10000.0 :array-peak-w 0)")
+            .eval_string("(%make-solar-inverter :id 31 :rated-lower-w -10000.0 :array-peak-w 0)")
             .unwrap_err()
             .to_string();
         assert!(err.contains(":array-peak-w"), "{err}");
@@ -1397,8 +1399,8 @@ mod tests {
     /// historical `Manual` slot.
     #[test]
     fn omitting_sunlight_pct_follows_the_site_weather() {
-        let site = run(r#"(%make-solar-inverter :id 13 :rated-lower -10000.0)
-               (%make-solar-inverter :id 14 :rated-lower -10000.0 :sunlight% 40.0)"#);
+        let site = run(r#"(%make-solar-inverter :id 13 :rated-lower-w -10000.0)
+               (%make-solar-inverter :id 14 :rated-lower-w -10000.0 :sunlight% 40.0)"#);
         assert_eq!(
             site.get(13)
                 .unwrap()
@@ -1444,11 +1446,11 @@ mod tests {
     #[test]
     fn solar_weather_lag_and_jitter_validate_and_round_trip() {
         let site = run(r#"(%make-solar-inverter :id 15
-                                    :rated-lower -10000.0
+                                    :rated-lower-w -10000.0
                                     :weather-lag-s 90
                                     :weather-jitter-pct 5.0)
-               (%make-solar-inverter :id 16 :rated-lower -10000.0)
-               (%make-solar-inverter :id 17 :rated-lower -10000.0
+               (%make-solar-inverter :id 16 :rated-lower-w -10000.0)
+               (%make-solar-inverter :id 17 :rated-lower-w -10000.0
                                     :weather-lag-s 0)"#);
         let kw = |id: u64| {
             site.get(id)
@@ -1528,7 +1530,7 @@ mod tests {
     /// silently overwrite the user's intent.
     #[test]
     fn meter_set_power_collapses_to_constant() {
-        let (site, mut ctx) = run_with_ctx(r#"(%make-meter :id 10 :power (lambda () 1000.0))"#);
+        let (site, mut ctx) = run_with_ctx(r#"(%make-meter :id 10 :power-w (lambda () 1000.0))"#);
         let m = site.get(10).unwrap();
         m.refresh_inputs(&mut ctx);
         assert!((m.aggregate_power_w(&site) - 1000.0).abs() < 1e-3);
@@ -1645,7 +1647,7 @@ mod tests {
     /// dynamic :demand installs a source instead of a constant.
     #[test]
     fn make_steam_boiler_kwargs_and_marker_compat() {
-        let site = run(r#"(%make-steam-boiler :id 41 :rated-upper 100000.0
+        let site = run(r#"(%make-steam-boiler :id 41 :rated-upper-w 100000.0
                                   :target-bar 6.0 :demand 40.0
                                   :operational-mode 'control-only)"#);
         let b = site.get(41).unwrap();
@@ -1682,12 +1684,12 @@ mod tests {
                 .is_err(),
             "idle is paused or full"
         );
-        cfg.eval("(%make-ev-charger :id 11 :capacity 30000)")
+        cfg.eval("(%make-ev-charger :id 11 :capacity-wh 30000)")
             .expect("a retired pack kwarg is ignored, not a load failure");
         let charger = cfg.site().get(11).expect("the charger was still built");
         assert!(
             charger.ev_port().unwrap().ev_info().is_none(),
-            ":capacity buys no pack — the charger is empty"
+            ":capacity-wh buys no pack — the charger is empty"
         );
 
         // The car is runtime state: a charger takes no preset at
@@ -1782,5 +1784,55 @@ mod tests {
             .eval_string("(%make-meter :id 1 :interval-s -1.0)")
             .unwrap_err();
         assert!(err.to_string().contains(":interval-s"), "{err}");
+    }
+
+    #[test]
+    fn power_and_energy_keywords_carry_units() {
+        let site = run(
+            "(setq b (%make-battery :id 1 :capacity-wh 50000.0 :voltage-v 800.0
+                                    :rated-lower-w -5000.0 :rated-upper-w 5000.0))
+             (%make-battery-inverter :id 2 :ramp-rate-w-per-s 1000.0
+                                     :reactive-ramp-rate-var-per-s 500.0 :successors (list b))
+             (%make-meter :id 3 :power-w 1200.0 :reactive-power-var 300.0)
+             (%make-grid-connection-point :id 4 :rated-fuse-current-a 63)",
+        );
+        for id in [1, 2, 3, 4] {
+            let kw = site.get(id).unwrap().constructor_kwargs();
+            for (name, _) in &kw {
+                assert!(
+                    ![
+                        ":capacity",
+                        ":voltage",
+                        ":rated-lower",
+                        ":rated-upper",
+                        ":ramp-rate",
+                        ":reactive-ramp-rate",
+                        ":power",
+                        ":reactive-power",
+                        ":rated-fuse-current"
+                    ]
+                    .contains(name),
+                    "component {id} rendered old keyword {name}"
+                );
+            }
+        }
+        let b = site.get(1).unwrap().constructor_kwargs();
+        assert!(
+            b.contains(&(":capacity-wh", "50000.0".to_string())),
+            "{b:?}"
+        );
+    }
+
+    #[test]
+    fn old_power_keywords_build_the_same_battery() {
+        let old =
+            run("(%make-battery :id 1 :capacity 50000.0 :rated-lower -5000.0 :rated-upper 5000.0)");
+        let new = run(
+            "(%make-battery :id 1 :capacity-wh 50000.0 :rated-lower-w -5000.0 :rated-upper-w 5000.0)",
+        );
+        assert_eq!(
+            old.get(1).unwrap().constructor_kwargs(),
+            new.get(1).unwrap().constructor_kwargs()
+        );
     }
 }

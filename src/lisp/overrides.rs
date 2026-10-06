@@ -672,11 +672,11 @@ mod tests {
         )
         .unwrap();
         cfg.load_file(&path).unwrap();
-        cfg.eval_in_mg(20, "(%make-meter :id 100 :power 500.0)")
+        cfg.eval_in_mg(20, "(%make-meter :id 100 :power-w 500.0)")
             .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("(%make-meter :id 100"), "{text}");
-        assert!(text.contains(":power 500.0"), "{text}");
+        assert!(text.contains(":power-w 500.0"), "{text}");
         assert!(
             text.contains("Anything below is yours"),
             "script section preserved"
@@ -694,11 +694,11 @@ mod tests {
     fn defaults_edits_regenerate_enterprise_lisp() {
         let (cfg, dir) =
             config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))");
-        cfg.eval("(setq battery-defaults '(:capacity 1000.0))")
+        cfg.eval("(setq battery-defaults '(:capacity-wh 1000.0))")
             .unwrap();
         let text = std::fs::read_to_string(dir.join("enterprise.lisp")).unwrap();
         assert!(text.contains("battery-defaults"), "{text}");
-        assert!(text.contains(":capacity 1000.0"), "{text}");
+        assert!(text.contains(":capacity-wh 1000.0"), "{text}");
         cfg.eval("(set-enterprise-id 77)").unwrap();
         let text = std::fs::read_to_string(dir.join("enterprise.lisp")).unwrap();
         assert!(text.contains("(set-enterprise-id 77)"), "{text}");

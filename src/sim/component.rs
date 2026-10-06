@@ -322,7 +322,7 @@ pub enum KnobKind {
 /// must write both, or a scenario-era `clear_active_power_source` /
 /// `clear_reactive_power_source` (which also drops the construction
 /// kwarg — "clear means cleared") would permanently lose the
-/// `:power` / `:reactive-power` a component was originally built
+/// `:power-w` / `:reactive-power-var` a component was originally built
 /// with.
 pub enum KnobSnapshot {
     /// Solar inverter sunlight %: the source slot is never optional
@@ -341,7 +341,7 @@ pub enum KnobSnapshot {
     /// [`Self::Sunlight`], different knob.
     BoilerDemand(DynamicScalar),
     /// Meter active-power axis: the live override (`None` when the
-    /// meter was measuring its children) plus the `:power` kwarg it
+    /// meter was measuring its children) plus the `:power-w` kwarg it
     /// was constructed with, if any.
     MeterActive {
         source: Option<DynamicScalar>,
@@ -349,7 +349,7 @@ pub enum KnobSnapshot {
     },
     /// Meter reactive-power axis: the live override — `Var` or
     /// `PowerFactor`, or `None` when the meter was measuring — plus
-    /// the `:reactive-power` / `:power-factor` kwarg it was
+    /// the `:reactive-power-var` / `:power-factor` kwarg it was
     /// constructed with, if any.
     MeterReactive {
         source: Option<ReactiveSource>,
@@ -432,7 +432,7 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// scheduler holds the interpreter lock and calls this on every
     /// component, in registration order, *before* the tick pass.
     /// Components carrying a [`DynamicScalar`] (lambda- or symbol-
-    /// bound `:power`, `:sunlight%`, …) re-evaluate it here and
+    /// bound `:power-w`, `:sunlight%`, …) re-evaluate it here and
     /// stash the resolved scalar in an atomic that `tick` then reads.
     /// Default no-op.
     ///
@@ -526,7 +526,7 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// [`MeterDrive::clear_active_power_source`] /
     /// [`MeterDrive::clear_reactive_power_source`] — those are
     /// user-intent verbs that also drop the construction-time kwarg,
-    /// which would permanently erase a `:power` a scenario merely
+    /// which would permanently erase a `:power-w` a scenario merely
     /// overrode for its own duration.
     ///
     /// `snap`'s variant names the knob on its own — there is one per
@@ -573,7 +573,7 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     fn make_fn(&self) -> &'static str;
 
     /// Does this component carry an input value the generated block
-    /// cannot write down? Two shapes qualify: a `:power` /
+    /// cannot write down? Two shapes qualify: a `:power-w` /
     /// `:sunlight%` bound to a lambda or symbol, which only means
     /// something while the interpreter is running, and a value poked
     /// in at runtime over a component that was built without that

@@ -10,12 +10,12 @@ use common::TestServer;
 
 const INVERTER_AND_BATTERY: &str = r#"
 (setq b (%make-battery :id 100
-                       :capacity 100000.0
-                       :rated-lower -10000.0
-                       :rated-upper  10000.0))
+                       :capacity-wh 100000.0
+                       :rated-lower-w -10000.0
+                       :rated-upper-w  10000.0))
 (%make-battery-inverter :id 200
-                        :rated-lower -10000.0
-                        :rated-upper  10000.0
+                        :rated-lower-w -10000.0
+                        :rated-upper-w  10000.0
                         :successors (list b))
 "#;
 

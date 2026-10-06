@@ -24,7 +24,7 @@
 ;; -----------------------------------------------------------------------------
 
 (setq grid-defaults
-      '(:rated-fuse-current 100
+      '(:rated-fuse-current-a 100
         :stream-jitter-pct  1.0))
 
 (setq meter-defaults
@@ -38,7 +38,7 @@
 
 (setq battery-inverter-defaults
       '(:command-delay-s      1.5
-        :ramp-rate             5000.0
+        :ramp-rate-w-per-s 5000.0
         :stream-jitter-pct     8.0
         :reactive-pf-limit     0.0         ;; 0 = disabled
         :reactive-apparent-va 32000.0))    ;; kVA-circle envelope
@@ -48,19 +48,19 @@
 ;; plist would pin every solar inverter site-wide to a manual
 ;; constant and silently disable (make-weather).
 (setq solar-inverter-defaults
-      '(:ramp-rate          2000.0
+      '(:ramp-rate-w-per-s 2000.0
         :stream-jitter-pct  5.0))
 
 (setq ev-charger-defaults
       '(:command-delay-s     0.5
-        :ramp-rate           3000.0
+        :ramp-rate-w-per-s 3000.0
         :stream-jitter-pct   10.0))
 
 ;; Steam boiler: hybrid gas/electric — the electric side ramps and
 ;; delays like the EV charger.
 (setq steam-boiler-defaults
       '(:command-delay-s 0.5
-        :ramp-rate 50000.0
+        :ramp-rate-w-per-s 50000.0
         :stream-jitter-pct 10.0))
 
 ;; The marker categories (chp, wind turbine, power transformer,

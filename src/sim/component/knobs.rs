@@ -17,17 +17,17 @@ pub trait MeterDrive: Send + Sync {
     /// numeric argument.
     fn set_active_power_override(&self, p: f32);
 
-    /// Replace the meter's `:power` source with a Lisp expression
+    /// Replace the meter's `:power-w` source with a Lisp expression
     /// that the scheduler's `refresh_inputs` pass re-resolves each
     /// tick. Used by `(set-meter-power id (lambda () …))` and by
-    /// the UI when a user types a Lisp form into the `:power` input.
+    /// the UI when a user types a Lisp form into the `:power-w` input.
     fn set_active_power_source(&self, scalar: DynamicScalar);
 
     /// Drop the meter's active-power override, returning it to
     /// measuring its children's aggregate — the way back from
     /// [`Self::set_active_power_override`] /
     /// [`Self::set_active_power_source`]. Also drops the
-    /// construction-time `:power` kwarg for this axis so a
+    /// construction-time `:power-w` kwarg for this axis so a
     /// save/reload agrees with the measuring live state instead of
     /// resurrecting the cleared override.
     fn clear_active_power_source(&self);
@@ -54,14 +54,14 @@ pub trait MeterDrive: Send + Sync {
     /// `Var` / `PowerFactor` is set — returning it to summing its
     /// children's Q. The Q twin of
     /// [`Self::clear_active_power_source`]: it drops the
-    /// construction-time `:reactive-power` / `:power-factor` kwarg
+    /// construction-time `:reactive-power-var` / `:power-factor` kwarg
     /// for this axis too.
     fn clear_reactive_power_source(&self);
 
     /// The meter's active-power source knob, as configured — a live
     /// value plus, for a dynamic (lambda / symbol) source, the
     /// printed Lisp expression driving it (`None` for a plain
-    /// constant). This is the `:power` input side, not the Q
+    /// constant). This is the `:power-w` input side, not the Q
     /// envelope. `None` while the meter is measuring its children.
     fn meter_power_reading(&self) -> Option<ScalarReading>;
 

@@ -19,13 +19,13 @@ const TINY_TOPOLOGY: &str = r#"
                                :successors
                                (list (%make-battery-inverter
                                       :id 4
-                                      :rated-lower -5000.0
-                                      :rated-upper  5000.0
+                                      :rated-lower-w -5000.0
+                                      :rated-upper-w  5000.0
                                       :successors
                                       (list (%make-battery
                                              :id 3
-                                             :rated-lower -5000.0
-                                             :rated-upper  5000.0)))))))
+                                             :rated-lower-w -5000.0
+                                             :rated-upper-w  5000.0)))))))
 ))
 "#;
 

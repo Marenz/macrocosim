@@ -286,8 +286,8 @@ impl SimulatedComponent for EvCharger {
     fn constructor_kwargs(&self) -> Vec<(&'static str, String)> {
         let lf = crate::lisp::lisp_float32;
         let mut kw = vec![
-            (":rated-lower", lf(self.cfg.rated_lower_w)),
-            (":rated-upper", lf(self.cfg.rated_upper_w)),
+            (":rated-lower-w", lf(self.cfg.rated_lower_w)),
+            (":rated-upper-w", lf(self.cfg.rated_upper_w)),
             (
                 ":command-delay-s",
                 crate::lisp::lisp_float(self.cfg.command_delay.as_secs_f64()),
@@ -300,7 +300,7 @@ impl SimulatedComponent for EvCharger {
             kw.push((":idle", format!("'{}", self.cfg.idle)));
         }
         if self.cfg.ramp_rate_w_per_s.is_finite() {
-            kw.push((":ramp-rate", lf(self.cfg.ramp_rate_w_per_s)));
+            kw.push((":ramp-rate-w-per-s", lf(self.cfg.ramp_rate_w_per_s)));
         }
         kw.extend(crate::sim::inverter::device_delay_kw(self.cfg.device_delay));
         if self.interval != Duration::from_millis(1000) {
@@ -641,10 +641,10 @@ mod tests {
                 .join(" ")
         };
         let d = kw(EvChargerConfig::default());
-        assert!(d.contains(":rated-upper 22000"), "{d}");
+        assert!(d.contains(":rated-upper-w 22000"), "{d}");
         assert!(!d.contains(":phases"), "default phases omitted: {d}");
         assert!(!d.contains(":idle"), "default idle omitted: {d}");
-        assert!(!d.contains(":capacity"), "the pack is gone: {d}");
+        assert!(!d.contains(":capacity-wh"), "the pack is gone: {d}");
         let s = kw(EvChargerConfig {
             phases: 1,
             idle: EvIdle::Full,

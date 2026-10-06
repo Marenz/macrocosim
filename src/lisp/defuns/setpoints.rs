@@ -194,8 +194,8 @@ mod tests {
     #[test]
     fn set_active_power_applies_setpoint_and_arms_timeout() {
         let (cfg, _dir) = config_with(
-            "(setq b1 (%make-battery :id 1 :rated-lower -5000.0 :rated-upper 5000.0))
-             (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
+            "(setq b1 (%make-battery :id 1 :rated-lower-w -5000.0 :rated-upper-w 5000.0))
+             (%make-battery-inverter :id 2 :rated-lower-w -5000.0 :rated-upper-w 5000.0
                                        :successors (list b1))",
         );
         let site = cfg.site();
@@ -227,8 +227,8 @@ mod tests {
         let (cfg, _dir) = config_with(
             // Inverter rated ±5 kW, but its battery only ±1 kW -> the
             // combined envelope is ±1 kW.
-            "(setq b1 (%make-battery :id 1 :rated-lower -1000.0 :rated-upper 1000.0))
-             (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
+            "(setq b1 (%make-battery :id 1 :rated-lower-w -1000.0 :rated-upper-w 1000.0))
+             (%make-battery-inverter :id 2 :rated-lower-w -5000.0 :rated-upper-w 5000.0
                                        :successors (list b1))",
         );
         // +3 kW is inside the inverter's own ±5 kW but outside the
@@ -254,8 +254,8 @@ mod tests {
     fn set_active_power_clamp_arg_clamps_into_envelope() {
         let (cfg, _dir) = config_with(
             // Inverter ±5 kW, battery ±1 kW -> combined envelope ±1 kW.
-            "(setq b1 (%make-battery :id 1 :rated-lower -1000.0 :rated-upper 1000.0))
-             (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
+            "(setq b1 (%make-battery :id 1 :rated-lower-w -1000.0 :rated-upper-w 1000.0))
+             (%make-battery-inverter :id 2 :rated-lower-w -5000.0 :rated-upper-w 5000.0
                                        :successors (list b1))",
         );
         // Without clamp, +3 kW is rejected.
@@ -295,12 +295,12 @@ mod tests {
     /// limit (the inherited default would pin Q to 0 at idle) has a
     /// ±5 kVAr reactive band at idle. Used by the reactive tests below.
     const REACTIVE_SITE: &str =
-        "(setq b1 (%make-battery :id 1 :rated-lower -5000.0 :rated-upper 5000.0))
-         (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
+        "(setq b1 (%make-battery :id 1 :rated-lower-w -5000.0 :rated-upper-w 5000.0))
+         (%make-battery-inverter :id 2 :rated-lower-w -5000.0 :rated-upper-w 5000.0
                                    :reactive-pf-limit 0
                                    :reactive-apparent-va 5000.0
                                    :reactive-command-delay-s 0
-                                   :reactive-ramp-rate 1e9
+                                   :reactive-ramp-rate-var-per-s 1e9
                                    :successors (list b1))";
 
     /// set-reactive-power applies a setpoint and arms the *reactive*
@@ -471,15 +471,15 @@ mod tests {
             // inverter carries a 1 kVA cap -> ±1 kVAr, so the
             // combined Q envelope is ±1 kVAr.
             "(setq pv (%make-solar-inverter :id 3 :sunlight% 0
-                                            :rated-lower -1000.0 :rated-upper 0.0
+                                            :rated-lower-w -1000.0 :rated-upper-w 0.0
                                             :reactive-pf-limit 0
                                             :reactive-apparent-va 1000.0))
-             (setq bat (%make-battery :id 4 :rated-lower -5000.0 :rated-upper 5000.0))
-             (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
+             (setq bat (%make-battery :id 4 :rated-lower-w -5000.0 :rated-upper-w 5000.0))
+             (%make-battery-inverter :id 2 :rated-lower-w -5000.0 :rated-upper-w 5000.0
                                        :reactive-pf-limit 0
                                        :reactive-apparent-va 5000.0
                                        :reactive-command-delay-s 0
-                                       :reactive-ramp-rate 1e9
+                                       :reactive-ramp-rate-var-per-s 1e9
                                        :successors (list pv bat))",
         );
         let site = cfg.site();
@@ -599,8 +599,8 @@ mod tests {
     }
 
     const BATTERY_AND_INVERTER: &str =
-        "(setq b1 (%make-battery :id 1 :rated-lower -5000.0 :rated-upper 5000.0))
-         (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
+        "(setq b1 (%make-battery :id 1 :rated-lower-w -5000.0 :rated-upper-w 5000.0))
+         (%make-battery-inverter :id 2 :rated-lower-w -5000.0 :rated-upper-w 5000.0
                                    :successors (list b1))";
 
     #[test]
