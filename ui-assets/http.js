@@ -13,3 +13,11 @@ export async function errorText(res) {
   }
   return text.trim() || `HTTP ${res.status}`;
 }
+
+// The JSON body of a GET of `path`; a failed response throws its
+// message.
+export async function getJson(path) {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(await errorText(res));
+  return res.json();
+}

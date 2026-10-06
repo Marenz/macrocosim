@@ -4,7 +4,7 @@
 
 import { escapeHtml, mutate, notify, selectMicrogrid } from "./app.js";
 import { refreshPaletteLock } from "./editor.js";
-import { errorText } from "./http.js";
+import { errorText, getJson } from "./http.js";
 import {
   publishMgFlags,
   readSelectedMg,
@@ -222,10 +222,8 @@ export const microgridsPanel = (() => {
     const list = document.getElementById("load-script-list");
     const crumb = document.getElementById("load-script-breadcrumb");
 
-    async function fetchListing(dir) {
-      const res = await fetch(`/api/scripts?dir=${encodeURIComponent(dir)}`);
-      if (!res.ok) throw new Error(await errorText(res));
-      return await res.json();
+    function fetchListing(dir) {
+      return getJson(`/api/scripts?dir=${encodeURIComponent(dir)}`);
     }
 
     function renderListing(data) {
@@ -954,11 +952,6 @@ export const scenariosPanel = (() => {
     updateActiveChip();
   }
 
-  const getJson = async (path) => {
-    const r = await fetch(path);
-    if (!r.ok) throw new Error(await errorText(r));
-    return r.json();
-  };
   // Journal readout of microgrid `mg`; null when `mg` is null.
   const getMgJson = async (mg, suffix) => {
     if (mg == null) return null;

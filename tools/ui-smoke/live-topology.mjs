@@ -713,10 +713,7 @@ await page.evaluate(async () => { const { topology } = await import("/assets/top
 // no power through it has no power factor to show. Command it (the
 // setpoint expires on its own, so re-runs start from the same
 // state) and wait for the ramp to reach the live overlay.
-const setpointOk = await page.evaluate(async () => {
-  const r = await fetch("/api/mg/2200/eval", { method: "POST", body: "(set-active-power 1001 -8000 60000)" });
-  return r.ok;
-});
+const setpointOk = (await evalMg("(set-active-power 1001 -8000 60000)")).ok;
 check("e2e: hover setup — inverter setpoint accepted", setpointOk === true, String(setpointOk));
 await waitFor(async () => {
   const e = await page.evaluate(async () => {
@@ -1407,16 +1404,11 @@ await page.evaluate(async () => {
 // that meter — same (connect parent child) shape as berlin-demo.lisp.
 const BOILER_ID = 9901;
 const BOILER_METER_ID = 9902;
-const boilerSetupOk = await page.evaluate(
-  async ({ meterId, boilerId }) => {
-    const r = await fetch("/api/mg/2200/eval", {
-      method: "POST",
-      body: `(make-meter :id ${meterId}) (make-steam-boiler :id ${boilerId} :demand 100.0) (connect 2 ${meterId}) (connect ${meterId} ${boilerId})`,
-    });
-    return r.ok;
-  },
-  { meterId: BOILER_METER_ID, boilerId: BOILER_ID },
-);
+const boilerSetupOk = (
+  await evalMg(
+    `(make-meter :id ${BOILER_METER_ID}) (make-steam-boiler :id ${BOILER_ID} :demand 100.0) (connect 2 ${BOILER_METER_ID}) (connect ${BOILER_METER_ID} ${BOILER_ID})`,
+  )
+).ok;
 check("e2e: boiler fixture created behind its own meter", boilerSetupOk === true, String(boilerSetupOk));
 await waitFor(async () => (await getModels()).some((m) => m.id === BOILER_ID), 15000);
 
@@ -1471,10 +1463,7 @@ check(
 // Allotment flow: demand was set at construction, BEFORE this
 // setpoint — with demand 0 the dynamic band is [0, 0] and nothing
 // flows no matter what set-active-power asks for.
-const boilerPowerOk = await page.evaluate(async (id) => {
-  const r = await fetch("/api/mg/2200/eval", { method: "POST", body: `(set-active-power ${id} 50000.0)` });
-  return r.ok;
-}, BOILER_ID);
+const boilerPowerOk = (await evalMg(`(set-active-power ${BOILER_ID} 50000.0)`)).ok;
 check("e2e: the boiler's active-power setpoint is accepted", boilerPowerOk === true, String(boilerPowerOk));
 const boilerDrawing = await waitFor(async () => {
   const e = await page.evaluate(async (id) => {
@@ -1493,10 +1482,7 @@ check(
 // electricity, so consumption decays back toward zero. Decay back to
 // the target takes ~14 min at this demand — far outside the smoke's
 // timescale, so "declined" is stable for this assertion.
-const boilerPressureOk = await page.evaluate(async (id) => {
-  const r = await fetch("/api/mg/2200/eval", { method: "POST", body: `(set-boiler-pressure ${id} 9.5)` });
-  return r.ok;
-}, BOILER_ID);
+const boilerPressureOk = (await evalMg(`(set-boiler-pressure ${BOILER_ID} 9.5)`)).ok;
 check("e2e: the pressure poke is accepted", boilerPressureOk === true, String(boilerPressureOk));
 const boilerDeclined = await waitFor(async () => {
   const e = await page.evaluate(async (id) => {
@@ -1940,19 +1926,23 @@ await page.keyboard.press("Escape");
 await page.keyboard.press("1");
 await page.click(DEMO_CARD).catch(() => {});
 
+// The scenario both Scenarios-panel blocks below run: pv-dropout only
+// retunes PV 200's sunlight, a knob the scenario hands back when it
+// stops.
+const SMOKE_SCENARIO = "pv-dropout";
+// A waitForResponse predicate for a `method` request to `path`.
+const pathIs = (path, method = "GET") => (r) => new URL(r.url()).pathname === path && r.request().method() === method;
+
 // ── e2e: the Scenarios panel with no microgrid selected ──────────
 // A fresh #scenarios has no selection; the panel reads the lowest
 // registered microgrid's journal, and leaves the selection and the
 // route alone.
 {
-  const SCENARIO = "pv-dropout";
   const lowestMg = await page.evaluate(async () =>
     Math.min(...(await (await fetch("/api/microgrids")).json()).map((m) => m.id)),
   );
   await page.goto(`${BASE}/#scenarios`, { waitUntil: "networkidle" });
-  const read = page
-    .waitForResponse((r) => new URL(r.url()).pathname === `/api/mg/${lowestMg}/scenario`, { timeout: 10000 })
-    .catch(() => null);
+  const read = page.waitForResponse(pathIs(`/api/mg/${lowestMg}/scenario`), { timeout: 10000 }).catch(() => null);
   await page.reload({ waitUntil: "networkidle" });
   const readRes = await read;
   check(
@@ -1960,7 +1950,7 @@ await page.click(DEMO_CARD).catch(() => {});
     readRes?.status() === 200,
     JSON.stringify({ lowestMg, status: readRes?.status() }),
   );
-  await page.click(`.sc-row:has(.sc-row-name:text-is("${SCENARIO}")) .sc-row-actions button`);
+  await page.click(`.sc-row:has(.sc-row-name:text-is("${SMOKE_SCENARIO}")) .sc-row-actions button`);
   const state = () =>
     page.evaluate((n) => {
       const rows = [...document.querySelectorAll(".sc-row")];
@@ -1974,7 +1964,7 @@ await page.click(DEMO_CARD).catch(() => {});
         selected: localStorage.getItem("macrocosim-selected-mg"),
         hash: location.hash,
       };
-    }, SCENARIO);
+    }, SMOKE_SCENARIO);
   const running = await waitFor(async () => {
     const s = await state();
     return s.status === "running" && s.badge && s.othersDisabled && s.chip ? s : null;
@@ -1990,9 +1980,7 @@ await page.click(DEMO_CARD).catch(() => {});
     after.selected === null && after.hash === "#scenarios",
     JSON.stringify(after),
   );
-  const stopped = page
-    .waitForResponse((r) => new URL(r.url()).pathname === "/api/scenarios/stop", { timeout: 10000 })
-    .catch(() => null);
+  const stopped = page.waitForResponse(pathIs("/api/scenarios/stop", "POST"), { timeout: 10000 }).catch(() => null);
   await page.click("#sc-run-stop");
   const stoppedRes = await stopped;
   const stoppedView = await waitFor(async () => {
@@ -2009,10 +1997,7 @@ await page.click(DEMO_CARD).catch(() => {});
 // ── e2e: the Scenarios panel, the Report panel and error display ──
 // The scenario readouts and the report are the selected microgrid's
 // (/api/mg/{mg}/scenario…); start and stop are site-wide, and stop
-// answers 204. pv-dropout only retunes PV 200's sunlight, a knob the
-// scenario hands back when it stops.
-const SMOKE_SCENARIO = "pv-dropout";
-const pathIs = (path, method = "GET") => (r) => new URL(r.url()).pathname === path && r.request().method() === method;
+// answers 204.
 await page.click('.mode-btn[data-mode="microgrids"]');
 await page.click(DEMO_CARD);
 const scenarioRead = page.waitForResponse(pathIs("/api/mg/2200/scenario"), { timeout: 10000 }).catch(() => null);

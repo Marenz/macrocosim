@@ -8,11 +8,10 @@
 import { escapeHtml, inspectEl } from "./app.js";
 import { requireUplot } from "./chart-lib.js";
 import { evalQuoted, jsToLispString } from "./eval.js";
-import { errorText } from "./http.js";
 import { deadBandW, formatScaled } from "./live.js";
 import { metricsStore } from "./metrics-store.js";
 import { powerColor, reactiveColor } from "./pill.js";
-import { mgFetch, READ_ONLY_TITLE, structureEditable } from "./routing.js";
+import { mgJson, READ_ONLY_TITLE, structureEditable } from "./routing.js";
 import { openPanel } from "./side-panel.js";
 import { topology } from "./topology.js";
 
@@ -438,10 +437,7 @@ async function refreshEvCard(id) {
   const token = beginEvFetch();
   let info;
   try {
-    const res = await mgFetch(`component/${id}/ev`);
-    if (res == null) throw new Error("no microgrid selected");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    info = await res.json();
+    info = await mgJson(`component/${id}/ev`);
   } catch (err) {
     if (evFetchStale(token)) return;
     const body = document.getElementById("ev-body");
@@ -1109,11 +1105,7 @@ function applySnapshot(id, snap) {
 // twice would double the GETs every time a boiler is selected with
 // the Charts card pinned open.
 function fetchComponentSnapshot(id) {
-  return mgFetch(`component/${id}`).then(async (res) => {
-    if (res == null) throw new Error("no microgrid selected");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
-  });
+  return mgJson(`component/${id}`);
 }
 
 async function fetchSnapshot(id, gen, snapshotJsonP) {
@@ -1496,16 +1488,10 @@ async function buildCharts(d, container, snapshotJsonP) {
   });
   const results = await Promise.all(
     slots.map(({ metric }) =>
-      mgFetch(`component/${d.id}/history?metric=${metric}&window_s=300`)
-        .then(async (res) => {
-          if (res == null) throw new Error("no microgrid selected");
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return res.json();
-        })
-        .then(
-          (resp) => ({ resp }),
-          (err) => ({ err }),
-        ),
+      mgJson(`component/${d.id}/history?metric=${metric}&window_s=300`).then(
+        (resp) => ({ resp }),
+        (err) => ({ err }),
+      ),
     ),
   );
   const target = await targetP;
@@ -1563,10 +1549,7 @@ async function renderSetpoints(id, container) {
   wrap.innerHTML = "<h3>Recent setpoints</h3>";
   container.appendChild(wrap);
   try {
-    const res = await mgFetch(`component/${id}/setpoints?window_s=600`);
-    if (res == null) throw new Error("no microgrid selected");
-    if (!res.ok) throw new Error(await errorText(res));
-    const data = await res.json();
+    const data = await mgJson(`component/${id}/setpoints?window_s=600`);
     // Always create the list element, even when empty —
     // appendSetpointEvent appends to it on incoming WS events. A
     // no-events placeholder

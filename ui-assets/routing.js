@@ -7,7 +7,7 @@
 
 import { dispatchesPanel, notify, setStatus } from "./app.js";
 import { pulseBar } from "./chrome.js";
-import { errorText } from "./http.js";
+import { errorText, getJson } from "./http.js";
 import { refitCharts, showComponent } from "./inspect.js";
 import { microgridsPanel, scenariosPanel } from "./panels.js";
 import { closeAllPanels } from "./side-panel.js";
@@ -31,7 +31,7 @@ export async function mgFetch(suffix, opts) {
   const path = mgPath(suffix);
   if (path == null) return null;
   const res = await fetch(path, opts);
-  if (res.status === 404 && readSelectedMg() === id) {
+  if (res.status === 404) {
     const text = await errorText(res.clone());
     if (text === `microgrid ${id} not registered` && readSelectedMg() === id) {
       dropSelection(id);
@@ -41,15 +41,25 @@ export async function mgFetch(suffix, opts) {
   return res;
 }
 
+// The JSON body of `mgFetch(suffix, opts)`; throws with no
+// microgrid selected, and with the message of a failed response.
+export async function mgJson(suffix, opts) {
+  const res = await mgFetch(suffix, opts);
+  if (res == null) throw new Error("no microgrid selected");
+  if (!res.ok) throw new Error(await errorText(res));
+  return res.json();
+}
+
 // The microgrid the scenario readouts show: the selected one, else
-// the lowest id `/api/microgrids` lists, else null. Display only:
-// the selection and the route stay as they are.
+// the lowest id of the last microgrid listing (`/api/microgrids`
+// fetched while none has landed), else null. Display only: the
+// selection and the route stay as they are.
 export async function scenarioMgId() {
   const id = readSelectedMg();
   if (id != null) return id;
-  const res = await fetch("/api/microgrids");
-  if (!res.ok) throw new Error(await errorText(res));
-  const ids = (await res.json()).map((m) => m.id);
+  const ids = mgFlags.size
+    ? [...mgFlags.keys()]
+    : (await getJson("/api/microgrids")).map((m) => m.id);
   return ids.length ? Math.min(...ids) : null;
 }
 

@@ -4,8 +4,8 @@
 
 import { escapeHtml, mutate, notify } from "./app.js";
 import { evalQuoted } from "./eval.js";
-import { errorText } from "./http.js";
-import { currentMgEntry, mgFetch, readSelectedMg, scenarioMgId } from "./routing.js";
+import { getJson } from "./http.js";
+import { currentMgEntry, mgJson, readSelectedMg, scenarioMgId } from "./routing.js";
 import { makeSidePanelToggle } from "./side-panel.js";
 
 export function setupHelpButton() {
@@ -56,10 +56,7 @@ export function setupSnapshotsDialog() {
     if (blocked) return;
     const id = readSelectedMg();
     try {
-      const res = await mgFetch("snapshots");
-      if (res == null) throw new Error("no microgrid selected");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const names = (await res.json()).snapshots || [];
+      const names = (await mgJson("snapshots")).snapshots || [];
       if (names.length === 0) {
         list.innerHTML = '<li class="hint">No snapshots yet.</li>';
         return;
@@ -232,9 +229,7 @@ function renderScenarioEvents(events) {
 async function renderDefaults(contentEl) {
   let data;
   try {
-    const res = await fetch("/api/defaults");
-    if (!res.ok) throw new Error(await errorText(res));
-    data = await res.json();
+    data = await getJson("/api/defaults");
   } catch (err) {
     notify(`Defaults unavailable: ${err.message}`);
     return;

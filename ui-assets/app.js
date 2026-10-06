@@ -35,7 +35,7 @@ import { microgridsPanel, scenariosPanel } from "./panels.js";
 import { backfillLogs, openWebSocket, setupLogsPanel, setupRepl } from "./repl.js";
 import {
   jumpToTopology,
-  mgFetch,
+  mgJson,
   navigateTo,
   readSelectedMg,
   refreshTopology,
@@ -325,10 +325,7 @@ export const dispatchesPanel = (() => {
     if (!el) return;
     let list;
     try {
-      const res = await mgFetch("dispatches");
-      if (res == null) throw new Error("no microgrid selected");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      list = await res.json();
+      list = await mgJson("dispatches");
     } catch (err) {
       if (gen !== renderGen) return;
       el.innerHTML = `<p class="hint">dispatches unavailable: ${escapeHtml(

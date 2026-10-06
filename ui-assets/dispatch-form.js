@@ -13,7 +13,7 @@
 
 import { escapeHtml, mutate, notify } from "./app.js";
 import { ACCEPTS_SETPOINTS } from "./inspect.js";
-import { mgFetch, readSelectedMg } from "./routing.js";
+import { mgJson, readSelectedMg } from "./routing.js";
 
 // The server's duration_s / recurrence interval are u32 — validate
 // here so the user gets a readable message instead of the server's
@@ -340,10 +340,7 @@ export const dispatchForm = (() => {
     currentMg = mgId;
     resetForm();
     try {
-      const res = await mgFetch("topology");
-      if (res == null) throw new Error("no microgrid selected");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const topo = await res.json();
+      const topo = await mgJson("topology");
       populateTargets(topo.components || []);
     } catch (err) {
       notify(`couldn't load topology: ${err.message}`);
