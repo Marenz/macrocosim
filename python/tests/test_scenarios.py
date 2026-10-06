@@ -146,6 +146,17 @@ def test_run_wait_without_length_raises_before_starting() -> None:
     assert site._http.posts == []  # never started → nothing to orphan
 
 
+def test_run_wait_without_microgrids_raises_before_starting() -> None:
+    import macrocosim as mc
+
+    site = mc.connect(ui="127.0.0.1:9")
+    http = FakeHttp({})
+    site._http = http  # type: ignore[assignment]
+    with pytest.raises(RuntimeError, match="no microgrid endpoints"):
+        ScenarioRun(site, "s").run(wait=True)
+    assert http.posts == []  # never started → nothing to orphan
+
+
 def test_assert_passed_returns_report_when_clean() -> None:
     site = FakeSite({"checks_passed": 2, "checks_failed": 0, "checks": []})
     report = ScenarioRun(site, "s").assert_passed()

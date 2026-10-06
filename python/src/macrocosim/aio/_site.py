@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from frequenz.quantities import Energy, Percentage, Power, Quantity, ReactivePower
 
 from .. import metrics as _M
-from .._http import EvalResult, control_path, journal_path
+from .._http import EvalResult, control_path, scenario_path
 from .._process import spawn_macrocosim, terminate
 from ..build import RawLisp, plug_ev_form, to_lisp_atom
 from ..enums import EvPreset
@@ -599,16 +599,19 @@ class ScenarioRun:
     ) -> ScenarioRun:
         """Start the scenario; with ``wait`` block until it finishes, stop it."""
         length = until.total_seconds() if until is not None else await self._length_s()
-        # Resolve the wait length BEFORE starting, so an unwaitable scenario
-        # fails fast instead of being left running with nothing to stop it.
-        if wait and length is None:
+        # Resolve the wait length and the microgrid BEFORE starting, so
+        # an unwaitable scenario fails fast instead of being left
+        # running with nothing to stop it.
+        if not wait:
+            await self._site._http.post(f"/api/scenarios/{self._name}/start")
+            return self
+        if length is None:
             raise ValueError(
                 f"scenario {self._name!r} has no :length; pass until= to bound the wait"
             )
+        mg = self._site._resolve_mg(None)
         await self._site._http.post(f"/api/scenarios/{self._name}/start")
-        if not wait or length is None:
-            return self
-        return await self._wait_for(length, poll)
+        return await self._wait_for(length, poll, mg)
 
     async def wait(
         self,
@@ -626,7 +629,7 @@ class ScenarioRun:
             raise ValueError(
                 f"scenario {self._name!r} has no :length; pass until= to bound the wait"
             )
-        return await self._wait_for(length, poll)
+        return await self._wait_for(length, poll, self._site._resolve_mg(None))
 
     def _assert_active(self, state: ScenarioReport) -> None:
         # The server tracks one scenario; a mismatched (or absent) name
@@ -639,13 +642,11 @@ class ScenarioRun:
                 f"(server reports {state.get('name')!r}); was run() called?"
             )
 
-    async def _wait_for(self, length: float, poll: timedelta) -> ScenarioRun:
+    async def _wait_for(self, length: float, poll: timedelta, mg: int) -> ScenarioRun:
         deadline = time.monotonic() + length + 5.0
         interval = poll.total_seconds()
         while time.monotonic() < deadline:
-            state = await self._site._http.get_json(
-                journal_path(self._site._resolve_mg(None))
-            )
+            state = await self._site._http.get_json(scenario_path(mg))
             self._assert_active(state)
             if state.get("ended_at") is not None:
                 break
@@ -660,7 +661,7 @@ class ScenarioRun:
         # The report carries the scenario name it belongs to; checking
         # it in the same response avoids a two-request race.
         report = await self._site._http.get_json(
-            journal_path(self._site._resolve_mg(None), "/report")
+            scenario_path(self._site._resolve_mg(None), "/report")
         )
         self._assert_active(report)
         return report
@@ -675,7 +676,7 @@ class ScenarioRun:
     async def events(self, *, since: int = 0) -> list[JournalEvent]:
         """The scenario's journal events (list of ``{kind, payload, …}``)."""
         body = await self._site._http.get_json(
-            journal_path(self._site._resolve_mg(None), f"/events?since={since}")
+            scenario_path(self._site._resolve_mg(None), f"/events?since={since}")
         )
         return body.get("events", [])
 

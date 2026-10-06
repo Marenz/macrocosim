@@ -23,7 +23,7 @@ class EvalResult(TypedDict, total=False):
     error: str
 
 
-def _error_text(resp: httpx.Response) -> str:
+def error_text(resp: httpx.Response) -> str:
     """The ``error`` field of a failed response, or its text."""
     try:
         return str(resp.json().get("error", resp.text))
@@ -31,16 +31,16 @@ def _error_text(resp: httpx.Response) -> str:
         return resp.text
 
 
-def _eval_result(resp: httpx.Response) -> EvalResult:
+def eval_result(resp: httpx.Response) -> EvalResult:
     """The outcome of an eval response: a 400 is the interpreter's
     rejection; any other failure raises."""
     if resp.status_code == 400:
-        return {"ok": False, "error": _error_text(resp)}
+        return {"ok": False, "error": error_text(resp)}
     resp.raise_for_status()
     return {"ok": True, "value": resp.json()["value"]}
 
 
-def journal_path(mg_id: int, suffix: str = "") -> str:
+def scenario_path(mg_id: int, suffix: str = "") -> str:
     """Route of microgrid ``mg_id``'s scenario journal readout, with
     ``suffix`` (``/report``, ``/events?...``) appended."""
     return f"/api/mg/{mg_id}/scenario{suffix}"
@@ -81,7 +81,7 @@ class HttpClient:
         """
         resp = self._client.post(path, json=payload)
         if 400 <= resp.status_code < 500:
-            raise ControlRejected(_error_text(resp))
+            raise ControlRejected(error_text(resp))
         resp.raise_for_status()
         return resp.json() if resp.content else {}
 
@@ -89,7 +89,7 @@ class HttpClient:
         """POST a Lisp form: the whole-site ``/api/eval`` without an
         ``mg_id``, the microgrid's eval with one."""
         path = "/api/eval" if mg_id is None else f"/api/mg/{mg_id}/eval"
-        return _eval_result(self._client.post(path, content=expr))
+        return eval_result(self._client.post(path, content=expr))
 
     def close(self) -> None:
         self._client.close()

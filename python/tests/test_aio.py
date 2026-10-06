@@ -248,6 +248,25 @@ async def test_scenario_run_fails_fast_without_a_length() -> None:
         await site.scenario("soak").run(wait=True)
 
 
+async def test_scenario_run_fails_fast_without_microgrids() -> None:
+    site = mc.aio.connect(ui="127.0.0.1:9")
+    posts: list[str] = []
+
+    async def fake_get_json(path: str) -> Any:
+        assert path == "/api/scenarios"
+        return [{"name": "soak", "length_s": 1.0}]
+
+    async def fake_post(path: str, content: str = "") -> Any:
+        posts.append(path)
+        return {}
+
+    site._http.get_json = fake_get_json  # type: ignore[method-assign]
+    site._http.post = fake_post  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="no microgrid endpoints"):
+        await site.scenario("soak").run(wait=True)
+    assert posts == []  # never started → nothing to orphan
+
+
 async def test_scenario_wait_requires_a_length() -> None:
     site = _site()
 
