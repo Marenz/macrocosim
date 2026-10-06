@@ -84,7 +84,7 @@
 ;; few hundred mV either side of nominal. Applies to the active
 ;; microgrid; the scenarios per-microgrid replay fans it out.
 (every
- :milliseconds 200
+ :interval-s 0.2
  :call (lambda ()
          (set-voltage-per-phase
           (+ 229.0 (/ (random 200) 100.0))

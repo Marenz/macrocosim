@@ -89,6 +89,7 @@ export const COMPLETIONS = [
   "scenario-event",
   "scenario-elapsed",
   "scenario-end-after",
+  "scenario-end-after-s",
   "scenario-record-csv",
   "scenario-stop-csv",
   "drive-boiler",

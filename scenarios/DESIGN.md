@@ -87,7 +87,7 @@ This single model subsumes both of today's systems: day-stages are sugar over
 
   :drive (list
     (drive-solar '(200 . 214)
-      (timeline (hold 66.6667 :for 120) (ramp :to 13.3333 :over 27)))
+      (timeline (hold 66.6667 :for-s 120) (ramp :to 13.3333 :over-s 27)))
     (drive-meter 100 2000000.0))
 
   :agents (list

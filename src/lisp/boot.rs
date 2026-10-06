@@ -1789,8 +1789,8 @@ mod tests {
       :successors (list (%make-meter :id 2 :power 0.0)))))
 (define-scenario :name \"ramp\"
   :schedule 'relative :clock 'stepped :length \"60s\" :seed 7
-  :drive (list (drive-meter 2 (timeline (hold 1000.0 :for 30)
-                                        (ramp :to 5000.0 :over 30))))
+  :drive (list (drive-meter 2 (timeline (hold 1000.0 :for-s 30)
+                                        (ramp :to 5000.0 :over-s 30))))
   :expect (list (check \"10s\" :component 2 :metric 'active-power
                        :approx 1000.0 :tol 200.0)
                 (check \"59s\" :component 2 :metric 'active-power
@@ -1861,8 +1861,8 @@ mod tests {
                         (%make-meter :id 3 :power 8000.0)))))
 (define-scenario :name \"q-ramp\"
   :schedule 'relative :clock 'stepped :length \"60s\" :seed 7
-  :drive (list (drive-meter-reactive 2 (timeline (hold 500.0 :for 30)
-                                                 (ramp :to 2000.0 :over 30)))
+  :drive (list (drive-meter-reactive 2 (timeline (hold 500.0 :for-s 30)
+                                                 (ramp :to 2000.0 :over-s 30)))
                (drive-meter-pf 3 0.8))
   :expect (list (check \"10s\" :component 2 :metric 'reactive-power
                        :approx 500.0 :tol 100.0)
@@ -1984,6 +1984,81 @@ mod tests {
         );
     }
 
+    /// `every` takes `:interval-s`; the old `:milliseconds` still arms
+    /// the same cadence.
+    #[test]
+    fn every_takes_seconds_and_still_reads_milliseconds() {
+        use std::time::Duration;
+        let cfg = stepped_config(
+            "every-s",
+            "(set-enterprise-id 1)
+(load \"sim/common.lisp\")
+(make-microgrid :id 9 :grpc-port 18911 :topology (lambda () nil))
+(setq n 0)
+(setq m 0)
+(every :interval-s 0.1 :call (lambda () (setq n (+ n 1))))
+(every :milliseconds 100 :call (lambda () (setq m (+ m 1))))",
+        );
+        cfg.sim_run(Duration::from_secs(1), Duration::from_millis(100));
+        assert_eq!(cfg.eval_silent("n").unwrap(), cfg.eval_silent("m").unwrap());
+        assert_ne!(cfg.eval_silent("n").unwrap(), "0");
+    }
+
+    /// `define-controller` takes `:every-s`; the old `:every-ms` still
+    /// sets the same cadence.
+    #[test]
+    fn define_controller_takes_seconds_and_still_reads_milliseconds() {
+        use std::time::Duration;
+        let cfg = stepped_config(
+            "ctl-s",
+            "(set-enterprise-id 1)
+(load \"sim/common.lisp\")
+(make-microgrid :id 9 :grpc-port 18912 :topology (lambda () nil))
+(setq n 0)
+(setq m 0)
+(define-controller :every-s 0.2 :on-tick (lambda () (setq n (+ n 1))))
+(define-controller :every-ms 200 :on-tick (lambda () (setq m (+ m 1))))",
+        );
+        cfg.sim_run(Duration::from_secs(1), Duration::from_millis(100));
+        assert_eq!(cfg.eval_silent("n").unwrap(), cfg.eval_silent("m").unwrap());
+        assert_ne!(cfg.eval_silent("n").unwrap(), "0");
+    }
+
+    /// `(scenario-end-after-s 90)` and `(scenario-end-after 1.5)` stop
+    /// the scenario at the same moment: still running at 89 s, stopped
+    /// by 91 s.
+    #[test]
+    fn scenario_end_after_s_and_minutes_schedule_the_same_stop() {
+        use std::time::Duration;
+        for (tag, form) in [
+            ("end-s", "(scenario-end-after-s 90)"),
+            ("end-min", "(scenario-end-after 1.5)"),
+        ] {
+            let cfg = stepped_config(
+                tag,
+                &format!(
+                    "(set-enterprise-id 1)
+(load \"sim/common.lisp\")
+(make-microgrid :id 9 :grpc-port 18913 :topology (lambda () nil))
+(scenario-start \"end\")
+{form}"
+                ),
+            );
+            cfg.sim_run(Duration::from_secs(89), Duration::from_secs(1));
+            assert_eq!(
+                cfg.eval_silent("(scenario-running-p)").unwrap(),
+                "t",
+                "{form}"
+            );
+            cfg.sim_run(Duration::from_secs(2), Duration::from_secs(1));
+            assert_eq!(
+                cfg.eval_silent("(scenario-running-p)").unwrap(),
+                "nil",
+                "{form}"
+            );
+        }
+    }
+
     /// A `:setup`-armed `random-outage` chain is a real surprise case
     /// for teardown: it re-arms itself on every fire/restore
     /// (`random-outage--schedule` -> `--fire` -> `--restore` ->
@@ -1991,8 +2066,8 @@ mod tests {
     /// stops re-tracking a NEW handle each cycle. Pins that
     /// `random-outage--track` routing every re-arm through
     /// `scenario--track-timer` actually stops the chain at
-    /// `(scenario-stop)`: with `:min-every`/`:max-every` and
-    /// `:min-duration`/`:max-duration` collapsed to equal bounds, the
+    /// `(scenario-stop)`: with `:min-every-s`/`:max-every-s` and
+    /// `:min-duration-s`/`:max-duration-s` collapsed to equal bounds, the
     /// cadence is deterministic without even needing the RNG seed
     /// (`random-uniform`'s span is zero), so this asserts health
     /// flips down-then-up DURING the run, then — after an explicit
@@ -2014,8 +2089,8 @@ mod tests {
 (define-scenario :name \"outage-setup\"
   :schedule 'relative :clock 'stepped :length \"30s\" :seed 7
   :setup (lambda () (random-outage (list 2)
-                                   :min-every 2.0 :max-every 2.0
-                                   :min-duration 2.0 :max-duration 2.0)))",
+                                   :min-every-s 2.0 :max-every-s 2.0
+                                   :min-duration-s 2.0 :max-duration-s 2.0)))",
         );
 
         crate::sim::scenarios::start(&cfg.ctx, &cfg.scenarios, "outage-setup")
@@ -2094,8 +2169,8 @@ mod tests {
 (define-scenario :name \"mid-outage\"
   :schedule 'relative :clock 'stepped :length \"30s\" :seed 7
   :setup (lambda () (random-outage (list 2)
-                                   :min-every 2.0 :max-every 2.0
-                                   :min-duration 4.0 :max-duration 4.0)))",
+                                   :min-every-s 2.0 :max-every-s 2.0
+                                   :min-duration-s 4.0 :max-duration-s 4.0)))",
         );
         crate::sim::scenarios::start(&cfg.ctx, &cfg.scenarios, "mid-outage")
             .expect("scenario starts");
@@ -2161,13 +2236,13 @@ mod tests {
     (%make-grid-connection-point :id 1
       :successors (list (%make-meter :id 2 :power 0.0)
                         (%make-meter :id 3 :power 0.0)))))
-(random-outage (list 2) :min-every 2.0 :max-every 2.0
-                        :min-duration 60.0 :max-duration 60.0)
+(random-outage (list 2) :min-every-s 2.0 :max-every-s 2.0
+                        :min-duration-s 60.0 :max-duration-s 60.0)
 (define-scenario :name \"later\"
   :schedule 'relative :clock 'stepped :length \"30s\"
   :setup (lambda () (random-outage (list 3)
-                                   :min-every 600.0 :max-every 600.0
-                                   :min-duration 60.0 :max-duration 60.0)))",
+                                   :min-every-s 600.0 :max-every-s 600.0
+                                   :min-duration-s 60.0 :max-duration-s 60.0)))",
         );
         let victim = || cfg.eval("random-outage--current-victim").unwrap();
 
@@ -2192,8 +2267,8 @@ mod tests {
         // Starting that chain is the only thing standing between the
         // stale id and this scenario's ownership.
         cfg.eval(
-            "(random-outage (list 2) :min-every 1.0 :max-every 1.0 \
-                             :min-duration 60.0 :max-duration 60.0)",
+            "(random-outage (list 2) :min-every-s 1.0 :max-every-s 1.0 \
+                             :min-duration-s 60.0 :max-duration-s 60.0)",
         )
         .expect("ambient chain re-armed");
         cfg.sim_run(Duration::from_secs(2), Duration::from_secs(1));
@@ -2245,8 +2320,8 @@ mod tests {
   (lambda ()
     (%make-grid-connection-point :id 1
       :successors (list (%make-meter :id 2 :power 0.0)))))
-(random-outage (list 2) :min-every 2.0 :max-every 2.0
-                        :min-duration 2.0 :max-duration 2.0)
+(random-outage (list 2) :min-every-s 2.0 :max-every-s 2.0
+                        :min-duration-s 2.0 :max-duration-s 2.0)
 (define-scenario :name \"unrelated\"
   :schedule 'relative :clock 'stepped :length \"30s\")",
         );
@@ -2637,7 +2712,7 @@ mod tests {
         std::fs::write(
             &other,
             "(make-microgrid :id 10 :grpc-port 8801 :topology (lambda () nil))\n\
-             (every :milliseconds 1 :call (lambda () nil))",
+             (every :interval-s 0.001 :call (lambda () nil))",
         )
         .unwrap();
         let count = || -> i64 {
@@ -2697,7 +2772,7 @@ mod tests {
             &other,
             "(make-microgrid :id 10 :grpc-port 8801 :topology (lambda () nil))\n\
                             (setq n 0)\n\
-                            (every :milliseconds 1 :call (lambda () (setq n (+ n 1))))",
+                            (every :interval-s 0.001 :call (lambda () (setq n (+ n 1))))",
         )
         .unwrap();
         cfg.load_file(&other).unwrap();
@@ -2727,7 +2802,7 @@ mod tests {
         let driver = dir.join("driver.lisp");
         std::fs::write(
             &driver,
-            "(setq driver-mark 1)\n(every :milliseconds 1 :call (lambda () nil))",
+            "(setq driver-mark 1)\n(every :interval-s 0.001 :call (lambda () nil))",
         )
         .unwrap();
         cfg.load_file(&driver).unwrap();
@@ -2755,7 +2830,7 @@ mod tests {
         // the timer count stays at one.
         std::fs::write(
             &driver,
-            "(setq driver-mark 2)\n(every :milliseconds 1 :call (lambda () nil))",
+            "(setq driver-mark 2)\n(every :interval-s 0.001 :call (lambda () nil))",
         )
         .unwrap();
         cfg.reload_file(&driver).unwrap();
@@ -2781,7 +2856,7 @@ mod tests {
             &compose(
                 "(make-microgrid :id 50 :name \"s\" :grpc-port 8850\n  :topology\n  \
                  (lambda ()\n    (%make-meter :id 500)))",
-                "(every :milliseconds 1000 :call (lambda () nil))\n\
+                "(every :interval-s 1.0 :call (lambda () nil))\n\
                  (set-meter-power 999999 1.0)\n",
             ),
         )
@@ -2825,7 +2900,7 @@ mod tests {
         let driver = dir.join("driver.lisp");
         std::fs::write(
             &driver,
-            "(every :milliseconds 1000 :call (lambda () nil))\n\
+            "(every :interval-s 1.0 :call (lambda () nil))\n\
              (this-defun-does-not-exist 1)\n",
         )
         .unwrap();

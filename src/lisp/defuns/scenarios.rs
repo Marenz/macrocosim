@@ -897,7 +897,7 @@ mod tests {
 
     /// The `define-scenario` section wrappers build introspectable
     /// plists (and, for `event`, a thunk): drive-meter / drive-solar
-    /// tag their kind + target + source; controller resolves :every to
+    /// tag their kind + component id + source; controller resolves :every to
     /// ms; at / check resolve human times to seconds (offset and
     /// clock-time forms both); event yields a callable that journals.
     #[test]
@@ -916,7 +916,7 @@ mod tests {
             "drive-meter"
         );
         assert_eq!(
-            cfg.eval("(plist-get (drive-meter 100 2000.0) :target)")
+            cfg.eval("(plist-get (drive-meter 100 2000.0) :component-id)")
                 .unwrap(),
             "100"
         );
@@ -928,19 +928,19 @@ mod tests {
 
         let f = |e: &str| -> f64 { cfg.eval(e).unwrap().parse().unwrap() };
 
-        // controller resolves :every to milliseconds; defaults to 100ms.
+        // controller resolves :every to seconds; defaults to 100ms.
         assert_eq!(
             cfg.eval("(plist-get (controller 'ems :every \"500ms\" (lambda () nil)) :id)")
                 .unwrap(),
             "ems"
         );
         assert_eq!(
-            f("(plist-get (controller 'ems :every \"500ms\" (lambda () nil)) :every-ms)"),
-            500.0
+            f("(plist-get (controller 'ems :every \"500ms\" (lambda () nil)) :every-s)"),
+            0.5
         );
         assert_eq!(
-            f("(plist-get (controller 'ems (lambda () nil)) :every-ms)"),
-            100.0
+            f("(plist-get (controller 'ems (lambda () nil)) :every-s)"),
+            0.1
         );
 
         // at / check resolve relative offsets and clock times.
@@ -960,8 +960,64 @@ mod tests {
         assert!(events[0].payload.contains("rolling in"));
     }
 
+    /// `hold` and `ramp` take `:for-s` / `:over-s` and store the length
+    /// under `:dur-s`; the old `:for` / `:over` still work.
+    #[test]
+    fn hold_and_ramp_take_seconds_keywords() {
+        let (cfg, _dir) = config_with("");
+        let f = |e: &str| -> f64 { cfg.eval(e).unwrap().parse().unwrap() };
+        assert_eq!(f("(plist-get (hold 1.0 :for-s 10) :dur-s)"), 10.0);
+        assert_eq!(f("(plist-get (ramp :to 2.0 :over-s 5) :dur-s)"), 5.0);
+        assert_eq!(f("(plist-get (hold 1.0 :for 10) :dur-s)"), 10.0);
+        assert_eq!(f("(plist-get (ramp :to 2.0 :over 5) :dur-s)"), 5.0);
+        // A timeline built from the new keywords evaluates.
+        cfg.eval("(scenario-start \"tl\")").unwrap();
+        assert_eq!(
+            f("(funcall (timeline (hold 1.0 :for-s 10) (ramp :to 2.0 :over-s 5)))"),
+            1.0
+        );
+    }
+
+    /// `drive-boiler` and the other `drive-*` wrappers carry the
+    /// component under `:component-id`.
+    #[test]
+    fn drive_boiler_carries_component_id() {
+        let (cfg, _dir) = config_with("");
+        assert_eq!(
+            cfg.eval("(plist-get (drive-boiler 7 100.0) :component-id)")
+                .unwrap(),
+            "7"
+        );
+    }
+
+    /// `random-outage` takes the `-s` keywords; the old names still
+    /// set the same bounds.
+    #[test]
+    fn random_outage_takes_seconds_keywords_and_still_reads_the_old_ones() {
+        let (cfg, _dir) = config_with("");
+        cfg.eval(
+            "(random-outage (list 2) :min-every-s 7.0 :max-every-s 8.0 \
+             :min-duration-s 9.0 :max-duration-s 10.0)",
+        )
+        .unwrap();
+        let bounds = || {
+            cfg.eval(
+                "(list random-outage--min-every random-outage--max-every \
+                 random-outage--min-duration random-outage--max-duration)",
+            )
+            .unwrap()
+        };
+        assert_eq!(bounds(), "(7.0 8.0 9.0 10.0)");
+        cfg.eval(
+            "(random-outage (list 2) :min-every 1.0 :max-every 2.0 \
+             :min-duration 3.0 :max-duration 4.0)",
+        )
+        .unwrap();
+        assert_eq!(bounds(), "(1.0 2.0 3.0 4.0)");
+    }
+
     /// `drive-meter-reactive` / `drive-meter-pf` tag their kind +
-    /// target (+ pf for the latter), mirroring `drive-meter`'s plist
+    /// component id (+ pf for the latter), mirroring `drive-meter`'s plist
     /// shape — `scenario--drive` dispatches on `:kind`.
     #[test]
     fn reactive_drive_wrappers_tag_their_kind() {
@@ -978,7 +1034,7 @@ mod tests {
             "drive-meter-reactive"
         );
         assert_eq!(
-            cfg.eval("(plist-get (drive-meter-reactive 100 500.0) :target)")
+            cfg.eval("(plist-get (drive-meter-reactive 100 500.0) :component-id)")
                 .unwrap(),
             "100"
         );

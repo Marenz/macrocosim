@@ -158,11 +158,13 @@ nil if ITEMS is empty."
   "Schedule recurring random outages on a random pick from IDS.
 
 Plist OPTS:
-  :min-every    Lower bound on the gap between outages, seconds.
-  :max-every    Upper bound on the gap, seconds.
-  :min-duration Outage duration lower bound, seconds.
-  :max-duration Outage duration upper bound.
-  :kind         Health symbol while down (default 'error).
+  :min-every-s    Lower bound on the gap between outages, seconds.
+  :max-every-s    Upper bound on the gap, seconds.
+  :min-duration-s Outage duration lower bound, seconds.
+  :max-duration-s Outage duration upper bound, seconds.
+  :kind           Health symbol while down (default 'error).
+The old :min-every, :max-every, :min-duration and :max-duration
+still work and warn.
 
 Each cycle picks a random id, schedules a `(set-component-health
 ID KIND)` after a uniform-random gap, reverts to 'ok after a
@@ -200,10 +202,14 @@ no-ops (which also stops it double-scheduling onto the new chain)."
   (setq random-outage--scenario-owned (scenario-running-p))
   (setq random-outage--current-victim nil)
   (setq random-outage--ids ids)
-  (setq random-outage--min-every    (or (plist-get opts :min-every)    60.0))
-  (setq random-outage--max-every    (or (plist-get opts :max-every)    300.0))
-  (setq random-outage--min-duration (or (plist-get opts :min-duration) 30.0))
-  (setq random-outage--max-duration (or (plist-get opts :max-duration) 90.0))
+  (setq random-outage--min-every
+        (or (common--seconds-arg opts :min-every-s :min-every) 60.0))
+  (setq random-outage--max-every
+        (or (common--seconds-arg opts :max-every-s :max-every) 300.0))
+  (setq random-outage--min-duration
+        (or (common--seconds-arg opts :min-duration-s :min-duration) 30.0))
+  (setq random-outage--max-duration
+        (or (common--seconds-arg opts :max-duration-s :max-duration) 90.0))
   (setq random-outage--kind         (or (plist-get opts :kind)         'error))
   (random-outage--schedule))
 
@@ -325,21 +331,23 @@ later had it not been cancelled."
 ;; dynamic source (a lambda re-resolved each tick), so it plugs straight
 ;; into `set-meter-power` / `set-solar-sunlight`:
 ;;
-;;   (set-meter-power 100 (timeline (hold 2000 :for 60)
-;;                                  (ramp :to 50000 :over 10)
-;;                                  (ramp :to 2000 :over 10)))
+;;   (set-meter-power 100 (timeline (hold 2000 :for-s 60)
+;;                                  (ramp :to 50000 :over-s 10)
+;;                                  (ramp :to 2000 :over-s 10)))
 ;;
 ;; Time is relative to `(scenario-start)`; before the first segment the
 ;; value is its start, after the last it holds the last segment's end.
 
 (defun hold (value &rest plist)
-  "Timeline segment: stay at VALUE for :for seconds."
-  (list :dur (plist-get plist :for) :from value :to value))
+  "Timeline segment: stay at VALUE for :for-s seconds (the old :for
+still works and warns)."
+  (list :dur-s (common--seconds-arg plist :for-s :for) :from value :to value))
 
 (defun ramp (&rest plist)
-  "Timeline segment: move linearly to :to over :over seconds, starting
-from :from — which defaults to the previous segment's end value."
-  (list :dur  (plist-get plist :over)
+  "Timeline segment: move linearly to :to over :over-s seconds (the old
+:over still works and warns), starting from :from — which defaults to
+the previous segment's end value."
+  (list :dur-s (common--seconds-arg plist :over-s :over)
         :to   (plist-get plist :to)
         :from (plist-get plist :from)))
 
@@ -356,14 +364,14 @@ row is (tstart tend vfrom vto); past the last row the value holds LASTV."
 
 (defun timeline (&rest segments)
   "Return a dynamic source (a lambda over scenario time) walking
-SEGMENTS — each a `(hold V :for S)` or `(ramp :to V :over S [:from A])`.
+SEGMENTS — each a `(hold V :for-s S)` or `(ramp :to V :over-s S [:from A])`.
 A ramp without :from continues from the previous segment's end value
 (0 at the start); after the last segment the value holds its end."
   (let ((tstart 0.0)
         (prev 0.0)
         (rows nil))
     (dolist (seg segments)
-      (let* ((dur (plist-get seg :dur))
+      (let* ((dur (plist-get seg :dur-s))
              (from (plist-get seg :from))
              (to (plist-get seg :to))
              (vfrom (if from from prev))
@@ -384,8 +392,8 @@ A ramp without :from continues from the previous segment's end value
 ;;
 ;;   (define-scenario :name "cloud-fade" :schedule 'relative :length "4min"
 ;;     :drive  (list (drive-meter 100 2000000.0)
-;;                   (drive-solar 200 (timeline (hold 100 :for 120)
-;;                                              (ramp :to 20 :over 27))))
+;;                   (drive-solar 200 (timeline (hold 100 :for-s 120)
+;;                                              (ramp :to 20 :over-s 27))))
 ;;     :agents (list (controller 'ems :every "500ms"
 ;;                     (lambda () (set-active-power 300 (component-bound-upper 300) :lifetime-s 2 :clamp t))))
 ;;     :cues   (list (at "60s" (event 'clouds "rolling in")))
@@ -398,28 +406,28 @@ A ramp without :from continues from the previous segment's end value
 (defun drive-meter (id source)
   "Drive section: feed meter ID from SOURCE (a constant, a symbol, or a
 dynamic source like `timeline`). Compiles to `set-meter-power`."
-  (list :kind 'drive-meter :target id :source source))
+  (list :kind 'drive-meter :component-id id :source source))
 
 (defun drive-solar (id source)
   "Drive section: feed solar inverter ID sunlight % from SOURCE (a
 constant, a symbol, or a dynamic source like `timeline`). Compiles to
 `set-solar-sunlight`; for several inverters use one drive-solar each."
-  (list :kind 'drive-solar :target id :source source))
+  (list :kind 'drive-solar :component-id id :source source))
 
 (defun drive-meter-reactive (id source)
   "Drive section: feed meter ID reactive VArs from SOURCE (a constant,
 a symbol, or a dynamic source like `timeline`). Compiles to
 `set-meter-reactive-power`."
-  (list :kind 'drive-meter-reactive :target id :source source))
+  (list :kind 'drive-meter-reactive :component-id id :source source))
 
 (defun drive-meter-pf (id pf &optional leading)
   "Drive section: hold meter ID at power factor PF (cos phi, 0..1],
 LEADING non-nil for capacitive. Compiles to `set-meter-power-factor`."
-  (list :kind 'drive-meter-pf :target id :pf pf :leading leading))
+  (list :kind 'drive-meter-pf :component-id id :pf pf :leading leading))
 
-(defun drive-boiler (target source)
-  "Drive TARGET boiler's steam demand (kg/h) from SOURCE."
-  (list :kind 'drive-boiler :target target :source source))
+(defun drive-boiler (id source)
+  "Drive boiler ID's steam demand (kg/h) from SOURCE."
+  (list :kind 'drive-boiler :component-id id :source source))
 
 (defun controller (id &rest args)
   "Agents section: an in-sim controller named ID firing :every TIME
@@ -428,7 +436,7 @@ LEADING non-nil for capacitive. Compiles to `set-meter-power-factor`."
   (let ((every (or (plist-get args :every) "100ms"))
         (on-tick (car (last args))))
     (list :id id
-          :every-ms (* 1000 (resolve-time every))
+          :every-s (resolve-time every)
           :on-tick on-tick)))
 
 (defun at (tt action)
@@ -476,16 +484,16 @@ inside `at`, e.g. (at \"60s\" (event 'clouds \"rolling in\"))."
 (defun scenario--drive (d)
   "Install one drive item D — a `drive-meter` / `drive-solar` /
 `drive-meter-reactive` / `drive-meter-pf` / `drive-boiler` plist."
-  (let ((target (plist-get d :target))
+  (let ((id (plist-get d :component-id))
         (source (plist-get d :source))
         (kind (plist-get d :kind)))
     (cond
-     ((eq kind 'drive-meter) (set-meter-power target source))
-     ((eq kind 'drive-solar) (set-solar-sunlight target source))
-     ((eq kind 'drive-meter-reactive) (set-meter-reactive-power target source))
+     ((eq kind 'drive-meter) (set-meter-power id source))
+     ((eq kind 'drive-solar) (set-solar-sunlight id source))
+     ((eq kind 'drive-meter-reactive) (set-meter-reactive-power id source))
      ((eq kind 'drive-meter-pf)
-      (set-meter-power-factor target (plist-get d :pf) (plist-get d :leading)))
-     ((eq kind 'drive-boiler) (set-boiler-demand target source))
+      (set-meter-power-factor id (plist-get d :pf) (plist-get d :leading)))
+     ((eq kind 'drive-boiler) (set-boiler-demand id source))
      (t (error (format "scenario: unknown drive kind %s" kind))))))
 
 (defun scenario--agent (a)
@@ -495,7 +503,7 @@ controller, tracking its timer via `scenario--track-timer` so
   (scenario--track-timer
    (define-controller :id (plist-get a :id)
                       :on-tick (plist-get a :on-tick)
-                      :every-ms (plist-get a :every-ms))))
+                      :every-s (plist-get a :every-s))))
 
 (defun scenario--at (secs thunk)
   "Schedule THUNK to run once at scenario time SECS (seconds).

@@ -49,7 +49,7 @@
 ;; the consumer-load loop simply re-drives meter 100 a second after
 ;; teardown restored it. Cancel them with `(cancel-timers)` when
 ;; you want the world fully back to where it started.
-(scenario-end-after 30)
+(scenario-end-after-s 1800)
 
 ;; ── Consumer load: end-of-window spike ─────────────────────────
 ;; Replaces berlin-demo.lisp's gentler inline :power profile with a sharper
@@ -58,7 +58,7 @@
 ;; classic "demand peak right before the billing window closes"
 ;; stress case.
 (every
- :milliseconds 1000
+ :interval-s 1.0
  :call
  (lambda ()
    (let* ((rel (window-elapsed 900.0))
@@ -91,10 +91,10 @@
 ;; or the topology JSON (/api/mg/{mg}/topology) is the easiest way to
 ;; look them up.
 (random-outage '(1000)
-               :min-every 300.0
-               :max-every 600.0
-               :min-duration 60.0
-               :max-duration 180.0
+               :min-every-s 300.0
+               :max-every-s 600.0
+               :min-duration-s 60.0
+               :max-duration-s 180.0
                :kind 'error)
 
 ;; ── Silent-but-operational solar inverter at minute 5 ─────────

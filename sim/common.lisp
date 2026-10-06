@@ -116,11 +116,27 @@ which leaves the ambient microgrid's site alone."
   (reset-microgrid))
 
 ;; -----------------------------------------------------------------------------
+;; Renamed keywords
+;; -----------------------------------------------------------------------------
+
+(defun common--seconds-arg (plist new old &optional divisor)
+  "The seconds value in PLIST under key NEW, else the value under the
+old key OLD (warning that OLD is deprecated), divided by DIVISOR when
+one is given, else nil."
+  (or (plist-get plist new)
+      (let ((v (plist-get plist old)))
+        (when v
+          (%warn-renamed (format "%s" old) (format "%s" new)
+                         (if divisor " (seconds)" ""))
+          (if divisor (/ v divisor) v)))))
+
+;; -----------------------------------------------------------------------------
 ;; Periodic helper
 ;; -----------------------------------------------------------------------------
 
 (defun every (&rest plist)
-  "Call :call every :milliseconds ms. First firing happens after the
+  "Call :call every :interval-s seconds (the old :milliseconds still
+works and warns). First firing happens after the
 interval has elapsed — not synchronously at load time — so a config
 file can put `every` blocks anywhere relative to the topology they
 reference.
@@ -135,10 +151,9 @@ armed it, so a reload of that file (or `cancel-timers`) cancels it.
 Returns the bare timer handle (not `active-timers` itself) so a
 caller that wants to track just its own timer — `scenario--agent`,
 via `define-controller` — can stash it directly."
-  (let* ((ms (plist-get plist :milliseconds))
+  (let* ((secs (common--seconds-arg plist :interval-s :milliseconds 1000.0))
          (func (plist-get plist :call))
          (args (plist-get plist :args))
-         (secs (/ ms 1000.0))
          (timer (apply 'run-with-timer secs secs func args)))
     (setq active-timers (cons (cons (current-source-file) timer) active-timers))
     timer))
@@ -149,7 +164,8 @@ via `define-controller` — can stash it directly."
 
 (defun define-controller (&rest plist)
   "Register an in-sim controller: call the :on-tick lambda every
-:every-ms ms (default 100) on Config's refresh loop. A controller is the
+:every-s seconds (default 0.1; the old :every-ms still works and
+warns) on Config's refresh loop. A controller is the
 closed-loop counterpart to the open-loop drivers — it *senses* live
 state and *actuates* in response, modelling an EMS / dispatcher.
 
@@ -169,13 +185,12 @@ The optional :id is a readability/label. The timer is tracked on
 
 Cadence vs command-delay: each command takes :command-delay-s to
 execute, and while one executes only the newest incoming command waits
-for its turn. A controller that re-sends every :every-ms therefore
+for its turn. A controller that re-sends every :every-s therefore
 trails the target by about one delay; re-sending faster than the delay
 is safe (it never starves the device), it just wastes commands."
   (let* ((on-tick (plist-get plist :on-tick))
-         (req-ms (plist-get plist :every-ms))
-         (ms (if req-ms req-ms 100)))
-    (every :milliseconds ms :call on-tick)))
+         (secs (or (common--seconds-arg plist :every-s :every-ms 1000.0) 0.1)))
+    (every :interval-s secs :call on-tick)))
 
 ;; -----------------------------------------------------------------------------
 ;; Removed: the UI override journal
@@ -208,16 +223,18 @@ transient: `(scenario-stop)' puts the charger back as it was."
 ;; Scenario helpers
 ;; -----------------------------------------------------------------------------
 
-(defun scenario-end-after (minutes)
+(defun scenario-end-after-s (seconds)
   "Schedule a single-shot timer that runs (scenario-stop) after
-MINUTES wall-clock minutes (not seconds — most other DSL ops are
-seconds or milliseconds; this one is minutes because the use case
-is fixed-duration runs sized in minutes, e.g.
-`(scenario-end-after 60)` for a one-hour cap). The handle goes
-onto `active-timers` paired with its source file, like `every`'s,
-so a reload cancels it."
-  (let ((secs (* minutes 60.0)))
-    (setq active-timers
-          (cons (cons (current-source-file)
-                      (run-with-timer secs nil 'scenario-stop))
-                active-timers))))
+SECONDS wall-clock seconds, e.g. `(scenario-end-after-s 3600)' for a
+one-hour cap. The handle goes onto `active-timers' paired with its
+source file, like `every''s, so a reload cancels it."
+  (setq active-timers
+        (cons (cons (current-source-file)
+                    (run-with-timer seconds nil 'scenario-stop))
+              active-timers)))
+
+(defun scenario-end-after (minutes)
+  "Like `scenario-end-after-s', with the delay in MINUTES; warns that
+it is deprecated."
+  (%warn-renamed "scenario-end-after" "scenario-end-after-s" " (seconds)")
+  (scenario-end-after-s (* minutes 60.0)))

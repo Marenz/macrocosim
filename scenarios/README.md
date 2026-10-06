@@ -39,7 +39,7 @@ server was started from).
 | `(scenario-stop)`                  | end the run — freezes elapsed + metrics + CSV, cancels the run's own timers, restores every driven knob (see [Teardown](#teardown)) |
 | `(scenario-event KIND PAYLOAD)`    | append a journaled event                        |
 | `(scenario-elapsed)`               | wall-clock seconds since start (frozen on stop) |
-| `(scenario-end-after MINUTES)`     | schedule `(scenario-stop)` after MINUTES        |
+| `(scenario-end-after-s SECONDS)`   | schedule `(scenario-stop)` after SECONDS        |
 | `(scenario-record-csv DIR)`        | start writing one CSV per component to DIR     |
 | `(scenario-stop-csv)`              | close all CSV sinks (also implicit on stop)    |
 
@@ -133,8 +133,8 @@ explicit `(load …)` is needed:
 - `(random-pick LIST)` — one element of `LIST`, uniformly. `nil`
   on empty.
 - `(random-outage IDS &rest opts)` — recurring random outages on
-  a random pick from `IDS`. Plist opts: `:min-every` /
-  `:max-every` (gap seconds), `:min-duration` / `:max-duration`
+  a random pick from `IDS`. Plist opts: `:min-every-s` /
+  `:max-every-s` (gap seconds), `:min-duration-s` / `:max-duration-s`
   (outage seconds), `:kind` (health symbol while down — default
   `'error`). Each transition lands as a journal event. A chain
   started while a scenario is running belongs to that scenario and
