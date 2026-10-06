@@ -156,6 +156,8 @@ gateway intersects bounds for setpoint validation.
 
 - [`docs/e2e-testing.md`](docs/e2e-testing.md) — drive macrocosim from a
   downstream app's CI for end-to-end integration tests.
+- [`docs/names-and-units.md`](docs/names-and-units.md) — the unit and the
+  name of every quantity in Lisp, HTTP, macroctl and Python.
 - [`AGENTS.md`](AGENTS.md) — developer notes for this repo.
 - [`todo.org`](todo.org) — roadmap + open design questions.
 - [`scenarios/README.md`](scenarios/README.md) — scenario framework

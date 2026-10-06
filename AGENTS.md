@@ -195,7 +195,7 @@ every `*-defaults` plist. `Config::persist_enterprise` rewrites it
 whenever an eval touches enterprise-wide state — same two-section
 shape as a microgrid file.
 
-Per-microgrid snapshots live under `snapshots/{mg_id}/{name}.lisp`
+Per-microgrid snapshots live under `snapshots/{microgrid_id}/{name}.lisp`
 (`src/lisp/snapshots.rs`) — a frozen copy of that microgrid's managed
 file; loading one writes it back over the live file and reloads just
 that microgrid. Undo (`src/lisp/undo.rs`) is per-microgrid too: one
@@ -306,6 +306,12 @@ UI").
   component or dispatch are path segments; other query parameters
   filter, window or tune the reply (`metric`, `window_s`, `since`,
   `limit`, `width`, `dir`).
+- Field names follow [`docs/names-and-units.md`](docs/names-and-units.md):
+  the unit is in the name (`power_w`, `soc_pct`, `remaining_s`), points
+  in time are RFC 3339 (`ts`, `start`, `created_at`), chart series are
+  epoch seconds (`t_s`), and a generic `value` has a `unit` beside it.
+  A request body or query with a field the route does not know is
+  refused (422 for a JSON body, 400 for a query string).
 - Every failure is JSON `{"error": "..."}` with a 4xx/5xx status
   (`ApiError` in `src/ui/api.rs`); a route may add fields beside it.
   An unknown path answers 404 `no route for {METHOD} {path}`. A known
@@ -462,6 +468,16 @@ defaults entirely for one call, invoke `%make-*` directly.
 Per-component plist args win without any special handling — AsPlist!
 takes the last occurrence of each key and the wrapper's defaults
 appear first in the merged plist.
+
+Keyword names follow [`docs/names-and-units.md`](docs/names-and-units.md):
+the unit is the suffix (`:power-w`, `:soc-lower-pct`,
+`:command-delay-s`, `:ramp-rate-w-per-s`). An old keyword still loads
+through the table in `src/lisp/renames.rs`, which every defun taking
+keywords reads through `Renamed<…>`; it warns once, and the next
+structural save writes the new name into the generated block. The
+hand-written script section is never rewritten. A new
+keyword with a unit gets its suffix from the start; a renamed one gets
+a table row.
 
 The prelude (common / defaults / scenarios) is compiled into the
 binary via `include_str!`, so editing `sim/defaults.lisp` needs a
