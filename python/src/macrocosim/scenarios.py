@@ -235,6 +235,17 @@ class Scenario:
         return f"(define-scenario {' '.join(parts)})"
 
 
+class _NotActiveError(RuntimeError):
+    """The server's active scenario is not the one a run waits on or
+    reads."""
+
+    def __init__(self, name: str, active: str | None) -> None:
+        super().__init__(
+            f"scenario {name!r} is not the active scenario "
+            f"(server reports {active!r}); was run() called?"
+        )
+
+
 class ScenarioRun:
     """A registered scenario bound to a running site."""
 
@@ -262,15 +273,6 @@ class ScenarioRun:
             )
         return length
 
-    def _wait_target(self, until: timedelta | None) -> tuple[float, int]:
-        """The wait length and the microgrid to poll. One read of the
-        microgrid's journal makes a microgrid the server does not have
-        fail here."""
-        length = self._wait_length(until)
-        mg = self._site._resolve_mg(None)
-        self._http.get_json(scenario_path(mg))
-        return length, mg
-
     def _run_mg(self) -> int:
         """The microgrid run() picked, else the lowest one."""
         return self._mg if self._mg is not None else self._site._resolve_mg(None)
@@ -283,15 +285,20 @@ class ScenarioRun:
         poll: timedelta = timedelta(seconds=1),
     ) -> ScenarioRun:
         """Start the scenario; with ``wait`` block until it finishes, stop it."""
+        start = f"/api/scenarios/{self._name}/start"
+        if not wait:
+            self._http.post(start)
+            return self
         # Resolve the wait length and the microgrid BEFORE starting,
         # so an unwaitable scenario fails fast instead of being left
-        # running with nothing to stop it.
-        target = self._wait_target(until) if wait else None
-        self._http.post(f"/api/scenarios/{self._name}/start")
-        if target is None:
-            return self
-        length, self._mg = target
-        return self._wait_for(length, poll, self._mg)
+        # running with nothing to stop it. One read of the
+        # microgrid's journal makes a microgrid the server does not
+        # have fail here.
+        length = self._wait_length(until)
+        mg = self._mg = self._site._resolve_mg(None)
+        self._http.get_json(scenario_path(mg))
+        self._http.post(start)
+        return self._wait_for(length, poll, mg)
 
     def wait(
         self,
@@ -312,16 +319,11 @@ class ScenarioRun:
         # live — waiting on it, or judging its report, would silently
         # test the wrong thing.
         if state.get("name") != self._name:
-            raise RuntimeError(
-                f"scenario {self._name!r} is not the active scenario "
-                f"(server reports {state.get('name')!r}); was run() called?"
-            )
+            raise _NotActiveError(self._name, state.get("name"))
 
     def _wait_for(self, length: float, poll: timedelta, mg: int) -> ScenarioRun:
         deadline = time.monotonic() + length + 5.0
         interval = poll.total_seconds()
-        # The stop is posted even when a poll raises, so a failed wait
-        # leaves no scenario running.
         try:
             while time.monotonic() < deadline:
                 state = self._http.get_json(scenario_path(mg))
@@ -331,9 +333,28 @@ class ScenarioRun:
                 if (state.get("elapsed_s") or 0.0) >= length:
                     break
                 time.sleep(interval)
-        finally:
-            self._http.post("/api/scenarios/stop")
+        except _NotActiveError:
+            # The stop route takes no name, so posting it here would
+            # stop the scenario that is active instead.
+            raise
+        except BaseException as err:
+            # Any other failed wait still posts the stop, so no
+            # scenario is left running; the wait's error is the one
+            # raised.
+            self._stop(err)
+            raise
+        self._stop()
         return self
+
+    def _stop(self, err: BaseException | None = None) -> None:
+        # Posts the stop. With `err`, the wait's error, a failed stop
+        # is added to `err` as a note instead of raised.
+        try:
+            self._http.post("/api/scenarios/stop")
+        except Exception as stop_err:
+            if err is None:
+                raise
+            err.add_note(f"stopping scenario {self._name!r} failed: {stop_err!r}")
 
     def report(self) -> ScenarioReport:
         """The parsed scenario report (pass/fail ledger + peak/soc stats)."""

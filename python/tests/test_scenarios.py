@@ -131,6 +131,9 @@ def test_wait_and_report_reject_an_inactive_scenario() -> None:
         ScenarioRun(site, "s").wait(until=timedelta(seconds=1))
     with pytest.raises(RuntimeError, match="not the active scenario"):
         ScenarioRun(site, "s").report()
+    # The stop route takes no name: posting it would stop the active
+    # scenario, which is not this one.
+    assert site._http.posts == []
 
 
 def test_run_wait_without_length_raises_before_starting() -> None:
@@ -193,6 +196,44 @@ def test_run_wait_stops_the_scenario_when_a_poll_raises() -> None:
     site = FakeSite({})
     site._http = FailingPollHttp({})
     with pytest.raises(httpx.ReadTimeout, match="poll timed out"):
+        ScenarioRun(site, "s").run(wait=True)
+    assert site._http.posts == ["/api/scenarios/s/start", "/api/scenarios/stop"]
+
+
+def test_a_failed_stop_after_a_failed_poll_raises_the_poll_error() -> None:
+    class FailingPollAndStopHttp(FakeHttp):
+        def get_json(self, path: str):
+            # The first journal read is the check before the start;
+            # the next one is the first poll.
+            if path == "/api/mg/3/scenario" and path in self.gets:
+                raise httpx.ReadTimeout("poll timed out")
+            return super().get_json(path)
+
+        def post(self, path: str, content: str = "") -> dict:
+            super().post(path, content)
+            if path == "/api/scenarios/stop":
+                raise httpx.ConnectError("stop refused")
+            return {}
+
+    site = FakeSite({})
+    site._http = FailingPollAndStopHttp({})
+    with pytest.raises(httpx.ReadTimeout, match="poll timed out") as caught:
+        ScenarioRun(site, "s").run(wait=True)
+    assert site._http.posts == ["/api/scenarios/s/start", "/api/scenarios/stop"]
+    assert any("stop refused" in note for note in caught.value.__notes__)
+
+
+def test_a_failed_stop_after_a_clean_wait_raises_the_stop_error() -> None:
+    class FailingStopHttp(FakeHttp):
+        def post(self, path: str, content: str = "") -> dict:
+            super().post(path, content)
+            if path == "/api/scenarios/stop":
+                raise httpx.ConnectError("stop refused")
+            return {}
+
+    site = FakeSite({})
+    site._http = FailingStopHttp({})
+    with pytest.raises(httpx.ConnectError, match="stop refused"):
         ScenarioRun(site, "s").run(wait=True)
     assert site._http.posts == ["/api/scenarios/s/start", "/api/scenarios/stop"]
 

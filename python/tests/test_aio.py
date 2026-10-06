@@ -307,6 +307,103 @@ async def test_scenario_run_stops_when_a_poll_raises() -> None:
     assert posts == ["/api/scenarios/soak/start", "/api/scenarios/stop"]
 
 
+async def test_scenario_failed_stop_after_a_failed_poll_raises_the_poll_error() -> None:
+    site = _site()
+    posts: list[str] = []
+    reads: list[str] = []
+
+    async def fake_post(path: str, content: str = "") -> Any:
+        posts.append(path)
+        if path == "/api/scenarios/stop":
+            raise httpx.ConnectError("stop refused")
+        return {}
+
+    async def fake_get_json(path: str) -> Any:
+        assert path == "/api/mg/1/scenario"
+        reads.append(path)
+        # The first read is the check before the start; the next one
+        # is the first poll.
+        if len(reads) > 1:
+            raise httpx.ReadTimeout("poll timed out")
+        return {"name": "soak", "ended_at": None, "elapsed_s": 0.0}
+
+    site._http.post = fake_post  # type: ignore[method-assign]
+    site._http.get_json = fake_get_json  # type: ignore[method-assign]
+    with pytest.raises(httpx.ReadTimeout, match="poll timed out") as caught:
+        await site.scenario("soak").run(wait=True, until=timedelta(seconds=1))
+    assert posts == ["/api/scenarios/soak/start", "/api/scenarios/stop"]
+    assert any("stop refused" in note for note in caught.value.__notes__)
+
+
+async def test_scenario_failed_stop_after_a_clean_wait_raises_the_stop_error() -> None:
+    site = _site()
+    posts: list[str] = []
+
+    async def fake_post(path: str, content: str = "") -> Any:
+        posts.append(path)
+        if path == "/api/scenarios/stop":
+            raise httpx.ConnectError("stop refused")
+        return {}
+
+    async def fake_get_json(path: str) -> Any:
+        assert path == "/api/mg/1/scenario"
+        return {"name": "soak", "ended_at": "2026-01-01T00:00:00Z", "elapsed_s": 1.0}
+
+    site._http.post = fake_post  # type: ignore[method-assign]
+    site._http.get_json = fake_get_json  # type: ignore[method-assign]
+    with pytest.raises(httpx.ConnectError, match="stop refused"):
+        await site.scenario("soak").run(wait=True, until=timedelta(seconds=1))
+    assert posts == ["/api/scenarios/soak/start", "/api/scenarios/stop"]
+
+
+async def test_scenario_wait_on_an_inactive_scenario_posts_no_stop() -> None:
+    site = _site()
+    posts = _recording_posts(site)
+
+    async def fake_get_json(path: str) -> Any:
+        assert path == "/api/mg/1/scenario"
+        return {"name": "other", "ended_at": None, "elapsed_s": 0.0}
+
+    site._http.get_json = fake_get_json  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="not the active scenario"):
+        await site.scenario("soak").wait(until=timedelta(seconds=1))
+    # The stop route takes no name: posting it would stop "other".
+    assert posts == []
+
+
+async def test_scenario_readouts_after_a_run_use_the_microgrid_it_picked() -> None:
+    site = mc.aio.connect(
+        ui="127.0.0.1:9",
+        microgrids={
+            7: mc.MicrogridEndpoint(id=7, name="a", grpc="10.0.0.7:61000"),
+            3: mc.MicrogridEndpoint(id=3, name="b", grpc="10.0.0.3:61000"),
+        },
+    )
+    _recording_posts(site)
+    gets: list[str] = []
+
+    async def fake_get_json(path: str) -> Any:
+        gets.append(path)
+        if path == "/api/mg/3/scenario":
+            return {"name": "s", "ended_at": "2026-01-01T00:00:00Z", "elapsed_s": 1.0}
+        if path == "/api/mg/3/scenario/report":
+            return {"name": "s", "checks_passed": 1, "checks_failed": 0}
+        if path.startswith("/api/mg/3/scenario/events"):
+            return {"events": [], "next_event_id": 0}
+        raise AssertionError(f"unexpected GET {path}")
+
+    site._http.get_json = fake_get_json  # type: ignore[method-assign]
+    run = await site.scenario("s").run(wait=True, until=timedelta(seconds=1))
+    # A lower microgrid appears afterwards.
+    site.microgrids[1] = mc.MicrogridEndpoint(id=1, name="c", grpc="10.0.0.1:61000")
+    await run.report()
+    await run.events()
+    assert gets[-2:] == [
+        "/api/mg/3/scenario/report",
+        "/api/mg/3/scenario/events?since=0",
+    ]
+
+
 async def test_scenario_wait_requires_a_length() -> None:
     site = _site()
 
