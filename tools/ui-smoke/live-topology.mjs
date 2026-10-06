@@ -1940,6 +1940,106 @@ await page.keyboard.press("Escape");
 await page.keyboard.press("1");
 await page.click(DEMO_CARD).catch(() => {});
 
+// ── e2e: the Scenarios panel, the Report panel and error display ──
+// The scenario readouts and the report are the selected microgrid's
+// (/api/mg/{mg}/scenario…); start and stop are site-wide, and stop
+// answers 204. pv-dropout only retunes PV 200's sunlight, a knob the
+// scenario hands back when it stops.
+const SMOKE_SCENARIO = "pv-dropout";
+const pathIs = (path, method = "GET") => (r) => new URL(r.url()).pathname === path && r.request().method() === method;
+await page.click('.mode-btn[data-mode="microgrids"]');
+await page.click(DEMO_CARD);
+const scenarioRead = page.waitForResponse(pathIs("/api/mg/2200/scenario"), { timeout: 10000 }).catch(() => null);
+await page.click('#mode-toggle .mode-btn[data-mode="scenarios"]');
+const scenarioReadRes = await scenarioRead;
+check(
+  "e2e: the Scenarios panel reads the selected microgrid's scenario",
+  scenarioReadRes?.status() === 200,
+  String(scenarioReadRes?.status()),
+);
+await page.click(`.sc-row:has(.sc-row-name:text-is("${SMOKE_SCENARIO}")) .sc-row-actions button`);
+const runView = () =>
+  page.evaluate(() => ({
+    name: document.getElementById("sc-run-name")?.textContent,
+    status: document.getElementById("sc-run-status")?.textContent,
+    hidden: document.getElementById("sc-run-view")?.hidden,
+  }));
+const runningView = await waitFor(async () => {
+  const v = await runView();
+  return v.hidden === false && v.name === SMOKE_SCENARIO && v.status === "running" ? v : null;
+}, 10000).catch(() => null);
+check("e2e: a started scenario shows as running in the run view", runningView !== null, JSON.stringify(await runView()));
+check(
+  "e2e: the running scenario's row carries the running badge",
+  await page.evaluate(
+    (n) =>
+      [...document.querySelectorAll(".sc-row")].some(
+        (r) => r.querySelector(".sc-row-name")?.textContent === n && r.querySelector(".sc-badge.running"),
+      ),
+    SMOKE_SCENARIO,
+  ),
+);
+// The Report panel reads the same microgrid's live report.
+const reportRead = page.waitForResponse(pathIs("/api/mg/2200/scenario/report"), { timeout: 10000 }).catch(() => null);
+await page.click("#scenario-report-btn");
+const reportReadRes = await reportRead;
+check("e2e: the Report panel fetches the selected microgrid's report", reportReadRes?.status() === 200, String(reportReadRes?.status()));
+const reportCard = await waitFor(async () => {
+  const t = await page.evaluate(() => document.querySelector("#sc-report-card .sc-report-dl")?.textContent ?? null);
+  return t && /elapsed/.test(t) ? t : null;
+}, 5000).catch(() => null);
+check("e2e: the Report panel renders the report", reportCard !== null, String(reportCard));
+await page.click("#scenario-report-btn");
+const stopPost = page.waitForResponse(pathIs("/api/scenarios/stop", "POST"), { timeout: 10000 }).catch(() => null);
+await page.click("#sc-run-stop");
+const stopRes = await stopPost;
+check("e2e: stopping the scenario answers 204", stopRes?.status() === 204, String(stopRes?.status()));
+const stoppedView = await waitFor(async () => {
+  const v = await runView();
+  return v.name === SMOKE_SCENARIO && v.status === "stopped" ? v : null;
+}, 10000).catch(() => null);
+check("e2e: the stopped scenario shows as stopped", stoppedView !== null, JSON.stringify(await runView()));
+// A failed eval shows the server's message in the REPL, never the
+// JSON body it came in.
+await page.evaluate(() => document.activeElement?.blur());
+await page.keyboard.press("`");
+await waitFor(async () => (await panelOpen("repl")) === true, 5000);
+await page.fill("#repl-input", '(error "smoke-boom")');
+await page.keyboard.press("Control+Enter");
+const replError = await waitFor(
+  async () => page.evaluate(() => [...document.querySelectorAll("#repl-output .repl-error")].at(-1)?.textContent ?? null),
+  10000,
+).catch(() => null);
+check(
+  "e2e: a failed REPL eval shows the error text, not its JSON",
+  /smoke-boom/.test(replError ?? "") && !replError.includes('{"error"'),
+  String(replError),
+);
+await page.click("#repl .float-close");
+// A failed mutation's toast carries the server's message: redo with
+// nothing to redo answers 409.
+const redoPost = page.waitForResponse(pathIs("/api/mg/2200/redo", "POST"), { timeout: 10000 }).catch(() => null);
+await page.evaluate(async () => (await import("/assets/editor.js")).undoMgr.redo());
+const redoRes = await redoPost;
+const redoError = redoRes ? (await redoRes.json().catch(() => ({}))).error : undefined;
+const redoToast = await waitFor(
+  async () =>
+    (await page.evaluate(() => [...document.querySelectorAll(".toast")].map((t) => t.textContent))).find((t) =>
+      t.startsWith("Redo failed"),
+    ) || null,
+  5000,
+).catch(() => null);
+check(
+  "e2e: a failed redo's toast shows the server's message, not JSON",
+  redoRes?.status() === 409 &&
+    typeof redoError === "string" &&
+    redoToast === `Redo failed: ${redoError}` &&
+    !redoToast.includes('{"error"'),
+  JSON.stringify({ status: redoRes?.status(), redoError, redoToast }),
+);
+await page.click('.mode-btn[data-mode="microgrids"]');
+await page.click(DEMO_CARD);
+
 // ── e2e: the bottom dock strip ───────────────────────────────────
 // Any card docks into a strip along the bottom of main via its dock
 // button, and floats back out via the same button. The strip takes
