@@ -30,8 +30,8 @@ pub struct SteamBoilerConfig {
     pub initial_bar: Option<f32>,
     pub capacity_wh_per_bar: f32,
     pub wh_per_kg: f32,
-    /// Seed for the demand source when it is a plain number.
-    pub demand_kg_h: f32,
+    /// Seed for the demand source (kg/s) when it is a plain number.
+    pub demand_kg_per_s: f32,
     /// True when :demand-kg-per-s was a lambda/symbol at construction —
     /// the kwarg renderer omits it then (unrenderable source).
     pub demand_dynamic: bool,
@@ -53,7 +53,7 @@ impl Default for SteamBoilerConfig {
             initial_bar: None,
             capacity_wh_per_bar: 10_000.0,
             wh_per_kg: 627.0,
-            demand_kg_h: 0.0,
+            demand_kg_per_s: 0.0,
             demand_dynamic: false,
             command_delay: Duration::from_millis(500),
             ramp_rate_w_per_s: f32::INFINITY,
@@ -69,7 +69,7 @@ pub struct SteamBoiler {
     interval: Duration,
     cfg: SteamBoilerConfig,
     state: Mutex<BoilerState>,
-    /// Steam-demand kg/h. Either a constant (the cfg default or a
+    /// Steam demand in kg/s. Either a constant (the cfg default or a
     /// numeric `:demand-kg-per-s`) or a Lisp expression re-resolved
     /// each tick by `refresh_inputs`.
     demand_source: RwLock<DynamicScalar>,
@@ -141,7 +141,7 @@ impl SteamBoiler {
             .unwrap_or(cfg.target_bar)
             .clamp(f32::MIN_POSITIVE, cfg.max_bar);
         let heater = DeviceAxis::new(cfg.device_delay, 0.0);
-        let demand_kg_h = cfg.demand_kg_h;
+        let demand_kg_per_s = cfg.demand_kg_per_s;
         Self {
             id,
             name: format!("steam-boiler-{id}"),
@@ -150,17 +150,17 @@ impl SteamBoiler {
             state: Mutex::new(BoilerState {
                 pressure_bar: init_bar,
             }),
-            demand_source: RwLock::new(DynamicScalar::constant(demand_kg_h)),
+            demand_source: RwLock::new(DynamicScalar::constant(demand_kg_per_s)),
             heater,
         }
     }
 
-    /// Steam demand in W (kg/h × Wh/kg); negative or non-finite reads
-    /// as 0.
+    /// Steam demand in W (kg/s × 3600 s/h × Wh/kg); a negative demand,
+    /// or one whose power is not finite, reads as 0.
     fn demand_w(&self) -> f32 {
-        let raw = self.demand_source.read().get();
-        let kg_h = if raw.is_finite() { raw.max(0.0) } else { 0.0 };
-        kg_h * self.cfg.wh_per_kg
+        let kg_per_s = self.demand_source.read().get() as f64;
+        let w = (kg_per_s * 3600.0 * self.cfg.wh_per_kg as f64) as f32;
+        if w.is_finite() { w.max(0.0) } else { 0.0 }
     }
 
     /// The electricity the boiler can take over a tick of `dt_s`
@@ -337,10 +337,7 @@ impl SimulatedComponent for SteamBoiler {
             kw.push((":initial-bar", lf(initial)));
         }
         if !self.cfg.demand_dynamic {
-            kw.push((
-                ":demand-kg-per-s",
-                crate::lisp::lisp_float(self.cfg.demand_kg_h as f64 / 3600.0),
-            ));
+            kw.push((":demand-kg-per-s", lf(self.cfg.demand_kg_per_s)));
         }
         kw.push((
             ":command-delay-s",
@@ -364,8 +361,8 @@ impl SimulatedComponent for SteamBoiler {
 }
 
 impl SteamDrive for SteamBoiler {
-    fn set_steam_demand_kg_h(&self, kg_h: f32) {
-        *self.demand_source.write() = DynamicScalar::constant(kg_h);
+    fn set_steam_demand_kg_per_s(&self, kg_per_s: f32) {
+        *self.demand_source.write() = DynamicScalar::constant(kg_per_s);
     }
 
     fn set_steam_demand_source(&self, scalar: DynamicScalar) {
@@ -385,7 +382,7 @@ impl SteamDrive for SteamBoiler {
     fn demand_reading(&self) -> ScalarReading {
         let s = self.demand_source.read();
         ScalarReading {
-            value: s.get() / 3600.0,
+            value: s.get(),
             expr: s.source_text(),
         }
     }
@@ -458,6 +455,9 @@ mod tests {
         )
     }
 
+    /// 100 kg/h in kg/s: 62_700 W at the default 627 Wh/kg.
+    const KG_100_PER_H: f32 = 100.0 / 3600.0;
+
     fn dt() -> Duration {
         Duration::from_secs(1)
     }
@@ -470,7 +470,7 @@ mod tests {
         let w = crate::sim::MicrogridSite::new();
         let b = boiler(SteamBoilerConfig::default());
         // 100 kg/h × 627 Wh/kg = 62_700 W
-        b.set_steam_demand_kg_h(100.0);
+        b.set_steam_demand_kg_per_s(KG_100_PER_H);
         b.set_command(SetpointAxis::Active, 200_000.0);
         b.tick(&w, Utc::now(), dt());
         assert!((b.aggregate_power_w(&w) - 62_700.0).abs() < 1.0);
@@ -485,7 +485,7 @@ mod tests {
     fn allotment_below_demand_is_consumed_gas_covers_rest() {
         let w = crate::sim::MicrogridSite::new();
         let b = boiler(SteamBoilerConfig::default());
-        b.set_steam_demand_kg_h(100.0); // 62.7 kW equivalent
+        b.set_steam_demand_kg_per_s(KG_100_PER_H); // 62.7 kW equivalent
         b.set_command(SetpointAxis::Active, 40_000.0);
         b.tick(&w, Utc::now(), dt());
         assert!((b.aggregate_power_w(&w) - 40_000.0).abs() < 1.0);
@@ -497,7 +497,7 @@ mod tests {
     fn no_command_draws_nothing() {
         let w = crate::sim::MicrogridSite::new();
         let b = boiler(SteamBoilerConfig::default());
-        b.set_steam_demand_kg_h(100.0);
+        b.set_steam_demand_kg_per_s(KG_100_PER_H);
         b.tick(&w, Utc::now(), dt());
         assert_eq!(b.aggregate_power_w(&w), 0.0);
         assert_eq!(b.telemetry(&w).pressure_bar, Some(8.0));
@@ -510,7 +510,7 @@ mod tests {
     fn above_target_declines_power_and_decays_at_demand_rate() {
         let w = crate::sim::MicrogridSite::new();
         let b = boiler(SteamBoilerConfig::default());
-        b.set_steam_demand_kg_h(100.0); // 62_700 W draw
+        b.set_steam_demand_kg_per_s(KG_100_PER_H); // 62_700 W draw
         b.set_pressure_bar(9.0);
         b.set_command(SetpointAxis::Active, 100_000.0);
         b.tick(&w, Utc::now(), dt());
@@ -541,7 +541,7 @@ mod tests {
             initial_bar: Some(7.9),
             ..Default::default()
         });
-        b.set_steam_demand_kg_h(100.0);
+        b.set_steam_demand_kg_per_s(KG_100_PER_H);
         b.set_command(SetpointAxis::Active, 250_000.0);
         b.tick(&w, Utc::now(), dt());
         // Burst: demand_w (62.7 kW) + recovery for 0.1 bar
@@ -570,7 +570,7 @@ mod tests {
     fn demand_sanitizes_negative_and_non_finite() {
         let w = crate::sim::MicrogridSite::new();
         let b = boiler(SteamBoilerConfig::default());
-        b.set_steam_demand_kg_h(-50.0);
+        b.set_steam_demand_kg_per_s(-50.0 / 3600.0);
         b.set_command(SetpointAxis::Active, 10_000.0);
         b.tick(&w, Utc::now(), dt());
         assert_eq!(b.aggregate_power_w(&w), 0.0, "negative demand is 0");
@@ -581,7 +581,7 @@ mod tests {
         // pin the need at the rated ceiling.
         for raw in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let b = boiler(SteamBoilerConfig::default());
-            b.set_steam_demand_kg_h(raw);
+            b.set_steam_demand_kg_per_s(raw);
             b.set_command(SetpointAxis::Active, 10_000.0);
             b.tick(&w, Utc::now(), dt());
             assert_eq!(b.aggregate_power_w(&w), 0.0, "{raw} demand is 0");
@@ -711,7 +711,9 @@ mod tests {
             w.bounds_of(700, SetpointAxis::Active).unwrap().0[0].upper,
             Some(0.0)
         );
-        b.steam_drive().unwrap().set_steam_demand_kg_h(100.0);
+        b.steam_drive()
+            .unwrap()
+            .set_steam_demand_kg_per_s(KG_100_PER_H);
         let upper = w.bounds_of(700, SetpointAxis::Active).unwrap().0[0]
             .upper
             .unwrap();
@@ -761,7 +763,7 @@ mod tests {
                 rated_upper_w: 100_000.0,
                 target_bar: 6.0,
                 max_bar: 9.0,
-                demand_kg_h: 3600.0,
+                demand_kg_per_s: 1.0,
                 stream_jitter_pct: 5.0,
                 ..Default::default()
             },
@@ -817,7 +819,7 @@ mod tests {
         let snap = b.snapshot_knob(KnobKind::BoilerDemand).unwrap();
 
         // A scenario collapses it to a constant.
-        b.set_steam_demand_kg_h(15.0);
+        b.set_steam_demand_kg_per_s(15.0 / 3600.0);
         assert!(b.demand_reading().expr.is_none());
         assert!(!b.has_unrenderable_source());
 
@@ -875,13 +877,17 @@ mod tests {
     #[test]
     fn a_falling_demand_cuts_the_draw_at_once() {
         let (w, b) = sited(slewing_boiler());
-        b.steam_drive().unwrap().set_steam_demand_kg_h(100.0); // 62_700 W equivalent
+        b.steam_drive()
+            .unwrap()
+            .set_steam_demand_kg_per_s(KG_100_PER_H); // 62_700 W equivalent
         w.gateway()
             .command(700, SetpointAxis::Active, 200_000.0)
             .unwrap();
         tick_n(&w, &b, 7);
         assert!((b.aggregate_power_w(&w) - 62_700.0).abs() < 1.0);
-        b.steam_drive().unwrap().set_steam_demand_kg_h(10.0); // 6_270 W equivalent
+        b.steam_drive()
+            .unwrap()
+            .set_steam_demand_kg_per_s(10.0 / 3600.0); // 6_270 W equivalent
         tick_n(&w, &b, 1);
         assert!(
             (b.aggregate_power_w(&w) - 6_270.0).abs() < 1.0,
@@ -897,7 +903,9 @@ mod tests {
     fn faulted_boiler_trips_and_awaits_redispatch() {
         for health in [Health::Error, Health::Standby] {
             let (w, b) = sited(slewing_boiler());
-            b.steam_drive().unwrap().set_steam_demand_kg_h(100.0); // 62_700 W equivalent
+            b.steam_drive()
+                .unwrap()
+                .set_steam_demand_kg_per_s(KG_100_PER_H); // 62_700 W equivalent
             w.gateway()
                 .command(700, SetpointAxis::Active, 200_000.0)
                 .unwrap();
@@ -946,7 +954,9 @@ mod tests {
             initial_bar: Some(9.0),
             ..Default::default()
         }));
-        b.steam_drive().unwrap().set_steam_demand_kg_h(100.0); // 62_700 W = 17.4 Wh/s
+        b.steam_drive()
+            .unwrap()
+            .set_steam_demand_kg_per_s(KG_100_PER_H); // 62_700 W = 17.4 Wh/s
         w.set_health(700, Health::Error).unwrap();
         tick_n(&w, &b, 10);
         let bar = b.telemetry(&w).pressure_bar.unwrap();
@@ -974,7 +984,9 @@ mod tests {
     #[test]
     fn ttl_expiry_slews_down() {
         let (w, b) = sited(slewing_boiler());
-        b.steam_drive().unwrap().set_steam_demand_kg_h(100.0); // 62_700 W equivalent
+        b.steam_drive()
+            .unwrap()
+            .set_steam_demand_kg_per_s(KG_100_PER_H); // 62_700 W equivalent
         w.gateway()
             .command(700, SetpointAxis::Active, 200_000.0)
             .unwrap();

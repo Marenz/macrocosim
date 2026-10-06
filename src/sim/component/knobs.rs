@@ -105,13 +105,13 @@ pub trait SunlightDrive: Send + Sync {
 /// The steam boiler's driven inputs: its steam demand and its
 /// pressure state.
 pub trait SteamDrive: Send + Sync {
-    /// Drive the steam demand (kg/h) with a constant. Collapses any
+    /// Drive the steam demand (kg/s) with a constant. Collapses any
     /// prior dynamic source, like
     /// [`SunlightDrive::set_sunlight_pct`].
-    fn set_steam_demand_kg_h(&self, kg_h: f32);
+    fn set_steam_demand_kg_per_s(&self, kg_per_s: f32);
 
-    /// Drive the steam demand with a Lisp expression that
-    /// `refresh_inputs` re-resolves each tick.
+    /// Drive the steam demand with a Lisp expression, read in kg/s,
+    /// that `refresh_inputs` re-resolves each tick.
     fn set_steam_demand_source(&self, scalar: DynamicScalar);
 
     /// Overwrite the pressure state (bar).

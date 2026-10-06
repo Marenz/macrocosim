@@ -273,12 +273,7 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> Result<Stat
         ("sunlight_pct", req.sunlight_pct),
         ("soc_pct", req.soc_pct),
         ("reactive_power_var", req.reactive_power_var),
-        // Checked as kg/h, the unit the boiler stores: a finite kg/s can
-        // overflow f32 once multiplied by 3600.
-        (
-            "steam_demand_kg_per_s",
-            req.steam_demand_kg_per_s.map(|v| v * 3600.0),
-        ),
+        ("steam_demand_kg_per_s", req.steam_demand_kg_per_s),
         ("pressure_bar", req.pressure_bar),
     ] {
         if let Some(v) = v
@@ -400,7 +395,7 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> Result<Stat
         && let Some(boiler) = steam
     {
         site.scenario_snapshot_knob(id, KnobKind::BoilerDemand);
-        boiler.set_steam_demand_kg_h((kg_per_s * 3600.0) as f32);
+        boiler.set_steam_demand_kg_per_s(kg_per_s as f32);
         site.note_knob_changed(id, "boiler-demand", Some(kg_per_s as f32), None, None);
     }
     if let Some(bar) = req.pressure_bar
@@ -588,14 +583,9 @@ mod tests {
         let site = MicrogridSite::new();
         register_boiler(&site, 6);
 
-        // 1e40 is infinite as f32; 1e36 is finite until it becomes kg/h.
-        for body in [
-            r#"{"steam_demand_kg_per_s": 1e40}"#,
-            r#"{"steam_demand_kg_per_s": 1e36}"#,
-        ] {
-            let req: DriveRequest = serde_json::from_str(body).unwrap();
-            assert!(apply_drive(&site, 6, &req).is_err(), "{body}");
-        }
+        // 1e40 is infinite as f32.
+        let req: DriveRequest = serde_json::from_str(r#"{"steam_demand_kg_per_s": 1e40}"#).unwrap();
+        assert!(apply_drive(&site, 6, &req).is_err());
     }
 
     fn register_meter(site: &MicrogridSite, id: u64) {

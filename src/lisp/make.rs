@@ -745,18 +745,16 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             // The wrapper-expanded category default lands in
             // `a.demand_kg_per_s` when no per-component value was
             // passed; otherwise the per-component value overrides via
-            // AsPlist's last-wins. The keyword is in kg/s; the boiler
-            // config stores kg/h, so the value is scaled by 3600.
+            // AsPlist's last-wins.
             let mut dynamic_demand: Option<DynamicScalar> = None;
             if let Some(v) = a.demand_kg_per_s.as_ref() {
                 let raw = v.as_inner();
                 if raw.numberp() {
                     if let Ok(kg_per_s) = f64::try_from(raw) {
-                        cfg.demand_kg_h = (kg_per_s * 3600.0) as f32;
+                        cfg.demand_kg_per_s = kg_per_s as f32;
                     }
                 } else {
-                    dynamic_demand =
-                        DynamicScalar::from_lisp(raw, cfg.demand_kg_h).map(|d| d.scaled(3600.0));
+                    dynamic_demand = DynamicScalar::from_lisp(raw, cfg.demand_kg_per_s);
                     cfg.demand_dynamic = true;
                 }
             }

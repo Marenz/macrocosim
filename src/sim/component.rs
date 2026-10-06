@@ -337,7 +337,7 @@ pub enum KnobSnapshot {
     /// argument travelling alongside it — is what keeps a boiler's
     /// snapshot from being written into an inverter's slot.
     Sunlight(SunlightSource),
-    /// Steam boiler steam demand (kg/h): same shape as
+    /// Steam boiler steam demand (kg/s): same shape as
     /// [`Self::Sunlight`], different knob.
     BoilerDemand(DynamicScalar),
     /// Meter active-power axis: the live override (`None` when the

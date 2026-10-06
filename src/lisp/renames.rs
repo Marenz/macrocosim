@@ -43,9 +43,9 @@ impl Convert {
     /// `value` in the new unit. `nil` and non-numbers pass through
     /// unchanged when no conversion is needed; a conversion on a
     /// non-number is an error naming the old keyword, except that a
-    /// per-hour value may be a lambda or symbol, which becomes a
-    /// lambda reading per second.
-    fn apply(
+    /// per-hour value may be a function, symbol or expression, which
+    /// becomes a source read per second.
+    pub(crate) fn apply(
         self,
         ctx: &mut TulispContext,
         old: &str,

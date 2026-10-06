@@ -15,7 +15,7 @@
 use tulisp::{AsPlist, Error, Plist, TulispContext, TulispObject};
 
 use crate::lisp::make::preset_from_lisp;
-use crate::lisp::renames::{Renamed, warn_renamed};
+use crate::lisp::renames::{Convert, Renamed, warn_renamed};
 use crate::lisp::value::LispValue;
 use crate::sim::component::KnobKind;
 use crate::sim::ev_presets::{ConnectedEv, EvOverrides, PRESETS};
@@ -39,13 +39,12 @@ AsPlist! {
 }
 
 /// Sets boiler `id`'s steam demand from `value` (a number, lambda or
-/// symbol); `per_unit` is how many kg/h one unit of `value` is.
+/// symbol), in kg/s.
 fn set_boiler_demand(
     router: &SharedSiteRouter,
     name: &str,
     id: i64,
     value: &TulispObject,
-    per_unit: f64,
 ) -> Result<bool, Error> {
     let w = router.site();
     let Some(c) = w.get(id as u64) else {
@@ -60,26 +59,19 @@ fn set_boiler_demand(
     };
     w.scenario_snapshot_knob(id as u64, KnobKind::BoilerDemand);
     if value.numberp() {
-        let kg_h = f64::try_from(value)? * per_unit;
-        boiler.set_steam_demand_kg_h(kg_h as f32);
-        w.note_knob_changed(
-            id as u64,
-            "boiler-demand",
-            Some((kg_h / 3600.0) as f32),
-            None,
-            None,
-        );
+        let kg_per_s = f64::try_from(value)? as f32;
+        boiler.set_steam_demand_kg_per_s(kg_per_s);
+        w.note_knob_changed(id as u64, "boiler-demand", Some(kg_per_s), None, None);
     } else if let Some(scalar) = crate::sim::dynamic_scalar::DynamicScalar::from_lisp(value, 0.0) {
         // Printed source and the cached value right after
         // construction — same pattern as set-meter-power.
         let printed = value.to_string();
-        let scalar = scalar.scaled(per_unit as f32);
         let resolved_now = scalar.get();
         boiler.set_steam_demand_source(scalar);
         w.note_knob_changed(
             id as u64,
             "boiler-demand",
-            Some(resolved_now / 3600.0),
+            Some(resolved_now),
             Some(printed),
             None,
         );
@@ -431,22 +423,24 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     // symbol installs a DynamicScalar the scheduler re-resolves each
     // refresh tick. Strict: unlike the meter/solar setters, a
     // non-boiler must reject here, not silently no-op — this is a
-    // first-class inspector knob. The boiler works in kg/h, so the
-    // kg/s door scales its value by 3600.
+    // first-class inspector knob. The deprecated `set-boiler-demand`
+    // takes kg/h and divides by 3600 at the door; a symbol or form
+    // becomes `(/ V 3600.0)`, a function a lambda reading kg/s.
     let r = router.clone();
     ctx.defun(
         "set-boiler-demand-kg-per-s",
         move |id: i64, value: TulispObject| -> Result<bool, Error> {
-            set_boiler_demand(&r, "set-boiler-demand-kg-per-s", id, &value, 3600.0)
+            set_boiler_demand(&r, "set-boiler-demand-kg-per-s", id, &value)
         },
     );
 
     let r = router.clone();
     ctx.defun(
         "set-boiler-demand",
-        move |id: i64, value: TulispObject| -> Result<bool, Error> {
+        move |ctx: &mut TulispContext, id: i64, value: TulispObject| -> Result<bool, Error> {
             warn_renamed("set-boiler-demand", "set-boiler-demand-kg-per-s", " (kg/s)");
-            set_boiler_demand(&r, "set-boiler-demand", id, &value, 1.0)
+            let value = Convert::PerHourToPerSecond.apply(ctx, "set-boiler-demand", &value)?;
+            set_boiler_demand(&r, "set-boiler-demand", id, &value)
         },
     );
 
