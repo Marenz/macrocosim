@@ -86,11 +86,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
             // the past by SECS seconds. Models a server that delivers
             // samples with a fixed timestamp lag, e.g. to test how a
             // downstream resampler copes with stale data.
-            let d = std::time::Duration::try_from_secs_f64(secs).map_err(|_| {
-                tulisp::Error::invalid_argument(format!(
-                    "set-sample-lag-s: seconds must be a non-negative number, got {secs}"
-                ))
-            })?;
+            let d = crate::lisp::secs_duration("set-sample-lag-s", secs)?;
             r2.site().set_sample_lag_ms(d.as_millis() as u64);
             Ok(true)
         },

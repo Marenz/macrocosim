@@ -63,7 +63,7 @@ pub(super) fn register(ctx: &mut TulispContext, metadata: Arc<RwLock<Metadata>>)
         };
         let m = metadata.clone();
         ctx.defun(name, move |secs: f64| -> Result<bool, Error> {
-            store(&mut m.write(), lifetime(name, secs)?);
+            store(&mut m.write(), crate::lisp::secs_duration(name, secs)?);
             Ok(true)
         });
         let m = metadata.clone();
@@ -73,15 +73,6 @@ pub(super) fn register(ctx: &mut TulispContext, metadata: Arc<RwLock<Metadata>>)
             Ok(true)
         });
     }
-}
-
-/// A default lifetime from seconds: fractions allowed, never negative.
-fn lifetime(name: &str, secs: f64) -> Result<Duration, Error> {
-    Duration::try_from_secs_f64(secs).map_err(|_| {
-        Error::invalid_argument(format!(
-            "{name}: seconds must be a non-negative number, got {secs}"
-        ))
-    })
 }
 
 #[cfg(test)]

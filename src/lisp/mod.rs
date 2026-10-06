@@ -176,6 +176,20 @@ pub(crate) fn lisp_float32(v: f32) -> String {
     }
 }
 
+/// A number of seconds from Lisp as a `Duration`: fractions allowed;
+/// negative, NaN, infinite and overflowing values are refused with an
+/// error naming `what`, the keyword or defun that took it.
+pub(crate) fn secs_duration(
+    what: impl std::fmt::Display,
+    secs: f64,
+) -> Result<Duration, tulisp::Error> {
+    Duration::try_from_secs_f64(secs).map_err(|_| {
+        tulisp::Error::invalid_argument(format!(
+            "{what} must be a non-negative number of seconds, got {secs}"
+        ))
+    })
+}
+
 impl Default for Metadata {
     fn default() -> Self {
         Self {

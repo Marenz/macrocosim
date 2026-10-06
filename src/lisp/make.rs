@@ -827,14 +827,7 @@ fn connect_successors(
 /// A seconds keyword as a `Duration`, `default` when absent. Negative,
 /// NaN and infinite values are refused, naming the keyword.
 fn secs_to_duration(kw: &str, secs: Option<f64>, default: Duration) -> Result<Duration, Error> {
-    match secs {
-        None => Ok(default),
-        Some(s) => Duration::try_from_secs_f64(s).map_err(|_| {
-            Error::invalid_argument(format!(
-                "{kw} must be a non-negative number of seconds, got {s}"
-            ))
-        }),
-    }
+    secs.map_or(Ok(default), |s| crate::lisp::secs_duration(kw, s))
 }
 
 /// The reactive kwargs shared by both inverter constructors,

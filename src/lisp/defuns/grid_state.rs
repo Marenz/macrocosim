@@ -1,8 +1,6 @@
 //! Grid-state knobs: per-phase voltage and the per-microgrid
 //! physics tick cadence.
 
-use std::time::Duration;
-
 use tulisp::{Error, TulispContext};
 
 use crate::sim::microgrids::SharedSiteRouter;
@@ -26,11 +24,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     ctx.defun(
         "set-physics-tick-s",
         move |secs: f64| -> Result<bool, Error> {
-            let d = Duration::try_from_secs_f64(secs).map_err(|_| {
-                Error::invalid_argument(format!(
-                    "set-physics-tick-s: seconds must be a non-negative number, got {secs}"
-                ))
-            })?;
+            let d = crate::lisp::secs_duration("set-physics-tick-s", secs)?;
             r.site().set_physics_tick_ms((d.as_millis() as u64).max(1));
             Ok(true)
         },

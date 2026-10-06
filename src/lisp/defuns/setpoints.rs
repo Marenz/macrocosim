@@ -87,11 +87,7 @@ pub(super) fn parse_tail(
 /// Seconds to a request lifetime: `0` expires at once, anything else
 /// is floored at [`MIN_SETPOINT_LIFETIME`].
 fn secs_lifetime(name: &str, secs: f64) -> Result<Duration, Error> {
-    let d = Duration::try_from_secs_f64(secs).map_err(|_| {
-        Error::invalid_argument(format!(
-            "{name}: :lifetime-s must be a non-negative number, got {secs}"
-        ))
-    })?;
+    let d = crate::lisp::secs_duration(format_args!("{name}: :lifetime-s"), secs)?;
     Ok(if d.is_zero() {
         d
     } else {
