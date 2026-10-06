@@ -15,7 +15,7 @@ use crate::sim::component::{ReactiveReading, ScalarReading};
 use crate::sim::setpoints::{SetpointKind, SetpointOutcome};
 use crate::timeout_tracker::SetpointAxis;
 
-use crate::ui::api::{ApiError, Json, Mg, Path};
+use crate::ui::api::{ApiError, ComponentPath, Json, Mg, Path};
 
 #[derive(Serialize)]
 pub(in crate::ui) struct ComponentStateResponse {
@@ -77,7 +77,7 @@ struct Envelope {
 
 pub(in crate::ui) async fn component(
     mg: Mg,
-    Path((_, id)): Path<(u64, u64)>,
+    Path(ComponentPath { id }): Path<ComponentPath>,
 ) -> Result<Json<ComponentStateResponse>, ApiError> {
     component_state(&mg.site, id).map(Json)
 }
@@ -173,9 +173,7 @@ fn component_state(
     site: &crate::sim::MicrogridSite,
     id: u64,
 ) -> Result<ComponentStateResponse, ApiError> {
-    let c = site
-        .get(id)
-        .ok_or_else(|| ApiError::not_found(format!("component {id} not found")))?;
+    let c = site.get(id).ok_or_else(|| ApiError::no_component(id))?;
 
     Ok(ComponentStateResponse {
         id,

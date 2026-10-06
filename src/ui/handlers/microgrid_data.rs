@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use axum::{Extension, extract::State, http::StatusCode};
+use frequenz_microgrid::LogicalMeterHandle;
 use serde::Serialize;
 
 use crate::lisp::Config;
@@ -30,6 +31,13 @@ fn loopback_of(loopbacks: &MicrogridLoopbacks, mg_id: u64) -> Option<SharedMicro
     loopbacks.read().get(&mg_id).cloned()
 }
 
+/// The logical meter of `mg`'s loopback client, present once the
+/// client is connected and its component graph built.
+fn logical_meter_of(loopbacks: &MicrogridLoopbacks, mg_id: u64) -> Option<LogicalMeterHandle> {
+    loopback_of(loopbacks, mg_id)
+        .and_then(|slot| slot.microgrid.read().as_ref().map(|m| m.logical_meter()))
+}
+
 /// Whether the loopback client is connected: 200 with
 /// `connected: false` when it is not, or when the microgrid's
 /// runtime has not started.
@@ -37,9 +45,7 @@ pub(in crate::ui) async fn metrics_status(
     mg: Mg,
     Extension(loopbacks): Extension<MicrogridLoopbacks>,
 ) -> Json<MicrogridStatusResp> {
-    let lm = loopback_of(&loopbacks, mg.id)
-        .and_then(|slot| slot.microgrid.read().as_ref().map(|m| m.logical_meter()));
-    Json(match lm {
+    Json(match logical_meter_of(&loopbacks, mg.id) {
         Some(lm) => MicrogridStatusResp {
             connected: true,
             component_count: Some(lm.graph().components().count()),
@@ -101,9 +107,7 @@ pub(in crate::ui) async fn metrics_formulas(
     mg: Mg,
     Extension(loopbacks): Extension<MicrogridLoopbacks>,
 ) -> Result<Json<HashMap<&'static str, String>>, ApiError> {
-    let lm = loopback_of(&loopbacks, mg.id)
-        .and_then(|slot| slot.microgrid.read().as_ref().map(|m| m.logical_meter()));
-    let Some(lm) = lm else {
+    let Some(lm) = logical_meter_of(&loopbacks, mg.id) else {
         return Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "metrics client not connected",

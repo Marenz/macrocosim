@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::sim::history::Metric;
 use crate::sim::setpoints::SetpointEvent;
 
-use crate::ui::api::{ApiError, Json, Mg, Path, Query};
+use crate::ui::api::{ApiError, ComponentPath, Json, Mg, Path, Query};
 
 #[derive(Deserialize)]
 pub(in crate::ui) struct HistoryQuery {
@@ -39,7 +39,7 @@ pub(in crate::ui) struct HistoryResponse {
 
 pub(in crate::ui) async fn history(
     mg: Mg,
-    Path((_, id)): Path<(u64, u64)>,
+    Path(ComponentPath { id }): Path<ComponentPath>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<HistoryResponse>, ApiError> {
     history_body(&mg.site, id, q)
@@ -90,7 +90,7 @@ pub(in crate::ui) struct SetpointsResponse {
 
 pub(in crate::ui) async fn setpoints(
     mg: Mg,
-    Path((_, id)): Path<(u64, u64)>,
+    Path(ComponentPath { id }): Path<ComponentPath>,
     Query(q): Query<SetpointsQuery>,
 ) -> Json<SetpointsResponse> {
     setpoints_body(&mg.site, id, q)

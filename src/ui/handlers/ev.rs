@@ -15,7 +15,7 @@
 use serde::Serialize;
 
 use crate::sim::ev_presets::PRESETS;
-use crate::ui::api::{ApiError, Json, Mg, Path};
+use crate::ui::api::{ApiError, ComponentPath, Json, Mg, Path};
 
 #[derive(Serialize, Default)]
 pub(in crate::ui) struct EvResponse {
@@ -45,12 +45,9 @@ pub(in crate::ui) struct EvResponse {
 
 pub(in crate::ui) async fn ev(
     mg: Mg,
-    Path((_, id)): Path<(u64, u64)>,
+    Path(ComponentPath { id }): Path<ComponentPath>,
 ) -> Result<Json<EvResponse>, ApiError> {
-    let c = mg
-        .site
-        .get(id)
-        .ok_or_else(|| ApiError::not_found(format!("component {id} not found")))?;
+    let c = mg.site.get(id).ok_or_else(|| ApiError::no_component(id))?;
     let Some(port) = c.ev_port() else {
         return Err(ApiError::bad_request(format!(
             "component {id} is not an EV charger"

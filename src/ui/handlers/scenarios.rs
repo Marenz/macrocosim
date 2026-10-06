@@ -113,13 +113,19 @@ pub(in crate::ui) async fn scenario_csv_list(mg: Mg) -> Json<ScenarioCsvList> {
     }
 }
 
+/// The `{file}` segment of a `/scenario/csv/{file}` route.
+#[derive(Deserialize)]
+pub(in crate::ui) struct CsvPath {
+    file: String,
+}
+
 /// Download one recorded CSV by file name. The name must be a bare
 /// `*.csv` file with no path separators (rejecting traversal) and must
 /// be one the listing actually reports — so this only ever serves
 /// files inside the recording directory.
 pub(in crate::ui) async fn scenario_csv_file(
     mg: Mg,
-    Path((_, file)): Path<(u64, String)>,
+    Path(CsvPath { file }): Path<CsvPath>,
 ) -> Result<Response, ApiError> {
     if file.contains('/') || file.contains('\\') || file.contains("..") || !file.ends_with(".csv") {
         return Err(ApiError::bad_request("invalid filename"));

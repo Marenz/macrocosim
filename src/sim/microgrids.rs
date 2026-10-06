@@ -280,25 +280,12 @@ impl SiteRouter {
         self.bootstrap.clone()
     }
 
-    /// Rule 2/3 only: the first registered microgrid's site, else the
-    /// bootstrap site — never `current_microgrid`. This is the
-    /// resolution for callers that do NOT hold the interpreter lock
-    /// (the unscoped legacy HTTP endpoints): `current_microgrid` is
-    /// only meaningful under that lock, so reading it lock-free races
-    /// a concurrent scoped eval and leaks its temporary scope.
-    pub fn first_site(&self) -> MicrogridSite {
-        if let Some(entry) = self.registry.lock().values().next() {
-            return entry.site.clone();
-        }
-        self.bootstrap.clone()
-    }
-
     /// The bootstrap site supplied at construction time, regardless
     /// of registry state. For callers that must cover components
     /// living outside every registered microgrid (the import
     /// collision scan): legacy single-site configs run on this site,
-    /// and neither `site()` nor `first_site()` returns it once a
-    /// microgrid is registered.
+    /// and `site()` does not return it once a microgrid is
+    /// registered.
     pub fn bootstrap_site(&self) -> MicrogridSite {
         self.bootstrap.clone()
     }
@@ -464,28 +451,6 @@ mod tests {
         reg.lock()
             .insert(DEFAULT_MICROGRID_ID, entry(DEFAULT_MICROGRID_ID, 8800));
         assert_eq!(next_free_id(&reg), DEFAULT_MICROGRID_ID + 1);
-    }
-
-    #[test]
-    fn first_site_ignores_the_ambient_scope() {
-        let reg = new_registry();
-        reg.lock().insert(2200, entry(2200, 8800));
-        reg.lock().insert(2201, entry(2201, 8810));
-        let current = new_current_microgrid();
-        let bootstrap = MicrogridSite::new();
-        let router = SiteRouter::new(reg.clone(), current.clone(), bootstrap.clone());
-        // site() follows the scope pointer (its callers hold the
-        // interpreter lock); first_site() must not — it is the
-        // resolution for lock-free readers a concurrent scoped eval
-        // would otherwise race.
-        *current.write() = Some(2201);
-        let scoped = reg.lock().get(&2201).unwrap().site.clone();
-        let first = reg.lock().get(&2200).unwrap().site.clone();
-        assert!(router.site().ptr_eq(&scoped));
-        assert!(router.first_site().ptr_eq(&first));
-        // Empty registry: both fall back to the bootstrap site.
-        reg.lock().clear();
-        assert!(router.first_site().ptr_eq(&bootstrap));
     }
 
     #[test]

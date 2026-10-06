@@ -53,7 +53,7 @@ pub(in crate::ui) async fn scripts_list(
     // state dir must not open the rest of the filesystem to listing).
     let canon = target
         .canonicalize()
-        .map_err(|_| ApiError::not_found("no such directory".to_string()))?;
+        .map_err(|_| ApiError::not_found("no such directory"))?;
     if !canon.starts_with(&root) {
         return Err(ApiError::bad_request("directory is outside the state dir"));
     }

@@ -92,7 +92,7 @@ fn snapshot(site: &crate::sim::MicrogridSite) -> Option<WeatherResponse> {
 pub(in crate::ui) async fn weather_get(mg: Mg) -> WeatherResult {
     snapshot(&mg.site)
         .map(Json)
-        .ok_or_else(|| ApiError::not_found("no weather configured".to_string()))
+        .ok_or_else(|| ApiError::not_found("no weather configured"))
 }
 
 /// One scripted cloud, fired after any config change in the same
@@ -252,7 +252,7 @@ fn apply_weather_over(
     // the conflict instead of panicking on an `expect`.
     snapshot(site)
         .map(Json)
-        .ok_or_else(|| ApiError::conflict("weather was removed while applying".to_string()))
+        .ok_or_else(|| ApiError::conflict("weather was removed while applying"))
 }
 
 pub(in crate::ui) async fn weather_post(

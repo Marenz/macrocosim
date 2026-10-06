@@ -2548,7 +2548,8 @@ async fn component_snapshot_reports_remaining_ms_for_a_timed_setpoint() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    cfg.legacy_site().log_setpoint(
+    let site = cfg.microgrids().lock().get(&2200).unwrap().site.clone();
+    site.log_setpoint(
         4,
         SetpointEvent {
             ts: Utc::now(),

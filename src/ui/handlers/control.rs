@@ -14,7 +14,7 @@ use serde::Deserialize;
 use crate::sim::component::KnobKind;
 use crate::sim::microgrid_site::{MicrogridSite, SocRefusal};
 use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
-use crate::ui::api::{ApiError, Json, Mg, Path};
+use crate::ui::api::{ApiError, ComponentPath, Json, Mg, Path};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,7 +77,7 @@ fn apply_status(
     req: &StatusRequest,
 ) -> Result<StatusCode, ApiError> {
     if site.get(id).is_none() {
-        return Err(ApiError::not_found(format!("component {id} not found")));
+        return Err(ApiError::no_component(id));
     }
     // Parse and validate everything first, apply after: a request
     // with one bad field changes nothing (no half-applied status).
@@ -156,7 +156,7 @@ fn soc_rejection(id: u64, no_car_status: StatusCode, refusal: SocRefusal) -> Api
 
 fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> Result<StatusCode, ApiError> {
     let Some(component) = site.get(id) else {
-        return Err(ApiError::not_found(format!("component {id} not found")));
+        return Err(ApiError::no_component(id));
     };
     // Validate every field first, apply after (same contract as
     // apply_status): a request with one inapplicable field changes
@@ -409,7 +409,7 @@ fn apply_drive(site: &MicrogridSite, id: u64, req: &DriveRequest) -> Result<Stat
 
 pub(in crate::ui) async fn component_status(
     mg: Mg,
-    Path((_, id)): Path<(u64, u64)>,
+    Path(ComponentPath { id }): Path<ComponentPath>,
     Json(req): Json<StatusRequest>,
 ) -> Result<StatusCode, ApiError> {
     apply_status(&mg.site, id, &req)
@@ -417,7 +417,7 @@ pub(in crate::ui) async fn component_status(
 
 pub(in crate::ui) async fn component_drive(
     mg: Mg,
-    Path((_, id)): Path<(u64, u64)>,
+    Path(ComponentPath { id }): Path<ComponentPath>,
     Json(req): Json<DriveRequest>,
 ) -> Result<StatusCode, ApiError> {
     apply_drive(&mg.site, id, &req)

@@ -297,9 +297,9 @@ pub(in crate::ui) async fn microgrids_import(
     // parse, so the collected list is already sorted and unique.
     {
         // The TRUE bootstrap site: once a microgrid is registered,
-        // legacy_site()/site() return the first registry entry, which
-        // would leave components living on the bootstrap site (legacy
-        // single-site configs) out of the collision scan.
+        // site() returns the first registry entry, which would leave
+        // components living on the bootstrap site (legacy single-site
+        // configs) out of the collision scan.
         let bootstrap = config.bootstrap_site();
         // Snapshot the site handles under the lock, then scan with
         // the lock RELEASED: a big export means thousands of per-id

@@ -153,6 +153,12 @@ pub(in crate::ui) async fn dispatch_create(
     Ok((StatusCode::CREATED, Json(dispatch_to_view(&dispatch))))
 }
 
+/// The `{dispatch_id}` segment of a `/dispatches/{dispatch_id}` route.
+#[derive(Deserialize)]
+pub(in crate::ui) struct DispatchPath {
+    dispatch_id: u64,
+}
+
 /// Body for `POST /api/mg/{mg}/dispatches/{did}/active` — pause
 /// (`false`) or resume (`true`).
 #[derive(Deserialize)]
@@ -163,7 +169,7 @@ pub(in crate::ui) struct DispatchSetActiveReq {
 pub(in crate::ui) async fn dispatch_set_active(
     State(config): State<Config>,
     mg: Mg,
-    Path((_, dispatch_id)): Path<(u64, u64)>,
+    Path(DispatchPath { dispatch_id }): Path<DispatchPath>,
     Json(req): Json<DispatchSetActiveReq>,
 ) -> Result<Json<DispatchView>, ApiError> {
     let dispatch = config
@@ -176,7 +182,7 @@ pub(in crate::ui) async fn dispatch_set_active(
 pub(in crate::ui) async fn dispatch_delete(
     State(config): State<Config>,
     mg: Mg,
-    Path((_, dispatch_id)): Path<(u64, u64)>,
+    Path(DispatchPath { dispatch_id }): Path<DispatchPath>,
 ) -> Result<StatusCode, ApiError> {
     let mg_id = mg.id;
     config

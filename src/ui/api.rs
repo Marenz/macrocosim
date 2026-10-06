@@ -6,8 +6,8 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection, Str
 use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::{Method, StatusCode, Uri, request::Parts};
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// A failed request: a status and a message, sent as
@@ -47,6 +47,11 @@ impl ApiError {
     /// The 404 for a microgrid id the registry does not hold.
     pub(in crate::ui) fn not_registered(mg: u64) -> Self {
         Self::not_found(format!("microgrid {mg} not registered"))
+    }
+
+    /// The 404 for a component id the microgrid does not hold.
+    pub(in crate::ui) fn no_component(id: u64) -> Self {
+        Self::not_found(format!("component {id} not found"))
     }
 
     /// Add a field beside `error`.
@@ -125,6 +130,12 @@ where
             .map(|axum::extract::Path(v)| Path(v))
             .map_err(|e: PathRejection| ApiError::new(e.status(), e.body_text()))
     }
+}
+
+/// The `{id}` segment of a `/component/{id}` route.
+#[derive(Deserialize)]
+pub(in crate::ui) struct ComponentPath {
+    pub id: u64,
 }
 
 /// A UTF-8 request body, as axum's `String` extractor reads it, whose

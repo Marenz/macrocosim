@@ -65,10 +65,7 @@ pub(in crate::ui) async fn format(
     let width = q.width.unwrap_or(80).clamp(20, 200);
     // spawn_blocking like every other CPU-bound handler: a large,
     // deeply nested body would otherwise stall a tokio worker.
-    tokio::task::spawn_blocking(move || {
-        tulisp_fmt::format_with_width(&body, width)
-            .map_err(|e| ApiError::bad_request(e.to_string()))
-    })
-    .await
-    .map_err(|e| ApiError::internal(e.to_string()))?
+    super::blocking(move || tulisp_fmt::format_with_width(&body, width))
+        .await?
+        .map_err(|e| ApiError::bad_request(e.to_string()))
 }
