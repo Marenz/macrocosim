@@ -153,7 +153,8 @@ pub(in crate::ui) async fn dispatch_create(
     Ok((StatusCode::CREATED, Json(dispatch_to_view(&dispatch))))
 }
 
-/// The `{dispatch_id}` segment of a `/dispatches/{dispatch_id}` route.
+/// The `{dispatch_id}` segment of a `/dispatches/{dispatch_id}`
+/// route.
 #[derive(Deserialize)]
 pub(in crate::ui) struct DispatchPath {
     dispatch_id: u64,

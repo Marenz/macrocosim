@@ -31,9 +31,18 @@ pub(in crate::ui) mod weather;
 pub(in crate::ui) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, ApiError> {
+    blocking_with("task", f).await
+}
+
+/// [`blocking`] with `label` naming the task in the 500's text:
+/// `{label} panicked: …`.
+pub(in crate::ui) async fn blocking_with<T: Send + 'static>(
+    label: &str,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, ApiError> {
     tokio::task::spawn_blocking(f)
         .await
-        .map_err(|e| ApiError::internal(format!("task panicked: {e}")))
+        .map_err(|e| ApiError::internal(format!("{label} panicked: {e}")))
 }
 
 /// [`blocking`] under the create lock, for a route that claims a
