@@ -29,15 +29,22 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
 
+from frequenz.quantities import Power
+
 from ._http import scenario_path
 from ._process import render_config, resolve_binary
-from .build import Component, ConfigSource, RawLisp, to_lisp_atom
+from .build import (
+    _POWER_SOURCE,
+    Component,
+    ConfigSource,
+    RawLisp,
+    _require,
+    to_lisp_atom,
+)
 from .enums import Metric, Schedule
 from .matchers import Matcher
 
 if TYPE_CHECKING:
-    from frequenz.quantities import Power
-
     from ._http import HttpClient
     from .runtime import Site
     from .signals import DrivenSignal, SettingSignal, Signal
@@ -179,6 +186,9 @@ class Scenario:
 
         Any settable signal works — a meter's ``power``, a PV's
         ``sunlight``, a battery's ``soc``, a component's ``health``.
+        ``value`` must have the signal's type (``Power``, ``Percentage``,
+        ``Health``, …), or be a ``raw(...)`` where the signal takes one;
+        a bare number raises :class:`TypeError`.
         """
         cue = getattr(target, "_scenario_cue", None)
         if cue is None:
@@ -195,7 +205,8 @@ class Scenario:
         return self
 
     def drive_meter(self, meter: Component | int, value: Power | RawLisp) -> Scenario:
-        """Install a continuous source on a meter (a value, or ``raw`` Lisp)."""
+        """Install a continuous source on a meter (a ``Power``, or ``raw`` Lisp)."""
+        _require(value, _POWER_SOURCE, "value")
         cid = meter.id if isinstance(meter, Component) else int(meter)
         self._drives.append(f"(drive-meter {cid} {to_lisp_atom(value)})")
         return self
@@ -389,7 +400,7 @@ def run_scenario_stepped(
     *,
     macroctl_bin: str | os.PathLike[str] | None = None,
     until: timedelta | None = None,
-    step: int | None = None,
+    step: timedelta | None = None,
     assert_pass: bool = True,
 ) -> ScenarioReport:
     """Run a scenario headless on the stepped clock and return its report.
@@ -399,8 +410,13 @@ def run_scenario_stepped(
     object(s) (a ``Microgrid`` and ``Scenario``) rendered to a temp config.
     Shells ``macroctl scenario run NAME --stepped --config … --json``; with
     ``assert_pass`` a non-zero exit (a failed ``(check …)``), or a report
-    with no checks run, raises.
+    with no checks run, raises. ``until`` and ``step`` bound the run and its
+    clock step.
     """
+    if until is not None:
+        _require(until, timedelta, "until")
+    if step is not None:
+        _require(step, timedelta, "step")
     binary = resolve_binary(
         "macroctl", env_var="MACROCTL_BIN", explicit=macroctl_bin, flag="macroctl_bin"
     )
@@ -430,7 +446,7 @@ def run_scenario_stepped(
         if until is not None:
             args += ["--until-s", str(until.total_seconds())]
         if step is not None:
-            args += ["--step-s", str(step / 1000)]
+            args += ["--step-s", str(step.total_seconds())]
         if assert_pass:
             args += ["--assert"]
 

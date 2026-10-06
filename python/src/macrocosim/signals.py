@@ -43,9 +43,23 @@ CheckRef = Callable[[], tuple[int, str]]
 CueForm = Callable[[Any], str]
 """Renders a timed scenario cue setting the signal to a value."""
 
+Kind = type | tuple[type, ...]
+"""The type (or types) a value must have."""
+
 _READ_WAIT = timedelta(seconds=5)
 _TIMEOUT = timedelta(seconds=10)
 _POLL = timedelta(milliseconds=250)
+
+
+def _require(value: object, kind: Kind, name: str) -> None:
+    """Raise :class:`TypeError` unless ``value`` is a ``kind``.
+
+    A bare number carries no unit, so a quantity argument refuses one.
+    """
+    if not isinstance(value, kind):
+        kinds = kind if isinstance(kind, tuple) else (kind,)
+        wanted = " or ".join(k.__name__ for k in kinds)
+        raise TypeError(f"{name} must be {wanted}, got {type(value).__name__}")
 
 
 class _Readable(Generic[Q]):
@@ -154,7 +168,44 @@ class CumulativeSignal(_Readable[Q]):
         )
 
 
-class DrivenSignal(Signal[Q]):
+class _Settable(Generic[V]):
+    """The write surface every settable signal shares.
+
+    ``kind`` is the type ``set`` takes and ``cue_kind`` (default ``kind``)
+    the type a scenario cue takes; any other value raises
+    :class:`TypeError`.
+    """
+
+    def __init__(
+        self,
+        set_: Callable[[V], Awaitable[None]],
+        label: str,
+        *,
+        kind: Kind,
+        cue_kind: Kind | None = None,
+        cue: CueForm | None = None,
+    ) -> None:
+        self._set = set_
+        self._label = label
+        self._kind = kind
+        self._cue_kind = kind if cue_kind is None else cue_kind
+        self._cue = cue
+
+    async def set(self, value: V) -> None:
+        """Set the signal to ``value``; a rejection raises
+        ``ControlRejected``."""
+        _require(value, self._kind, self._label)
+        await self._set(value)
+
+    def _scenario_cue(self, value: V) -> str:
+        """Render the Lisp form a scenario cue uses to set this signal."""
+        if self._cue is None:
+            raise ValueError(f"{self._label}: this signal cannot be cued")
+        _require(value, self._cue_kind, self._label)
+        return self._cue(value)
+
+
+class DrivenSignal(Signal[Q], _Settable[Q]):
     """A signal the simulator lets the test set directly.
 
     ``set`` arranges the world (a meter's published load, a battery's
@@ -169,45 +220,14 @@ class DrivenSignal(Signal[Q]):
         set_: Callable[[Q], Awaitable[None]],
         label: str,
         *,
+        kind: Kind,
+        cue_kind: Kind | None = None,
         check_ref: CheckRef | None = None,
         cue: CueForm | None = None,
     ) -> None:
-        super().__init__(spec, read, label, check_ref=check_ref)
-        self._set = set_
-        self._cue = cue
-
-    async def set(self, value: Q) -> None:
-        """Drive the signal to ``value``; a rejection raises
-        ``ControlRejected``."""
-        await self._set(value)
-
-    def _scenario_cue(self, value: Q) -> str:
-        """Render the Lisp form a scenario cue uses to set this signal."""
-        if self._cue is None:
-            raise ValueError(f"{self._label}: this signal cannot be cued")
-        return self._cue(value)
+        Signal.__init__(self, spec, read, label, check_ref=check_ref)
+        _Settable.__init__(self, set_, label, kind=kind, cue_kind=cue_kind, cue=cue)
 
 
-class SettingSignal(Generic[V]):
+class SettingSignal(_Settable[V]):
     """A write-only knob on a component (health, sunlight)."""
-
-    def __init__(
-        self,
-        set_: Callable[[V], Awaitable[None]],
-        label: str,
-        *,
-        cue: CueForm | None = None,
-    ) -> None:
-        self._set = set_
-        self._label = label
-        self._cue = cue
-
-    def _scenario_cue(self, value: V) -> str:
-        """Render the Lisp form a scenario cue uses to set this knob."""
-        if self._cue is None:
-            raise ValueError(f"{self._label}: this signal cannot be cued")
-        return self._cue(value)
-
-    async def set(self, value: V) -> None:
-        """Set the knob to ``value``; a rejection raises ``ControlRejected``."""
-        await self._set(value)

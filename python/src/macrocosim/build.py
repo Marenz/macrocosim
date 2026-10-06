@@ -15,13 +15,15 @@ converts any of these to the Lisp-supported literal macrocosim reads;
 
 from __future__ import annotations
 
+import inspect
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import time, timedelta
 from enum import StrEnum
+from functools import cache
 from pathlib import Path
-from typing import Any, Protocol, TypeAlias, TypeVar, runtime_checkable
+from typing import Any, NoReturn, Protocol, TypeAlias, TypeVar, runtime_checkable
 
 from frequenz.quantities import (
     ApparentPower,
@@ -36,7 +38,7 @@ from frequenz.quantities import (
 
 from .enums import CommandMode, EvIdle, EvPreset, Health, TelemetryMode
 from .metrics import ACTIVE_POWER, REACTIVE_POWER, SOC, STORED_ENERGY
-from .signals import DrivenSignal, SettingSignal, Signal
+from .signals import DrivenSignal, Kind, SettingSignal, Signal, _require
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,12 @@ def raw(text: str) -> RawLisp:
     """Splice a literal Lisp form (a value, or a whole ``(make-* …)``)."""
     return RawLisp(text)
 
+
+# The types a power, reactive-power or sunlight source takes: a typed
+# constant, or a raw Lisp form (a lambda or symbol) re-read every tick.
+_POWER_SOURCE: Kind = (Power, RawLisp)
+_REACTIVE_SOURCE: Kind = (ReactivePower, RawLisp)
+_SUNLIGHT_SOURCE: Kind = (Percentage, RawLisp)
 
 # A value that can appear in an emitted plist: a Lisp scalar, a typed physical
 # quantity, a datetime, an enum symbol, or a spliced raw form.
@@ -106,18 +114,95 @@ def to_lisp_atom(value: Value) -> str:
     return _lisp_string(value)
 
 
-def _normalize(kwargs: Mapping[str, Value | None]) -> dict[str, Value]:
-    """Resolve constructor kwargs to a plist-key → value dict.
+# Each builder argument that carries a unit: the plist key it is written
+# under and the type it must have.
+_QUANTITY_ARGS: dict[str, tuple[str, Kind]] = {
+    "rated_fuse_current": ("rated-fuse-current-a", Current),
+    "stream_jitter": ("stream-jitter-pct", Percentage),
+    "interval": ("interval-s", timedelta),
+    "command_delay": ("command-delay-s", timedelta),
+    "reactive_command_delay": ("reactive-command-delay-s", timedelta),
+    "power": ("power-w", _POWER_SOURCE),
+    "reactive_power": ("reactive-power-var", _REACTIVE_SOURCE),
+    "reactive_apparent": ("reactive-apparent-va", ApparentPower),
+    "capacity": ("capacity-wh", Energy),
+    "initial_soc": ("initial-soc-pct", Percentage),
+    "soc_lower": ("soc-lower-pct", Percentage),
+    "soc_upper": ("soc-upper-pct", Percentage),
+    "soc_protect_margin": ("soc-protect-margin-pct", Percentage),
+    "voltage": ("voltage-v", Voltage),
+    "sunlight": ("sunlight-pct", _SUNLIGHT_SOURCE),
+}
 
-    Only the convenience *key* renames live here; value conversion is
-    :func:`to_lisp_atom`'s job, at emit time.
+
+# Builder arguments that were renamed, and the argument that replaced each.
+_RETIRED_ARGS: dict[str, str] = {
+    "stream_jitter_pct": "stream_jitter",
+    "reactive_apparent_va": "reactive_apparent",
+    "ramp_rate": "ramp_rate_w_per_s",
+    "reactive_ramp_rate": "reactive_ramp_rate_var_per_s",
+    "demand_kg_h": "demand_kg_per_s",
+}
+
+# Each quantity argument's plist key spelled as an argument name
+# (``power_w``), and the typed argument that writes that key.
+_UNIT_SPELLED_ARGS: dict[str, str] = {
+    lisp_key.replace("-", "_"): arg for arg, (lisp_key, _) in _QUANTITY_ARGS.items()
+} | {"rated_lower_w": "rated", "rated_upper_w": "rated"}
+
+
+@cache
+def _params(builder: Callable[..., object]) -> frozenset[str]:
+    """A builder's named (keyword-only) parameters; ``**extra`` is not one."""
+    return frozenset(
+        name
+        for name, param in inspect.signature(builder).parameters.items()
+        if param.kind is inspect.Parameter.KEYWORD_ONLY
+    )
+
+
+def _refuse_renamed(key: str, params: frozenset[str]) -> NoReturn:
+    """Raise :class:`TypeError` for a retired or unit-spelled argument.
+
+    The message names the argument to use when the builder has it among
+    its named parameters ``params``.
     """
-    renames = {"sunlight": "sunlight%", "demand_kg_h": "demand"}
+    retired = key in _RETIRED_ARGS
+    new = _RETIRED_ARGS[key] if retired else _UNIT_SPELLED_ARGS[key]
+    if new not in params:
+        raise TypeError(f"unexpected argument {key}")
+    if retired:
+        raise TypeError(f"{key} was renamed; use {new}")
+    raise TypeError(f"no argument {key}; use {new}, a typed value")
+
+
+def _normalize(
+    kwargs: Mapping[str, Value | None], params: frozenset[str]
+) -> dict[str, Value]:
+    """Resolve a builder's constructor kwargs to a plist-key → value dict.
+
+    ``kwargs`` holds every named argument of the builder (``None`` when
+    not given) apart from ``rated``, and its ``**extra``; ``params`` is
+    the builder's named parameters. Each quantity argument is
+    type-checked and written under its unit suffixed key; value
+    conversion is :func:`to_lisp_atom`'s job, at emit time, apart from
+    a current (whole amperes). A retired argument name, or a plist
+    key spelled as an argument (``power_w``), raises :class:`TypeError`.
+    """
     out: dict[str, Value] = {}
     for key, value in kwargs.items():
+        if key in _RETIRED_ARGS or key in _UNIT_SPELLED_ARGS:
+            _refuse_renamed(key, params)
         if value is None:
             continue
-        out[renames.get(key, key.replace("_", "-"))] = value
+        if key in _QUANTITY_ARGS:
+            lisp_key, kind = _QUANTITY_ARGS[key]
+            _require(value, kind, key)
+            if isinstance(value, Current):
+                value = _amps(value)
+            out[lisp_key] = value
+        else:
+            out[key.replace("_", "-")] = value
     return out
 
 
@@ -197,6 +282,7 @@ class Component:
         return SettingSignal(
             set_,
             f"{self.make} {self.args.get('id')} health",
+            kind=Health,
             cue=lambda v: f"(set-component-health {self.id} {to_lisp_atom(v)})",
         )
 
@@ -221,6 +307,8 @@ class Meter(Component):
             read,
             set_,
             f"meter {self.args.get('id')} power",
+            kind=Power,
+            cue_kind=_POWER_SOURCE,
             check_ref=lambda: (self.id, "active-power"),
             cue=lambda v: f"(set-meter-power {self.id} {to_lisp_atom(v)})",
         )
@@ -245,6 +333,8 @@ class Meter(Component):
             read,
             set_,
             f"meter {self.args.get('id')} reactive_power",
+            kind=ReactivePower,
+            cue_kind=_REACTIVE_SOURCE,
             check_ref=lambda: (self.id, "reactive-power"),
             cue=lambda v: f"(set-meter-reactive-power {self.id} {to_lisp_atom(v)})",
         )
@@ -270,6 +360,7 @@ class Battery(Component):
             read,
             set_,
             f"battery {self.args.get('id')} soc",
+            kind=Percentage,
             check_ref=lambda: (self.id, "soc"),
             cue=lambda v: f"(set-battery-soc {self.id} {to_lisp_atom(v)})",
         )
@@ -282,7 +373,7 @@ class Battery(Component):
         which is the cumulative *flow* through the pool (the integral of
         ``battery_power``).
         """
-        capacity = self.args.get("capacity")
+        capacity = self.args.get("capacity-wh")
         if not isinstance(capacity, Energy):
             raise RuntimeError(
                 f"battery {self.args.get('id')}: stored_energy needs "
@@ -349,6 +440,8 @@ class SolarInverter(Component):
         return SettingSignal(
             set_,
             f"solar_inverter {self.args.get('id')} sunlight",
+            kind=Percentage,
+            cue_kind=_SUNLIGHT_SOURCE,
             cue=lambda v: f"(set-solar-sunlight {self.id} {to_lisp_atom(v)})",
         )
 
@@ -360,24 +453,27 @@ def _component(
     make: str,
     args: Mapping[str, Value | None],
     *,
+    params: frozenset[str],
     rated: tuple[Power, Power] | None = None,
     successors: Sequence[Component] | None = None,
     cls: type[_C],
 ) -> _C:
-    normalized = _normalize(args)
+    """Build a ``make`` node from a builder's ``args`` and ``rated``.
+
+    ``params`` is the builder's named parameters, from :func:`_params`.
+    """
+    normalized = _normalize(args, params)
     if rated is not None:
-        normalized["rated-lower"], normalized["rated-upper"] = rated
+        lower, upper = rated
+        _require(lower, Power, "rated")
+        _require(upper, Power, "rated")
+        normalized["rated-lower-w"], normalized["rated-upper-w"] = lower, upper
     return cls(make, normalized, list(successors or []))
 
 
-def _ms(value: timedelta | None) -> int | None:
-    """A timedelta as whole milliseconds (the server's interval unit)."""
-    return None if value is None else int(round(value.total_seconds() * 1000.0))
-
-
-def _amps(value: Current | None) -> int | None:
+def _amps(value: Current) -> int:
     """A current as whole amperes (the server's fuse-rating unit)."""
-    return None if value is None else int(round(value.base_value))
+    return int(round(value.base_value))
 
 
 # --- constructors (parents take successors; leaves don't) -----------------
@@ -389,7 +485,7 @@ def grid(
     name: str | None = None,
     rated: tuple[Power, Power] | None = None,
     rated_fuse_current: Current | None = None,
-    stream_jitter_pct: Percentage | None = None,
+    stream_jitter: Percentage | None = None,
     health: Health | None = None,
     telemetry_mode: TelemetryMode | None = None,
     command_mode: CommandMode | None = None,
@@ -400,8 +496,8 @@ def grid(
     args = {
         "id": id,
         "name": name,
-        "rated_fuse_current": _amps(rated_fuse_current),
-        "stream_jitter_pct": stream_jitter_pct,
+        "rated_fuse_current": rated_fuse_current,
+        "stream_jitter": stream_jitter,
         "health": health,
         "telemetry_mode": telemetry_mode,
         "command_mode": command_mode,
@@ -410,6 +506,7 @@ def grid(
     return _component(
         "make-grid-connection-point",
         args,
+        params=_params(grid),
         rated=rated,
         successors=successors,
         cls=Component,
@@ -426,7 +523,7 @@ def meter(
     leading: bool | None = None,
     interval: timedelta | None = None,
     hidden: bool | None = None,
-    stream_jitter_pct: Percentage | None = None,
+    stream_jitter: Percentage | None = None,
     health: Health | None = None,
     telemetry_mode: TelemetryMode | None = None,
     command_mode: CommandMode | None = None,
@@ -452,15 +549,17 @@ def meter(
         "reactive_power": reactive_power,
         "power_factor": power_factor,
         "leading": leading,
-        "interval": _ms(interval),
+        "interval": interval,
         "hidden": hidden,
-        "stream_jitter_pct": stream_jitter_pct,
+        "stream_jitter": stream_jitter,
         "health": health,
         "telemetry_mode": telemetry_mode,
         "command_mode": command_mode,
         **extra,
     }
-    return _component("make-meter", args, successors=successors, cls=Meter)
+    return _component(
+        "make-meter", args, params=_params(meter), successors=successors, cls=Meter
+    )
 
 
 def battery_inverter(
@@ -470,12 +569,12 @@ def battery_inverter(
     rated: tuple[Power, Power] | None = None,
     interval: timedelta | None = None,
     command_delay: timedelta | None = None,
-    ramp_rate: float | None = None,
+    ramp_rate_w_per_s: float | None = None,
     reactive_pf_limit: float | None = None,
-    reactive_apparent_va: ApparentPower | None = None,
+    reactive_apparent: ApparentPower | None = None,
     reactive_command_delay: timedelta | None = None,
-    reactive_ramp_rate: float | None = None,
-    stream_jitter_pct: Percentage | None = None,
+    reactive_ramp_rate_var_per_s: float | None = None,
+    stream_jitter: Percentage | None = None,
     health: Health | None = None,
     telemetry_mode: TelemetryMode | None = None,
     command_mode: CommandMode | None = None,
@@ -485,22 +584,22 @@ def battery_inverter(
     """A battery inverter; give it a ``battery`` child via ``successors``.
 
     ``command_delay`` models the device latency before a setpoint starts
-    tracking; ``ramp_rate`` is the slew in W/s. The ``reactive_*`` knobs
+    tracking; ``ramp_rate_w_per_s`` is the slew in W/s. The ``reactive_*`` knobs
     cap and pace reactive power: ``reactive_pf_limit`` (|Q| ≤ k·|P|,
-    0 disables), ``reactive_apparent_va`` (P² + Q² ≤ apparent², 0
-    disables), and ``reactive_ramp_rate`` in VAR/s.
+    0 disables), ``reactive_apparent`` (P² + Q² ≤ apparent², 0
+    disables), and ``reactive_ramp_rate_var_per_s`` in VAr/s.
     """
     args = {
         "id": id,
         "name": name,
-        "interval": _ms(interval),
-        "command_delay_ms": _ms(command_delay),
-        "ramp_rate": ramp_rate,
+        "interval": interval,
+        "command_delay": command_delay,
+        "ramp_rate_w_per_s": ramp_rate_w_per_s,
         "reactive_pf_limit": reactive_pf_limit,
-        "reactive_apparent_va": reactive_apparent_va,
-        "reactive_command_delay_ms": _ms(reactive_command_delay),
-        "reactive_ramp_rate": reactive_ramp_rate,
-        "stream_jitter_pct": stream_jitter_pct,
+        "reactive_apparent": reactive_apparent,
+        "reactive_command_delay": reactive_command_delay,
+        "reactive_ramp_rate_var_per_s": reactive_ramp_rate_var_per_s,
+        "stream_jitter": stream_jitter,
         "health": health,
         "telemetry_mode": telemetry_mode,
         "command_mode": command_mode,
@@ -509,6 +608,7 @@ def battery_inverter(
     return _component(
         "make-battery-inverter",
         args,
+        params=_params(battery_inverter),
         rated=rated,
         successors=successors,
         cls=BatteryInverter,
@@ -520,22 +620,23 @@ def solar_inverter(
     id: int | None = None,
     name: str | None = None,
     rated: tuple[Power, Power] | None = None,
-    sunlight: Percentage | None = None,
+    sunlight: Percentage | RawLisp | None = None,
     interval: timedelta | None = None,
     command_delay: timedelta | None = None,
-    ramp_rate: float | None = None,
+    ramp_rate_w_per_s: float | None = None,
     reactive_pf_limit: float | None = None,
-    reactive_apparent_va: ApparentPower | None = None,
+    reactive_apparent: ApparentPower | None = None,
     reactive_command_delay: timedelta | None = None,
-    reactive_ramp_rate: float | None = None,
-    stream_jitter_pct: Percentage | None = None,
+    reactive_ramp_rate_var_per_s: float | None = None,
+    stream_jitter: Percentage | None = None,
     health: Health | None = None,
     telemetry_mode: TelemetryMode | None = None,
     command_mode: CommandMode | None = None,
     successors: Sequence[Component] | None = None,
     **extra: Value,
 ) -> SolarInverter:
-    """A solar (PV) inverter. ``sunlight`` seeds its irradiance (a ``Percentage``).
+    """A solar (PV) inverter. ``sunlight`` seeds its irradiance (a ``Percentage``,
+    or ``raw(...)``).
 
     Latency, slew, and reactive knobs as on ``battery_inverter``.
     """
@@ -543,14 +644,14 @@ def solar_inverter(
         "id": id,
         "name": name,
         "sunlight": sunlight,
-        "interval": _ms(interval),
-        "command_delay_ms": _ms(command_delay),
-        "ramp_rate": ramp_rate,
+        "interval": interval,
+        "command_delay": command_delay,
+        "ramp_rate_w_per_s": ramp_rate_w_per_s,
         "reactive_pf_limit": reactive_pf_limit,
-        "reactive_apparent_va": reactive_apparent_va,
-        "reactive_command_delay_ms": _ms(reactive_command_delay),
-        "reactive_ramp_rate": reactive_ramp_rate,
-        "stream_jitter_pct": stream_jitter_pct,
+        "reactive_apparent": reactive_apparent,
+        "reactive_command_delay": reactive_command_delay,
+        "reactive_ramp_rate_var_per_s": reactive_ramp_rate_var_per_s,
+        "stream_jitter": stream_jitter,
         "health": health,
         "telemetry_mode": telemetry_mode,
         "command_mode": command_mode,
@@ -559,6 +660,7 @@ def solar_inverter(
     return _component(
         "make-solar-inverter",
         args,
+        params=_params(solar_inverter),
         rated=rated,
         successors=successors,
         cls=SolarInverter,
@@ -577,7 +679,7 @@ def battery(
     soc_protect_margin: Percentage | None = None,
     voltage: Voltage | None = None,
     interval: timedelta | None = None,
-    stream_jitter_pct: Percentage | None = None,
+    stream_jitter: Percentage | None = None,
     health: Health | None = None,
     telemetry_mode: TelemetryMode | None = None,
     command_mode: CommandMode | None = None,
@@ -600,14 +702,16 @@ def battery(
         "soc_upper": soc_upper,
         "soc_protect_margin": soc_protect_margin,
         "voltage": voltage,
-        "interval": _ms(interval),
-        "stream_jitter_pct": stream_jitter_pct,
+        "interval": interval,
+        "stream_jitter": stream_jitter,
         "health": health,
         "telemetry_mode": telemetry_mode,
         "command_mode": command_mode,
         **extra,
     }
-    return _component("make-battery", args, rated=rated, cls=Battery)
+    return _component(
+        "make-battery", args, params=_params(battery), rated=rated, cls=Battery
+    )
 
 
 def ev_charger(
@@ -619,8 +723,8 @@ def ev_charger(
     idle: EvIdle | None = None,
     interval: timedelta | None = None,
     command_delay: timedelta | None = None,
-    ramp_rate: float | None = None,
-    stream_jitter_pct: Percentage | None = None,
+    ramp_rate_w_per_s: float | None = None,
+    stream_jitter: Percentage | None = None,
     resume_on_recovery: bool | None = None,
     health: Health | None = None,
     telemetry_mode: TelemetryMode | None = None,
@@ -659,30 +763,32 @@ def ev_charger(
         "name": name,
         "phases": phases,
         "idle": idle,
-        "interval": _ms(interval),
-        "command_delay_ms": _ms(command_delay),
-        "ramp_rate": ramp_rate,
-        "stream_jitter_pct": stream_jitter_pct,
+        "interval": interval,
+        "command_delay": command_delay,
+        "ramp_rate_w_per_s": ramp_rate_w_per_s,
+        "stream_jitter": stream_jitter,
         "resume_on_recovery": resume_on_recovery,
         "health": health,
         "telemetry_mode": telemetry_mode,
         "command_mode": command_mode,
         **extra,
     }
-    return _component("make-ev-charger", args, rated=rated, cls=Component)
+    return _component(
+        "make-ev-charger", args, params=_params(ev_charger), rated=rated, cls=Component
+    )
 
 
 def plug_ev_form(
     component_id: int,
     preset: EvPreset | str,
     *,
-    soc: float | None = None,
-    target_soc: float | None = None,
+    soc: Percentage | None = None,
+    target_soc: Percentage | None = None,
     phases: int | None = None,
-    max_current_a: float | None = None,
+    max_current: Current | None = None,
     capacity: Energy | None = None,
-    taper_start: float | None = None,
-    taper_floor: float | None = None,
+    taper_start: Percentage | None = None,
+    taper_floor: Percentage | None = None,
 ) -> str:
     """Render the ``(plug-ev …)`` form that plugs a preset car into a charger.
 
@@ -690,32 +796,65 @@ def plug_ev_form(
     emit through it, so the two clients can never drift apart. ``preset`` may
     be a plain string, which is validated against :class:`EvPreset` here — an
     unknown name raises :class:`ValueError` before any eval leaves the client.
-    ``capacity`` is the car's pack; the form carries it in kilowatt-hours.
-    ``taper_start`` is the SoC percentage the constant-current phase ends
-    at and ``taper_floor`` the fraction of full current the car still
-    draws at 100 % — the whole of the charging curve's shape.
+    ``capacity`` is the car's pack. ``taper_start`` is the SoC the
+    constant-current phase ends at and ``taper_floor`` the share of full
+    current the car still draws at 100 % SoC — the whole of the charging
+    curve's shape. A bare number where a quantity belongs raises
+    :class:`TypeError`.
     """
-    parts = [f"(plug-ev {component_id} {to_lisp_atom(EvPreset(preset))}"]
-    overrides: tuple[tuple[str, float | int | None], ...] = (
-        ("soc", soc),
-        ("target-soc", target_soc),
-        ("phases", phases),
-        ("max-current-a", max_current_a),
-        ("capacity-kwh", None if capacity is None else capacity.as_kilowatt_hours()),
-        ("taper-start", taper_start),
-        ("taper-floor", taper_floor),
+    # (argument, plist key, type, value); `to_lisp_atom` writes each
+    # quantity in its base unit, the unit the key names.
+    overrides: tuple[tuple[str, str, type, Value | None], ...] = (
+        ("soc", "soc-pct", Percentage, soc),
+        ("target_soc", "target-soc-pct", Percentage, target_soc),
+        ("phases", "phases", object, phases),
+        ("max_current", "max-current-a", Current, max_current),
+        ("capacity", "capacity-wh", Energy, capacity),
+        ("taper_start", "taper-start-pct", Percentage, taper_start),
+        ("taper_floor", "taper-floor-pct", Percentage, taper_floor),
     )
-    for key, value in overrides:
+    for name, _, kind, value in overrides:
+        if value is not None:
+            _require(value, kind, name)
+    parts = [f"(plug-ev {component_id} {to_lisp_atom(EvPreset(preset))}"]
+    for _, key, _, value in overrides:
         if value is not None:
             parts.append(f":{key} {to_lisp_atom(value)}")
     return " ".join(parts) + ")"
+
+
+def drive_parts(
+    component_id: int,
+    power: Power | RawLisp | None,
+    sunlight: Percentage | None,
+) -> tuple[str | None, dict[str, float]]:
+    """Split a ``drive`` call into its two halves, for the sync and the async
+    client alike.
+
+    Returns the ``(set-meter-power …)`` form a ``RawLisp`` power evals (or
+    ``None``), and the control-API payload for the constant values. A bare
+    number raises :class:`TypeError`.
+    """
+    if power is not None:
+        _require(power, _POWER_SOURCE, "power")
+    if sunlight is not None:
+        _require(sunlight, Percentage, "sunlight")
+    form: str | None = None
+    payload: dict[str, float] = {}
+    if isinstance(power, RawLisp):
+        form = f"(set-meter-power {component_id} {to_lisp_atom(power)})"
+    elif power is not None:
+        payload["power_w"] = power.as_watts()
+    if sunlight is not None:
+        payload["sunlight_pct"] = sunlight.as_percent()
+    return form, payload
 
 
 def chp(
     *,
     id: int | None = None,
     name: str | None = None,
-    stream_jitter_pct: Percentage | None = None,
+    stream_jitter: Percentage | None = None,
     health: Health | None = None,
     telemetry_mode: TelemetryMode | None = None,
     command_mode: CommandMode | None = None,
@@ -729,13 +868,13 @@ def chp(
     args = {
         "id": id,
         "name": name,
-        "stream_jitter_pct": stream_jitter_pct,
+        "stream_jitter": stream_jitter,
         "health": health,
         "telemetry_mode": telemetry_mode,
         "command_mode": command_mode,
         **extra,
     }
-    return _component("make-chp", args, cls=Component)
+    return _component("make-chp", args, params=_params(chp), cls=Component)
 
 
 def steam_boiler(
@@ -748,8 +887,11 @@ def steam_boiler(
     initial_bar: float | None = None,
     capacity_wh_per_bar: float | None = None,
     wh_per_kg: float | None = None,
-    demand_kg_h: float | None = None,
-    stream_jitter_pct: Percentage | None = None,
+    demand_kg_per_s: float | None = None,
+    interval: timedelta | None = None,
+    command_delay: timedelta | None = None,
+    ramp_rate_w_per_s: float | None = None,
+    stream_jitter: Percentage | None = None,
     health: Health | None = None,
     telemetry_mode: TelemetryMode | None = None,
     command_mode: CommandMode | None = None,
@@ -757,10 +899,12 @@ def steam_boiler(
 ) -> Component:
     """A steam boiler (leaf). Pressure-driven: it holds a steam pressure in
     bar between ``0`` and ``max_bar``, tracks toward ``target_bar``, and
-    ``demand_kg_h`` of steam draw converts to heat loss via ``wh_per_kg``.
+    ``demand_kg_per_s`` of steam draw converts to heat loss via ``wh_per_kg``.
 
     ``capacity_wh_per_bar`` is the thermal mass expressed as watt-hours per
     bar of pressure change; ``initial_bar`` seeds the starting pressure.
+    ``interval`` is the telemetry stream period; ``command_delay`` and
+    ``ramp_rate_w_per_s`` (W/s) pace a setpoint as on ``battery_inverter``.
     """
     args = {
         "id": id,
@@ -770,14 +914,23 @@ def steam_boiler(
         "initial_bar": initial_bar,
         "capacity_wh_per_bar": capacity_wh_per_bar,
         "wh_per_kg": wh_per_kg,
-        "demand_kg_h": demand_kg_h,
-        "stream_jitter_pct": stream_jitter_pct,
+        "demand_kg_per_s": demand_kg_per_s,
+        "interval": interval,
+        "command_delay": command_delay,
+        "ramp_rate_w_per_s": ramp_rate_w_per_s,
+        "stream_jitter": stream_jitter,
         "health": health,
         "telemetry_mode": telemetry_mode,
         "command_mode": command_mode,
         **extra,
     }
-    return _component("make-steam-boiler", args, rated=rated, cls=Component)
+    return _component(
+        "make-steam-boiler",
+        args,
+        params=_params(steam_boiler),
+        rated=rated,
+        cls=Component,
+    )
 
 
 def _emit_topology(topology: Topology) -> str:

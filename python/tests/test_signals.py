@@ -175,3 +175,23 @@ async def test_health_and_sunlight_are_settings() -> None:
     # The inverter's power is measured, never test-set: that is command()'s
     # job through the real gateway.
     assert not hasattr(inv.power, "set")
+
+
+async def test_set_refuses_a_bare_number() -> None:
+    site = FakeAioSite()
+    meter = mc.meter(id=5)
+    bat = mc.battery(id=4)
+    pv = mc.solar_inverter(id=8)
+    for c in (meter, bat, pv):
+        c._bind(site)
+    with pytest.raises(TypeError, match="meter 5 power must be Power"):
+        await meter.power.set(5000.0)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="reactive_power must be ReactivePower"):
+        await meter.reactive_power.set(100.0)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="soc must be Percentage"):
+        await bat.soc.set(50.0)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="sunlight must be Percentage"):
+        await pv.sunlight.set(0.8)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="health must be Health"):
+        await meter.health.set("error")  # type: ignore[arg-type]
+    assert site.controls == []

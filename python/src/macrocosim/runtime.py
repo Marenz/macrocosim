@@ -23,11 +23,11 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from frequenz.quantities import Energy, Percentage, Power, ReactivePower
+from frequenz.quantities import Current, Energy, Percentage, Power, ReactivePower
 
 from ._http import EvalResult, HttpClient, control_path
 from ._process import spawn_macrocosim, terminate, which_binary
-from .build import LaunchConfig, plug_ev_form
+from .build import LaunchConfig, _require, plug_ev_form
 from .enums import EvPreset
 from .errors import EvalRejected
 
@@ -216,6 +216,9 @@ class Site:
     ) -> None:
         """Command a component's active-power setpoint; errors if the value is
         outside the live envelope, exactly as production does."""
+        _require(power, Power, "power")
+        if lifetime is not None:
+            _require(lifetime, timedelta, "lifetime")
         lifetime_s = lifetime.total_seconds() if lifetime is not None else None
         self.grpc_client(microgrid_id).set_active_power(
             component_id, power.as_watts(), lifetime_s=lifetime_s
@@ -229,6 +232,8 @@ class Site:
         microgrid_id: int | None = None,
     ) -> None:
         """Narrow a component's effective active-power bounds (TTL-limited)."""
+        _require(lower, Power, "lower")
+        _require(upper, Power, "upper")
         self.grpc_client(microgrid_id).augment_active_power_bounds(
             component_id, lower.as_watts(), upper.as_watts()
         )
@@ -311,13 +316,13 @@ class Site:
         component_id: int,
         preset: EvPreset | str,
         *,
-        soc: float | None = None,
-        target_soc: float | None = None,
+        soc: Percentage | None = None,
+        target_soc: Percentage | None = None,
         phases: int | None = None,
-        max_current_a: float | None = None,
+        max_current: Current | None = None,
         capacity: Energy | None = None,
-        taper_start: float | None = None,
-        taper_floor: float | None = None,
+        taper_start: Percentage | None = None,
+        taper_floor: Percentage | None = None,
         microgrid_id: int | None = None,
     ) -> None:
         """Plug a preset car into charger ``component_id``."""
@@ -328,7 +333,7 @@ class Site:
                 soc=soc,
                 target_soc=target_soc,
                 phases=phases,
-                max_current_a=max_current_a,
+                max_current=max_current,
                 capacity=capacity,
                 taper_start=taper_start,
                 taper_floor=taper_floor,

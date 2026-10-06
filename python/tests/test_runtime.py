@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from frequenz.quantities import Energy
+from frequenz.quantities import Energy, Power
 
 import macrocosim as mc
 from macrocosim.handles import MicrogridExpect
@@ -54,6 +54,18 @@ def test_resolve_mg_defaults_to_the_lowest_id() -> None:
     )
     assert site._resolve_microgrid_id(None) == 3
     assert site._resolve_microgrid_id(7) == 7
+
+
+def test_setpoint_writes_refuse_bare_numbers() -> None:
+    site = _site()
+    with pytest.raises(TypeError, match="power must be Power"):
+        site.set_active_power(6, 5000)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="lifetime must be timedelta"):
+        site.set_active_power(6, Power.from_watts(1), lifetime=5)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="lower must be Power"):
+        site.augment_bounds(6, -1000, Power.from_watts(1))  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="upper must be Power"):
+        site.augment_bounds(6, Power.from_watts(-1), 1000)  # type: ignore[arg-type]
 
 
 def test_microgrid_id_is_the_microgrid_argument() -> None:

@@ -8,4 +8,4 @@
  (lambda ()
    (%make-grid-connection-point
     :id 1
-    :successors (list (%make-meter :id 2 :power 7000.0)))))
+    :successors (list (%make-meter :id 2 :power-w 7000.0)))))

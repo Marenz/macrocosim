@@ -34,12 +34,19 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
-from frequenz.quantities import Energy, Percentage, Power, Quantity, ReactivePower
+from frequenz.quantities import (
+    Current,
+    Energy,
+    Percentage,
+    Power,
+    Quantity,
+    ReactivePower,
+)
 
 from .. import metrics as _M
 from .._http import EvalResult, control_path, scenario_path
 from .._process import spawn_macrocosim, terminate
-from ..build import RawLisp, plug_ev_form, to_lisp_atom
+from ..build import RawLisp, _require, drive_parts, plug_ev_form
 from ..enums import EvPreset
 from ..errors import EvalRejected
 from ..metrics import MetricSpec
@@ -270,6 +277,9 @@ class Site:
         microgrid_id: int | None = None,
     ) -> None:
         """Command an active-power setpoint; rejections raise, as production."""
+        _require(power, Power, "power")
+        if lifetime is not None:
+            _require(lifetime, timedelta, "lifetime")
         lifetime_s = lifetime.total_seconds() if lifetime is not None else None
         await self._grpc(microgrid_id).set_active_power(
             component_id, power.as_watts(), lifetime_s=lifetime_s
@@ -283,6 +293,8 @@ class Site:
         microgrid_id: int | None = None,
     ) -> None:
         """Narrow a component's effective active-power bounds (TTL-limited)."""
+        _require(lower, Power, "lower")
+        _require(upper, Power, "upper")
         await self._grpc(microgrid_id).augment_active_power_bounds(
             component_id, lower.as_watts(), upper.as_watts()
         )
@@ -311,13 +323,13 @@ class Site:
         component_id: int,
         preset: EvPreset | str,
         *,
-        soc: float | None = None,
-        target_soc: float | None = None,
+        soc: Percentage | None = None,
+        target_soc: Percentage | None = None,
         phases: int | None = None,
-        max_current_a: float | None = None,
+        max_current: Current | None = None,
         capacity: Energy | None = None,
-        taper_start: float | None = None,
-        taper_floor: float | None = None,
+        taper_start: Percentage | None = None,
+        taper_floor: Percentage | None = None,
         microgrid_id: int | None = None,
     ) -> None:
         """Plug a preset car into charger ``component_id``."""
@@ -328,7 +340,7 @@ class Site:
                 soc=soc,
                 target_soc=target_soc,
                 phases=phases,
-                max_current_a=max_current_a,
+                max_current=max_current,
                 capacity=capacity,
                 taper_start=taper_start,
                 taper_floor=taper_floor,
@@ -544,18 +556,14 @@ class ComponentHandle:
 
         Constant values go over the typed control API (rejections raise
         ``ControlRejected``); a ``RawLisp`` power (a lambda or symbol,
-        re-resolved every tick) goes through the microgrid's eval.
+        re-resolved every tick) goes through the microgrid's eval. A bare
+        number raises :class:`TypeError`.
         """
-        payload: dict[str, float] = {}
-        if isinstance(power, RawLisp):
+        form, payload = drive_parts(self._id, power, sunlight)
+        if form is not None:
             await self._site._eval_ok(
-                f"(set-meter-power {self._id} {to_lisp_atom(power)})",
-                self._site._resolve_microgrid_id(self._microgrid_id),
+                form, self._site._resolve_microgrid_id(self._microgrid_id)
             )
-        elif power is not None:
-            payload["power_w"] = power.as_watts()
-        if sunlight is not None:
-            payload["sunlight_pct"] = sunlight.as_percent()
         if payload:
             await self._site.control_component(
                 self._id, "drive", payload, self._microgrid_id

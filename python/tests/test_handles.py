@@ -114,6 +114,16 @@ def test_drive_sunlight() -> None:
     assert w.controls == [(5, "drive", {"sunlight_pct": 30.0})]
 
 
+def test_drive_refuses_a_bare_number() -> None:
+    w = FakeSite()
+    with pytest.raises(TypeError, match="power must be Power or RawLisp"):
+        _h(w, 6).drive(power=2000.0)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="sunlight must be Percentage"):
+        _h(w, 5).drive(sunlight=30.0)  # type: ignore[arg-type]
+    assert w.controls == []
+    assert w.evals == []
+
+
 def test_handle_methods_chain() -> None:
     w = FakeSite()
     h = ComponentHandle(w, 3)

@@ -12,7 +12,7 @@ or a path to a ``.lisp`` file) and depend on ``macrocosim``:
     @pytest.fixture
     def macrocosim_config():
         return mc.Microgrid(id=1, topology=mc.grid(id=1,
-            successors=[mc.meter(id=2, power=7000.0)]))
+            successors=[mc.meter(id=2, power=Power.from_watts(7000))]))
 
     async def test_grid_holds(macrocosim):
         await macrocosim.expect.grid_power(

@@ -88,6 +88,32 @@ def test_cues_render_from_settable_signals() -> None:
     assert '(at "15s" (lambda () (set-solar-sunlight 8 80.0)))' in lisp
 
 
+def test_a_cue_or_drive_refuses_a_bare_number() -> None:
+    from macrocosim.build import battery, raw, solar_inverter
+
+    scn = Scenario("c", length=timedelta(seconds=60))
+    t = timedelta(seconds=5)
+    with pytest.raises(TypeError, match="meter 2 power must be Power"):
+        scn.at(t, METER.power, 5000.0)
+    with pytest.raises(TypeError, match="sunlight must be Percentage"):
+        scn.at(t, solar_inverter(id=8).sunlight, 0.8)
+    with pytest.raises(TypeError, match="soc must be Percentage"):
+        scn.at(t, battery(id=4).soc, 50.0)
+    with pytest.raises(TypeError, match="health must be Health"):
+        scn.at(t, METER.health, "error")
+    with pytest.raises(TypeError, match="value must be Power or RawLisp"):
+        scn.drive_meter(METER, 2000.0)  # type: ignore[arg-type]
+    scn.at(t, METER.power, raw("'load"))
+    scn.at(t, METER.reactive_power, raw("'vars"))
+    scn.at(t, solar_inverter(id=8).sunlight, raw("'sun"))
+    scn.drive_meter(METER, raw("'load"))
+    lisp = scn.to_lisp()
+    assert "(lambda () (set-meter-power 2 'load))" in lisp
+    assert "(lambda () (set-meter-reactive-power 2 'vars))" in lisp
+    assert "(lambda () (set-solar-sunlight 8 'sun))" in lisp
+    assert "(drive-meter 2 'load)" in lisp
+
+
 def test_aggregate_signals_are_not_checkable() -> None:
     import macrocosim as mc
 
@@ -342,13 +368,23 @@ def test_run_scenario_stepped_writes_seconds_flags(monkeypatch, tmp_path) -> Non
 
     monkeypatch.setattr(scenarios_mod.subprocess, "run", fake_run)
     run_scenario_stepped(
-        str(tmp_path / "c.lisp"), "s", until=timedelta(seconds=90.5), step=250
+        str(tmp_path / "c.lisp"),
+        "s",
+        until=timedelta(seconds=90.5),
+        step=timedelta(milliseconds=250),
     )
     args = seen[0]
     assert args[args.index("--until-s") + 1] == "90.5"
     assert args[args.index("--step-s") + 1] == "0.25"
     assert "--until" not in args
     assert "--step" not in args
+
+
+def test_run_scenario_stepped_refuses_bare_numbers() -> None:
+    with pytest.raises(TypeError, match="step"):
+        run_scenario_stepped("c.lisp", "s", step=250)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="until"):
+        run_scenario_stepped("c.lisp", "s", until=90)  # type: ignore[arg-type]
 
 
 def test_run_scenario_stepped_raises_when_no_check_ran(monkeypatch, tmp_path) -> None:

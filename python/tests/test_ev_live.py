@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 
 import pytest
-from frequenz.quantities import Power
+from frequenz.quantities import Percentage, Power
 
 import macrocosim as mc
 from macrocosim._process import which_binary
@@ -39,13 +39,13 @@ def test_plug_charge_unplug() -> None:
     with mc.launch(mg) as site:
         assert site.ev_info(6)["plugged"] is False
 
-        site.plug_ev(6, mc.EvPreset.CITY, soc=20.0)
+        site.plug_ev(6, mc.EvPreset.CITY, soc=Percentage.from_percent(20))
         info = site.ev_info(6)
         assert info["plugged"] is True and info["preset"] == "city"
         assert info["phases"] == 1
 
         # Paused idle: nothing flows until a command stands.
-        site.eval("(set-active-power 6 22000 60000)")
+        site.eval("(set-active-power 6 22000 :lifetime-s 60)")
 
         def charging_watts() -> float | None:
             # Returns the crossing sample itself (not just True) so the
@@ -58,7 +58,7 @@ def test_plug_charge_unplug() -> None:
         assert site.ev_info(6)["state"] == "charging"
 
         # Under the 6 A floor the charger pauses.
-        site.eval("(set-active-power 6 4000 60000)")
+        site.eval("(set-active-power 6 4000 :lifetime-s 60)")
         _wait(lambda: site.ev_info(6)["state"] == "paused")
 
         assert site.unplug_ev(6) is True

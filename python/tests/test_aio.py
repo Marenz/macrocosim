@@ -43,6 +43,18 @@ def test_grpc_url_prefixes_scheme() -> None:
     assert site.grpc_url == "grpc://10.0.0.1:61000"
 
 
+async def test_setpoint_writes_refuse_bare_numbers() -> None:
+    site = _site()
+    with pytest.raises(TypeError, match="power must be Power"):
+        await site.set_active_power(6, 5000)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="lifetime must be timedelta"):
+        await site.set_active_power(6, Power.from_watts(1), lifetime=5)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="lower must be Power"):
+        await site.augment_bounds(6, -1000, Power.from_watts(1))  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="upper must be Power"):
+        await site.augment_bounds(6, Power.from_watts(-1), 1000)  # type: ignore[arg-type]
+
+
 async def test_reads_map_metric_names_to_streams() -> None:
     # battery_* signals read the battery_pool_* streams; the mapping lives
     # in one table, not in each attribute.
@@ -116,6 +128,11 @@ async def test_drive_posts_typed_control_payloads() -> None:
     site._http.control = fake_control  # type: ignore[method-assign]
     await site[6].drive(power=Power.from_kilowatts(20))
     assert calls == [("/api/mg/1/component/6/drive", {"power_w": 20000.0})]
+    with pytest.raises(TypeError, match="power must be Power or RawLisp"):
+        await site[6].drive(power=2000.0)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="sunlight must be Percentage"):
+        await site[6].drive(sunlight=30.0)  # type: ignore[arg-type]
+    assert len(calls) == 1
 
 
 def test_resolve_mg_defaults_to_the_lowest_id() -> None:
@@ -154,7 +171,7 @@ async def test_meter_reactive_power_reads_and_drives_through_the_site() -> None:
 
     site.control_component = fake_control_component  # type: ignore[method-assign]
 
-    m = mc.meter(id=7, power=100.0)
+    m = mc.meter(id=7, power=Power.from_watts(100.0))
     m._bind(site)
     assert await m.reactive_power.try_read() == ReactivePower.from_volt_amperes_reactive(
         750.0

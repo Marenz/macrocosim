@@ -32,8 +32,10 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
+from frequenz.quantities import Percentage, Power
+
 from .assertions import expect_metric
-from .build import RawLisp, to_lisp_atom
+from .build import RawLisp, drive_parts
 from .errors import EvalRejected
 from .metrics import (
     ACTIVE_POWER,
@@ -49,7 +51,7 @@ from .metrics import (
 )
 
 if TYPE_CHECKING:
-    from frequenz.quantities import Energy, Percentage, Power
+    from frequenz.quantities import Energy
 
     from .build import Component
     from .enums import CommandMode, Health, TelemetryMode
@@ -214,15 +216,12 @@ class ComponentHandle:
 
         Constant values go over the typed control API (rejections raise
         ``ControlRejected``); a ``RawLisp`` power (a lambda or symbol,
-        re-resolved every tick) goes through the microgrid's eval.
+        re-resolved every tick) goes through the microgrid's eval. A bare
+        number raises :class:`TypeError`.
         """
-        payload: dict[str, float] = {}
-        if isinstance(power, RawLisp):
-            self._eval(f"(set-meter-power {self._id} {to_lisp_atom(power)})")
-        elif power is not None:
-            payload["power_w"] = power.as_watts()
-        if sunlight is not None:
-            payload["sunlight_pct"] = sunlight.as_percent()
+        form, payload = drive_parts(self._id, power, sunlight)
+        if form is not None:
+            self._eval(form)
         if payload:
             self._site.control_component(self._id, "drive", payload, self._microgrid_id)
         return self
