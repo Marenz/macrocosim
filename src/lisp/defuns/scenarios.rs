@@ -256,7 +256,7 @@ fn parse_expect_metric(name: &str) -> Option<Metric> {
 ///
 /// POLICY — `scenario-stop` returns every driven knob (a meter's
 /// `:power-w` / `:reactive-power-var` / power-factor override, a solar
-/// inverter's `:sunlight-pct`, a boiler's `:demand`) to its
+/// inverter's `:sunlight-pct`, a boiler's `:demand-kg-per-s`) to its
 /// PRE-SCENARIO state: the value/source it had the moment BEFORE the
 /// scenario first touched it, captured by `scenario_snapshot_knob`.
 /// This holds even over a mid-scenario manual poke or
@@ -976,6 +976,46 @@ mod tests {
             f("(funcall (timeline (hold 1.0 :for-s 10) (ramp :to 2.0 :over-s 5)))"),
             1.0
         );
+    }
+
+    /// `drive-boiler-kg-per-s` takes kg/s and the deprecated
+    /// `drive-boiler` kg/h; both set the same demand, for a number, a
+    /// lambda, a symbol and a quoted form. `nil` is refused at once.
+    #[test]
+    fn drive_boiler_kg_per_s_matches_the_kg_h_form() {
+        let (cfg, dir) = config_with("(%make-steam-boiler :id 9)");
+        let dst = dir.join("sim");
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::copy("sim/scenarios.lisp", dst.join("scenarios.lisp")).unwrap();
+        cfg.eval("(load \"sim/scenarios.lisp\")").unwrap();
+        cfg.eval("(setq flow-kg-h 1800.0)").unwrap();
+        let demand = |form: &str| {
+            cfg.eval(form).unwrap();
+            cfg.refresh_once();
+            cfg.site()
+                .get(9)
+                .unwrap()
+                .steam_drive()
+                .unwrap()
+                .demand_reading()
+                .value
+        };
+        let new = demand("(scenario--drive (drive-boiler-kg-per-s 9 0.5))");
+        assert_eq!(new, 1800.0);
+        assert_eq!(demand("(scenario--drive (drive-boiler 9 1800))"), new);
+        assert_eq!(
+            demand("(scenario--drive (drive-boiler 9 (lambda () 1800.0)))"),
+            new
+        );
+        assert_eq!(demand("(scenario--drive (drive-boiler 9 'flow-kg-h))"), new);
+        assert_eq!(
+            demand("(scenario--drive (drive-boiler 9 '(* 2 (/ flow-kg-h 2))))"),
+            new
+        );
+        let err = cfg
+            .eval("(scenario--drive (drive-boiler 9 nil))")
+            .unwrap_err();
+        assert!(err.contains("set-boiler-demand-kg-per-s"), "{err}");
     }
 
     /// `drive-boiler` and the other `drive-*` wrappers carry the

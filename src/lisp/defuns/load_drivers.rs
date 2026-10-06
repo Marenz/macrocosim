@@ -15,7 +15,7 @@
 use tulisp::{AsPlist, Error, Plist, TulispContext, TulispObject};
 
 use crate::lisp::make::preset_from_lisp;
-use crate::lisp::renames::Renamed;
+use crate::lisp::renames::{Renamed, warn_renamed};
 use crate::lisp::value::LispValue;
 use crate::sim::component::KnobKind;
 use crate::sim::ev_presets::{ConnectedEv, EvOverrides, PRESETS};
@@ -36,6 +36,53 @@ AsPlist! {
         taper_start_pct<":taper-start-pct">: Option<f64> {= None},
         taper_floor_pct<":taper-floor-pct">: Option<f64> {= None},
     }
+}
+
+/// Sets boiler `id`'s steam demand from `value` (a number, lambda or
+/// symbol); `per_unit` is how many kg/h one unit of `value` is.
+fn set_boiler_demand(
+    router: &SharedSiteRouter,
+    name: &str,
+    id: i64,
+    value: &TulispObject,
+    per_unit: f64,
+) -> Result<bool, Error> {
+    let w = router.site();
+    let Some(c) = w.get(id as u64) else {
+        return Err(Error::invalid_argument(format!(
+            "{name}: component {id} not found"
+        )));
+    };
+    let Some(boiler) = c.steam_drive() else {
+        return Err(Error::invalid_argument(format!(
+            "{name}: component {id} is not a steam boiler"
+        )));
+    };
+    w.scenario_snapshot_knob(id as u64, KnobKind::BoilerDemand);
+    if value.numberp() {
+        let kg_h = f64::try_from(value)? * per_unit;
+        boiler.set_steam_demand_kg_h(kg_h as f32);
+        w.note_knob_changed(id as u64, "boiler-demand", Some(kg_h as f32), None, None);
+    } else if let Some(scalar) = crate::sim::dynamic_scalar::DynamicScalar::from_lisp(value, 0.0) {
+        // Printed source and the cached value right after
+        // construction — same pattern as set-meter-power.
+        let printed = value.to_string();
+        let scalar = scalar.scaled(per_unit as f32);
+        let resolved_now = scalar.get();
+        boiler.set_steam_demand_source(scalar);
+        w.note_knob_changed(
+            id as u64,
+            "boiler-demand",
+            Some(resolved_now),
+            Some(printed),
+            None,
+        );
+    } else {
+        return Err(Error::invalid_argument(format!(
+            "{name}: expected a number, lambda, or symbol — got {value}"
+        )));
+    }
+    Ok(true)
 }
 
 pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
@@ -373,53 +420,27 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     );
 
     // Steam boiler analogue of set-meter-power / set-solar-sunlight:
-    // drive the `:demand` (kg/h) input from Lisp. Same numeric /
+    // drive the boiler's steam demand from Lisp. Same numeric /
     // dynamic dispatch — a number installs a constant, a lambda or
     // symbol installs a DynamicScalar the scheduler re-resolves each
     // refresh tick. Strict: unlike the meter/solar setters, a
     // non-boiler must reject here, not silently no-op — this is a
-    // first-class inspector knob.
+    // first-class inspector knob. The boiler works in kg/h, so the
+    // kg/s door scales its value by 3600.
+    let r = router.clone();
+    ctx.defun(
+        "set-boiler-demand-kg-per-s",
+        move |id: i64, value: TulispObject| -> Result<bool, Error> {
+            set_boiler_demand(&r, "set-boiler-demand-kg-per-s", id, &value, 3600.0)
+        },
+    );
+
     let r = router.clone();
     ctx.defun(
         "set-boiler-demand",
         move |id: i64, value: TulispObject| -> Result<bool, Error> {
-            let w = r.site();
-            let Some(c) = w.get(id as u64) else {
-                return Err(Error::invalid_argument(format!(
-                    "set-boiler-demand: component {id} not found"
-                )));
-            };
-            let Some(boiler) = c.steam_drive() else {
-                return Err(Error::invalid_argument(format!(
-                    "set-boiler-demand: component {id} is not a steam boiler"
-                )));
-            };
-            w.scenario_snapshot_knob(id as u64, KnobKind::BoilerDemand);
-            if value.numberp() {
-                let kg_h = f64::try_from(&value)?;
-                boiler.set_steam_demand_kg_h(kg_h as f32);
-                w.note_knob_changed(id as u64, "boiler-demand", Some(kg_h as f32), None, None);
-            } else if let Some(scalar) =
-                crate::sim::dynamic_scalar::DynamicScalar::from_lisp(&value, 0.0)
-            {
-                // Printed source and the cached value right after
-                // construction — same pattern as set-meter-power above.
-                let printed = value.to_string();
-                let resolved_now = scalar.get();
-                boiler.set_steam_demand_source(scalar);
-                w.note_knob_changed(
-                    id as u64,
-                    "boiler-demand",
-                    Some(resolved_now),
-                    Some(printed),
-                    None,
-                );
-            } else {
-                return Err(Error::invalid_argument(format!(
-                    "set-boiler-demand: expected a number, lambda, or symbol — got {value}"
-                )));
-            }
-            Ok(true)
+            warn_renamed("set-boiler-demand", "set-boiler-demand-kg-per-s", " (kg/s)");
+            set_boiler_demand(&r, "set-boiler-demand", id, &value, 1.0)
         },
     );
 
@@ -1243,6 +1264,31 @@ mod tests {
             .expect("reading")
             .demand_reading();
         assert_eq!(r.value, 40.0);
+    }
+
+    /// The kg/s door and the old kg/h door set the same demand.
+    #[test]
+    fn set_boiler_demand_kg_per_s_matches_the_kg_h_setter() {
+        let (cfg, _dir) = config_with("(%make-steam-boiler :id 9)");
+        let demand = |form: &str| {
+            cfg.eval(form).unwrap();
+            cfg.site()
+                .get(9)
+                .unwrap()
+                .steam_drive()
+                .unwrap()
+                .demand_reading()
+                .value
+        };
+        let per_s = demand("(set-boiler-demand-kg-per-s 9 0.5)");
+        let per_h = demand("(set-boiler-demand 9 1800)");
+        assert_eq!(per_s, per_h);
+        assert_eq!(per_s, 1800.0);
+        assert!(
+            cfg.eval("(set-boiler-demand-kg-per-s 7 0.5)")
+                .unwrap_err()
+                .contains("set-boiler-demand-kg-per-s: component 7"),
+        );
     }
 
     /// `(set-boiler-demand id (lambda () X))` installs a dynamic

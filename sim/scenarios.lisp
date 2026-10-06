@@ -425,9 +425,17 @@ a symbol, or a dynamic source like `timeline`). Compiles to
 LEADING non-nil for capacitive. Compiles to `set-meter-power-factor`."
   (list :kind 'drive-meter-pf :component-id id :pf pf :leading leading))
 
-(defun drive-boiler (id source)
-  "Drive boiler ID's steam demand (kg/h) from SOURCE."
+(defun drive-boiler-kg-per-s (id source)
+  "Drive section: feed boiler ID steam demand (kg/s) from SOURCE (a
+constant, a symbol, or a dynamic source). Compiles to
+`set-boiler-demand-kg-per-s`."
   (list :kind 'drive-boiler :component-id id :source source))
+
+(defun drive-boiler (id source)
+  "Deprecated: drive boiler ID's steam demand in kg/h from SOURCE; use
+`drive-boiler-kg-per-s`."
+  (%warn-renamed "drive-boiler" "drive-boiler-kg-per-s" " (kg/s)")
+  (drive-boiler-kg-per-s id (%kg-per-h-to-kg-per-s source)))
 
 (defun controller (id &rest args)
   "Agents section: an in-sim controller named ID firing :every TIME
@@ -493,7 +501,7 @@ inside `at`, e.g. (at \"60s\" (event 'clouds \"rolling in\"))."
      ((eq kind 'drive-meter-reactive) (set-meter-reactive-power id source))
      ((eq kind 'drive-meter-pf)
       (set-meter-power-factor id (plist-get d :pf) (plist-get d :leading)))
-     ((eq kind 'drive-boiler) (set-boiler-demand id source))
+     ((eq kind 'drive-boiler) (set-boiler-demand-kg-per-s id source))
      (t (error (format "scenario: unknown drive kind %s" kind))))))
 
 (defun scenario--agent (a)

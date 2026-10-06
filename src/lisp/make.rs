@@ -254,9 +254,9 @@ AsPlist! {
         id: Option<i64> {= None},
         name: Option<String> {= None},
         interval_s<":interval-s">: Option<f64> {= None},
-        /// kg/h; number seeds a constant, lambda/symbol installs a
+        /// kg/s; number seeds a constant, lambda/symbol installs a
         /// dynamic source resolved each tick.
-        demand<":demand">: Option<LispValue> {= None},
+        demand_kg_per_s<":demand-kg-per-s">: Option<LispValue> {= None},
         rated_lower<":rated-lower-w">: Option<f64> {= None},
         rated_upper<":rated-upper-w">: Option<f64> {= None},
         target_bar<":target-bar">: Option<f64> {= None},
@@ -741,19 +741,22 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                     "%make-steam-boiler: :max-bar must be >= :target-bar > 0",
                 ));
             }
-            // :demand may be a number, a lambda, or a symbol. The
-            // wrapper-expanded category default lands in `a.demand`
-            // when no per-component value was passed; otherwise the
-            // per-component value overrides via AsPlist's last-wins.
+            // :demand-kg-per-s may be a number, a lambda, or a symbol.
+            // The wrapper-expanded category default lands in
+            // `a.demand_kg_per_s` when no per-component value was
+            // passed; otherwise the per-component value overrides via
+            // AsPlist's last-wins. The keyword is in kg/s; the boiler
+            // config stores kg/h, so the value is scaled by 3600.
             let mut dynamic_demand: Option<DynamicScalar> = None;
-            if let Some(v) = a.demand.as_ref() {
+            if let Some(v) = a.demand_kg_per_s.as_ref() {
                 let raw = v.as_inner();
                 if raw.numberp() {
-                    if let Ok(kg_h) = f64::try_from(raw) {
-                        cfg.demand_kg_h = kg_h as f32;
+                    if let Ok(kg_per_s) = f64::try_from(raw) {
+                        cfg.demand_kg_h = (kg_per_s * 3600.0) as f32;
                     }
                 } else {
-                    dynamic_demand = DynamicScalar::from_lisp(raw, cfg.demand_kg_h);
+                    dynamic_demand =
+                        DynamicScalar::from_lisp(raw, cfg.demand_kg_h).map(|d| d.scaled(3600.0));
                     cfg.demand_dynamic = true;
                 }
             }
@@ -1644,11 +1647,11 @@ mod tests {
 
     /// The boiler constructor takes physics kwargs, keeps every marker
     /// kwarg valid (bare :id forms in existing worlds must load), and a
-    /// dynamic :demand installs a source instead of a constant.
+    /// dynamic :demand-kg-per-s installs a source instead of a constant.
     #[test]
     fn make_steam_boiler_kwargs_and_marker_compat() {
         let site = run(r#"(%make-steam-boiler :id 41 :rated-upper-w 100000.0
-                                  :target-bar 6.0 :demand 40.0
+                                  :target-bar 6.0 :demand-kg-per-s 0.01
                                   :operational-mode 'control-only)"#);
         let b = site.get(41).unwrap();
         assert_eq!(b.category().as_str(), "steam-boiler");
@@ -1661,7 +1664,7 @@ mod tests {
         let site = run("(%make-steam-boiler :id 42)");
         assert!(site.get(42).is_some());
 
-        let site = run("(%make-steam-boiler :id 43 :demand (lambda () 25.0))");
+        let site = run("(%make-steam-boiler :id 43 :demand-kg-per-s (lambda () 25.0))");
         let b = site.get(43).unwrap();
         assert!(b.has_unrenderable_source());
     }
@@ -1834,6 +1837,57 @@ mod tests {
             old.get(1).unwrap().constructor_kwargs(),
             new.get(1).unwrap().constructor_kwargs()
         );
+    }
+
+    /// Steam demand is a flow in kg/s: the keyword and the renderer
+    /// agree, and the old kg/h `:demand` builds the same boiler.
+    #[test]
+    fn steam_demand_keyword_is_kg_per_s() {
+        let new = run("(%make-steam-boiler :id 41 :demand-kg-per-s 1.0)");
+        let kw = new.get(41).unwrap().constructor_kwargs();
+        assert!(
+            kw.contains(&(":demand-kg-per-s", "1.0".to_string())),
+            "{kw:?}"
+        );
+        assert!(kw.iter().all(|(k, _)| *k != ":demand"), "{kw:?}");
+        let old = run("(%make-steam-boiler :id 41 :demand 3600)");
+        assert_eq!(
+            old.get(41).unwrap().constructor_kwargs(),
+            new.get(41).unwrap().constructor_kwargs()
+        );
+    }
+
+    /// The old kg/h `:demand` still takes a lambda or a symbol.
+    #[test]
+    fn an_old_dynamic_steam_demand_converts() {
+        let (cfg, _dir) = crate::lisp::test_support::config_with(
+            "(setq flow-kg-h 1800.0)
+             (%make-steam-boiler :id 43 :demand (lambda () 1800.0))
+             (%make-steam-boiler :id 44 :demand 'flow-kg-h)",
+        );
+        cfg.refresh_once();
+        let site = cfg.site();
+        for id in [43, 44] {
+            let b = site.get(id).unwrap();
+            assert!(b.has_unrenderable_source());
+            let v = b.steam_drive().unwrap().demand_reading().value;
+            assert!((v - 1800.0).abs() < 1e-3, "{id}: {v}");
+        }
+    }
+
+    /// A lambda for `:demand-kg-per-s` is a kg/s source; the boiler
+    /// reads it back in its own kg/h.
+    #[test]
+    fn a_dynamic_steam_demand_is_read_in_kg_per_s() {
+        let (cfg, _dir) = crate::lisp::test_support::config_with(
+            "(%make-steam-boiler :id 43 :demand-kg-per-s (lambda () 0.5))",
+        );
+        cfg.refresh_once();
+        let site = cfg.site();
+        let b = site.get(43).unwrap();
+        assert!(b.has_unrenderable_source());
+        let v = b.steam_drive().unwrap().demand_reading().value;
+        assert!((v - 1800.0).abs() < 1e-3, "{v}");
     }
 
     #[test]

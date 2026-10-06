@@ -276,7 +276,7 @@ UI").
   interval.
 - **Site weather is one singleton per microgrid, not per-component.**
   `(make-weather …)` installs a parametric clear-sky day (a sunrise/sunset
-  window, a sine peaking at `:peak%`) plus an optional ambient cloud
+  window, a sine peaking at `:peak-pct`) plus an optional ambient cloud
   generator; `(set-weather …)` retunes any of it in place; `(pass-cloud
   DEPTH DURATION &optional RAMP)` scripts one deterministic cloud;
   `(weather-status)` reads the sky back as an alist (`src/lisp/defuns/weather.rs`,

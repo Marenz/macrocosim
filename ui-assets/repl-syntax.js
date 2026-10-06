@@ -61,6 +61,7 @@ export const COMPLETIONS = [
   "set-reactive-pf-limit",
   "set-reactive-apparent-va",
   "set-boiler-demand",
+  "set-boiler-demand-kg-per-s",
   "set-boiler-pressure",
   "set-physics-tick-s",
   "set-physics-tick-ms",

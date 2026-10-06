@@ -522,6 +522,34 @@ mod tests {
         assert!(!text.contains("command-delay-ms"), "{text}");
     }
 
+    /// An old kg/h `:demand` symbol in the defaults is saved as a
+    /// readable kg/s expression, and a boiler built from either form
+    /// reads the same demand.
+    #[test]
+    fn an_old_demand_symbol_is_saved_as_a_readable_form() {
+        let (cfg, dir) = config_with(
+            "(setq flow-kg-h 1800.0)
+             (setq steam-boiler-defaults '(:demand flow-kg-h))
+             (make-steam-boiler :id 44)",
+        );
+        cfg.persist_enterprise().unwrap();
+        let text = std::fs::read_to_string(dir.join("enterprise.lisp")).unwrap();
+        assert!(
+            text.contains("(:demand-kg-per-s (/ flow-kg-h 3600.0))"),
+            "{text}"
+        );
+        cfg.eval("(setq steam-boiler-defaults '(:demand-kg-per-s (/ flow-kg-h 3600.0)))")
+            .unwrap();
+        cfg.eval("(make-steam-boiler :id 45)").unwrap();
+        cfg.refresh_once();
+        let site = cfg.site();
+        for id in [44, 45] {
+            let b = site.get(id).unwrap();
+            let v = b.steam_drive().unwrap().demand_reading().value;
+            assert!((v - 1800.0).abs() < 1e-3, "{id}: {v}");
+        }
+    }
+
     /// The enterprise block writes the lifetimes in seconds.
     #[test]
     fn the_enterprise_block_writes_lifetimes_in_seconds() {

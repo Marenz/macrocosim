@@ -43,6 +43,10 @@ pub struct DynamicScalar {
     /// read-back never touches the `TulispObject` off the
     /// interpreter lock. `None` for constants.
     source_text: Option<String>,
+    /// Multiplies each resolved value before it is cached, so a source
+    /// written in one unit can feed a slot read in another. 1.0 for
+    /// the common case.
+    scale: f32,
 }
 
 /// Clones the cached value into a fresh atomic (loaded from the
@@ -64,6 +68,7 @@ impl Clone for DynamicScalar {
             cached: AtomicU32::new(self.cached.load(Ordering::Acquire)),
             source: self.source.clone(),
             source_text: self.source_text.clone(),
+            scale: self.scale,
         }
     }
 }
@@ -75,6 +80,7 @@ impl DynamicScalar {
             cached: AtomicU32::new(v.to_bits()),
             source: None,
             source_text: None,
+            scale: 1.0,
         }
     }
 
@@ -88,6 +94,7 @@ impl DynamicScalar {
             cached: AtomicU32::new(fallback.to_bits()),
             source: Some(Source::Eval(expr)),
             source_text,
+            scale: 1.0,
         }
     }
 
@@ -101,6 +108,7 @@ impl DynamicScalar {
             cached: AtomicU32::new(fallback.to_bits()),
             source: Some(Source::Funcall(callable)),
             source_text,
+            scale: 1.0,
         }
     }
 
@@ -127,6 +135,14 @@ impl DynamicScalar {
             return Some(Self::from_eval(obj.clone(), fallback));
         }
         Some(Self::from_funcall(obj.clone(), fallback))
+    }
+
+    /// This scalar with every resolved value multiplied by `scale`
+    /// before it is cached. The cached value and a constant are left
+    /// as they are, so give any fallback already in the scaled unit.
+    pub fn scaled(mut self, scale: f32) -> Self {
+        self.scale = scale;
+        self
     }
 
     /// Read the cached resolved value. Cheap; never blocks. Acquire
@@ -171,7 +187,7 @@ impl DynamicScalar {
         };
         match result {
             Ok(obj) => match f64::try_from(&obj) {
-                Ok(v) if v.is_finite() => self.set(v as f32),
+                Ok(v) if v.is_finite() => self.set(v as f32 * self.scale),
                 Ok(v) => log::warn!(
                     "DynamicScalar refresh: non-finite result {} from {}; keeping prior value",
                     v,
@@ -308,6 +324,18 @@ mod tests {
         // nil → None.
         let nil = ctx.eval_string("nil").unwrap();
         assert!(DynamicScalar::from_lisp(&nil, 0.0).is_none());
+    }
+
+    #[test]
+    fn scaled_multiplies_each_resolved_value() {
+        let mut ctx = TulispContext::new();
+        ctx.eval_string("(setq flow 0.5)").unwrap();
+        let sym = ctx.eval_string("'flow").unwrap();
+        let s = DynamicScalar::from_eval(sym, 7.0).scaled(3600.0);
+        assert_eq!(s.get(), 7.0, "the fallback is already scaled");
+        s.refresh(&mut ctx);
+        assert_eq!(s.get(), 1800.0);
+        assert_eq!(s.clone().get(), 1800.0);
     }
 
     #[test]

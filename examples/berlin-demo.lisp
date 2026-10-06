@@ -70,9 +70,9 @@
 ;; a healthy synchronous-grid shape: ~47 mHz equilibrium std dev
 ;; (σ / sqrt(2k) with σ = 0.015 Hz/√s and k = 0.05 /s), ~20-second
 ;; correlation time. Scenarios pull toward a specific value via
-;; `(override-frequency-model :nominal F)` / `(clear-frequency-override)`.
+;; `(override-frequency-model :nominal-hz F)` / `(clear-frequency-override)`.
 (set-frequency-model
- :nominal       50.0
+ :nominal-hz    50.0
  :mean-rev-rate  0.05
  :sigma          0.015)
 
@@ -213,10 +213,10 @@
  :description "Grid frequency leans ±100 mHz, then released"
  :schedule 'relative
  :length "4min"
- :setup (lambda () (override-frequency-model :nominal 49.9))
+ :setup (lambda () (override-frequency-model :nominal-hz 49.9))
  :cues (list
-        (at "60s" (lambda () (override-frequency-model :nominal 50.0)))
-        (at "120s" (lambda () (override-frequency-model :nominal 50.1)))
+        (at "60s" (lambda () (override-frequency-model :nominal-hz 50.0)))
+        (at "120s" (lambda () (override-frequency-model :nominal-hz 50.1)))
         (at "180s" (lambda () (clear-frequency-override)))))
 
 ;; Every commandable component starts in standby. The battery

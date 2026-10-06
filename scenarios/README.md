@@ -93,7 +93,7 @@ dynamic source back to a constant.
 
 Inside a running scenario the five knob setters — `set-meter-power`,
 `set-meter-reactive-power`, `set-meter-power-factor`,
-`set-solar-sunlight`, `set-boiler-demand`, plus the three clears —
+`set-solar-sunlight`, `set-boiler-demand-kg-per-s`, plus the three clears —
 `clear-meter-power`, `clear-meter-reactive` and
 `clear-solar-sunlight` — and a charger's plug state — `plug-ev` and
 `unplug-ev`, which `set-battery-soc` on a charger writes through
@@ -157,7 +157,7 @@ explicit `(load …)` is needed:
   stops it.
 - **Restores every driven knob** — a meter's `:power-w` /
   `:reactive-power-var` / power factor, a solar inverter's
-  `:sunlight-pct`, a boiler's `:demand` and a charger's plugged car go
+  `:sunlight-pct`, a boiler's `:demand-kg-per-s` and a charger's plugged car go
   back to what they were the moment before the run first touched
   them — a car the run plugged comes back out, one it unplugged
   goes back in. First snapshot wins:

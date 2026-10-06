@@ -43,7 +43,7 @@ const STEP_MS: u64 = 200;
 
 /// The three knobs the OU step reads on each tick. Wrapped in its
 /// own struct so the base + override slots share a shape: a
-/// scenario can `(override-frequency-model :nominal 49.5)` to pull
+/// scenario can `(override-frequency-model :nominal-hz 49.5)` to pull
 /// frequency toward 49.5 with the same dynamics as the base, then
 /// later layer on `(override-frequency-model :sigma 0.05)` without
 /// touching the override nominal.

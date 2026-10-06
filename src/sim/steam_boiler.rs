@@ -32,8 +32,8 @@ pub struct SteamBoilerConfig {
     pub wh_per_kg: f32,
     /// Seed for the demand source when it is a plain number.
     pub demand_kg_h: f32,
-    /// True when :demand was a lambda/symbol at construction — the
-    /// kwarg renderer omits :demand then (unrenderable source).
+    /// True when :demand-kg-per-s was a lambda/symbol at construction —
+    /// the kwarg renderer omits it then (unrenderable source).
     pub demand_dynamic: bool,
     pub command_delay: Duration,
     pub ramp_rate_w_per_s: f32,
@@ -70,8 +70,8 @@ pub struct SteamBoiler {
     cfg: SteamBoilerConfig,
     state: Mutex<BoilerState>,
     /// Steam-demand kg/h. Either a constant (the cfg default or a
-    /// numeric `:demand`) or a Lisp expression re-resolved each tick
-    /// by `refresh_inputs`.
+    /// numeric `:demand-kg-per-s`) or a Lisp expression re-resolved
+    /// each tick by `refresh_inputs`.
     demand_source: RwLock<DynamicScalar>,
     /// The electric heater: the command handed in through
     /// `set_command`, delayed and held inside rated ∩ [0, need].
@@ -337,7 +337,10 @@ impl SimulatedComponent for SteamBoiler {
             kw.push((":initial-bar", lf(initial)));
         }
         if !self.cfg.demand_dynamic {
-            kw.push((":demand", lf(self.cfg.demand_kg_h)));
+            kw.push((
+                ":demand-kg-per-s",
+                crate::lisp::lisp_float(self.cfg.demand_kg_h as f64 / 3600.0),
+            ));
         }
         kw.push((
             ":command-delay-s",
@@ -746,7 +749,7 @@ mod tests {
     }
 
     /// Every construction kwarg round-trips; :ramp-rate-w-per-s renders only
-    /// when finite, :interval-s only off-default, :demand only when
+    /// when finite, :interval-s only off-default, :demand-kg-per-s only when
     /// the source is a plain number, :initial-bar only when it
     /// departs from target.
     #[test]
@@ -758,7 +761,7 @@ mod tests {
                 rated_upper_w: 100_000.0,
                 target_bar: 6.0,
                 max_bar: 9.0,
-                demand_kg_h: 40.0,
+                demand_kg_h: 3600.0,
                 stream_jitter_pct: 5.0,
                 ..Default::default()
             },
@@ -773,7 +776,7 @@ mod tests {
         assert!(s.contains(":rated-upper-w 100000.0"));
         assert!(s.contains(":target-bar 6.0"));
         assert!(s.contains(":max-bar 9.0"));
-        assert!(s.contains(":demand 40.0"));
+        assert!(s.contains(":demand-kg-per-s 1.0"), "{s}");
         assert!(s.contains(":interval-s 0.5"));
         assert!(s.contains(":stream-jitter-pct 5.0"));
         assert!(!s.contains(":ramp-rate-w-per-s"), "infinite ramp omitted");

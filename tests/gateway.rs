@@ -372,7 +372,7 @@ const AGREEMENT_TOPOLOGY: &str = r#"
         :successors (list (%make-battery :id 3 :initial-soc-pct 87.5 :soc-upper-pct 90.0
                                          :soc-protect-margin-pct 5.0
                                          :rated-lower-w -10000.0 :rated-upper-w 10000.0)))
-      (%make-steam-boiler :id 6 :demand 100.0)))))
+      (%make-steam-boiler :id 6 :demand-kg-per-s 0.027777778)))))
 "#;
 
 /// gRPC telemetry, `site.bounds_of`, Lisp `component-bound-upper`,

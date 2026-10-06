@@ -324,7 +324,7 @@ impl Weather {
 /// (`src/lisp/defuns/weather.rs`) and the HTTP weather routes
 /// (`src/ui/handlers/weather.rs`), so both surfaces enforce
 /// identical rules even though each phrases its error text around
-/// its own field vocabulary (`:cloud-rate` vs `cloud_rate_per_h`).
+/// its own field vocabulary (`:cloud-mean-gap-s` vs `cloud_rate_per_h`).
 /// Every fn here is a pure check — no `WeatherConfig`, no site, no
 /// error type tied to either caller's framework.
 pub mod validate {
@@ -412,7 +412,7 @@ pub mod validate {
     /// More than one cloud a second is not a sky, it's a typo — and
     /// without an upper bound, a tiny positive rate near the other
     /// end (e.g. `1e-30`) blows up `exp_sample`'s `-ln(u) / rate` the
-    /// same way an absurd `:cloud-duration` blows up the trapezoid.
+    /// same way an absurd `:cloud-duration-s` blows up the trapezoid.
     pub const MAX_PER_H: f32 = 3_600.0;
 
     /// Ambient cloud arrival rate: 0 is the natural "no ambient
@@ -470,7 +470,7 @@ pub mod validate {
 
 /// Which door a [`WeatherPatch`] arrived through. It changes nothing
 /// about what is checked — only how a rejection is worded, since each
-/// surface names the same field in its own vocabulary (`:peak%` in a
+/// surface names the same field in its own vocabulary (`:peak-pct` in a
 /// Lisp form, `peak_pct` in a JSON body) and a Lisp error also names
 /// the defun the author actually typed.
 #[derive(Clone, Copy)]
@@ -488,8 +488,8 @@ impl WeatherDoor<'_> {
     ///
     /// `with_form` is why there are two spellings rather than one:
     /// the Lisp doors put the form name in front of the checks that
-    /// read as being about the form as a whole (the window, `:peak%`,
-    /// `:cloud-rate`) but not in front of the range kwargs. That
+    /// read as being about the form as a whole (the window, `:peak-pct`,
+    /// `:cloud-mean-gap-s`) but not in front of the range kwargs. That
     /// split is historical, and is kept so no existing message moves.
     fn label(&self, kw: &str, json: &str, with_form: bool) -> String {
         match self {
@@ -561,7 +561,7 @@ impl WeatherPatch {
             // `min_avail` positive — the band collapses and every
             // following array parks at 0 instead of generating, with
             // nothing in the telemetry to say why.
-            let at = door.label(":peak%", "peak_pct", true);
+            let at = door.label(":peak-pct", "peak_pct", true);
             validate::peak_pct(v).map_err(|e| format!("{at} {e}"))?;
             cfg.peak_pct = v;
         }
@@ -570,21 +570,21 @@ impl WeatherPatch {
             // where `None` has no keyword of its own — but a NEGATIVE
             // rate is a mistake, not a second spelling of "off", so it
             // says so rather than silently disabling the generator.
-            let at = door.label(":cloud-rate", "cloud_rate_per_h", true);
+            let at = door.label(":cloud-mean-gap-s", "cloud_rate_per_h", true);
             cfg.cloud_rate_per_h = validate::cloud_rate(v).map_err(|e| format!("{at} {e}"))?;
         }
         if let Some(range) = self.cloud_depth {
-            let at = door.label(":cloud-depth", "cloud_depth", false);
+            let at = door.label(":cloud-depth-pct", "cloud_depth", false);
             validate::depth_range(range).map_err(|e| format!("{at} {e}"))?;
             cfg.cloud_depth = range;
         }
         if let Some(range) = self.cloud_duration {
-            let at = door.label(":cloud-duration", "cloud_duration", false);
+            let at = door.label(":cloud-duration-s", "cloud_duration", false);
             validate::secs_range(range).map_err(|e| format!("{at} {e}"))?;
             cfg.cloud_duration = range;
         }
         if let Some(range) = self.cloud_ramp {
-            let at = door.label(":cloud-ramp", "cloud_ramp", false);
+            let at = door.label(":cloud-ramp-s", "cloud_ramp", false);
             validate::secs_range(range).map_err(|e| format!("{at} {e}"))?;
             cfg.cloud_ramp = range;
         }
@@ -599,7 +599,7 @@ impl WeatherPatch {
     /// fields the patch carries move, and the event list and anchor
     /// survive — or a fresh [`Weather`] over
     /// [`WeatherConfig::default`] when the site has no weather yet,
-    /// which is what makes `(set-weather :cloud-rate 6)` (and its
+    /// which is what makes `(set-weather :cloud-mean-gap-s 600)` (and its
     /// HTTP twin) a valid way in on a fresh site.
     ///
     /// A seed is the exception: an RNG cannot be re-seeded in place

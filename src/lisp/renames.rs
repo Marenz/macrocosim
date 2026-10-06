@@ -11,7 +11,6 @@ use tulisp::{Error, Plistable, TulispContext, TulispObject};
 
 /// How an old keyword's value becomes the new keyword's value.
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[expect(dead_code, reason = "the table is empty until the renames land")]
 pub(crate) enum Convert {
     /// Same value, new name.
     None,
@@ -43,10 +42,20 @@ impl Convert {
 
     /// `value` in the new unit. `nil` and non-numbers pass through
     /// unchanged when no conversion is needed; a conversion on a
-    /// non-number is an error naming the old keyword.
-    fn apply(self, old: &str, value: &TulispObject) -> Result<TulispObject, Error> {
+    /// non-number is an error naming the old keyword, except that a
+    /// per-hour value may be a lambda or symbol, which becomes a
+    /// lambda reading per second.
+    fn apply(
+        self,
+        ctx: &mut TulispContext,
+        old: &str,
+        value: &TulispObject,
+    ) -> Result<TulispObject, Error> {
         if self == Convert::None || value.null() {
             return Ok(value.clone());
+        }
+        if self == Convert::PerHourToPerSecond && !value.numberp() {
+            return per_second_source(ctx, value);
         }
         if !value.numberp() {
             return Err(Error::invalid_argument(format!(
@@ -70,6 +79,27 @@ impl Convert {
         };
         Ok(TulispObject::from(y))
     }
+}
+
+/// A source of per-hour values read as per-second ones: the
+/// unevaluated form `(/ V 3600.0)` for a symbol or expression `V`,
+/// which prints back readably, and the compiled
+/// `(lambda () (/ (funcall 'V) 3600.0))` for a function `V`.
+fn per_second_source(ctx: &mut TulispContext, v: &TulispObject) -> Result<TulispObject, Error> {
+    let list = |items: Vec<TulispObject>| items.into_iter().collect::<TulispObject>();
+    if v.symbolp() || v.consp() {
+        return Ok(list(vec![ctx.intern("/"), v.clone(), 3600.0.into()]));
+    }
+    let per_hour = list(vec![
+        ctx.intern("funcall"),
+        list(vec![ctx.intern("quote"), v.clone()]),
+    ]);
+    let form = list(vec![
+        ctx.intern("lambda"),
+        TulispObject::nil(),
+        list(vec![ctx.intern("/"), per_hour, 3600.0.into()]),
+    ]);
+    ctx.eval(&form)
 }
 
 /// One renamed keyword.
@@ -193,6 +223,41 @@ pub(crate) const RENAMES: &[Rename] = &[
         convert: Convert::FractionToPct,
     },
     Rename {
+        old: ":peak%",
+        new: ":peak-pct",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":cloud-rate",
+        new: ":cloud-mean-gap-s",
+        convert: Convert::RatePerHourToGapS,
+    },
+    Rename {
+        old: ":cloud-depth",
+        new: ":cloud-depth-pct",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":cloud-duration",
+        new: ":cloud-duration-s",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":cloud-ramp",
+        new: ":cloud-ramp-s",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":nominal",
+        new: ":nominal-hz",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":demand",
+        new: ":demand-kg-per-s",
+        convert: Convert::PerHourToPerSecond,
+    },
+    Rename {
         old: ":sunlight%",
         new: ":sunlight-pct",
         convert: Convert::None,
@@ -250,7 +315,7 @@ fn rename_kvs_with(
             Some(r) => {
                 warn_renamed_with(warned, r.old, r.new, r.convert.note());
                 out.push(ctx.intern(r.new));
-                out.push(r.convert.apply(r.old, value)?);
+                out.push(r.convert.apply(ctx, r.old, value)?);
             }
             None => {
                 out.push(key.clone());
@@ -296,12 +361,20 @@ impl<T: Plistable> Plistable for Renamed<T> {
 }
 
 /// Installs `(%warn-renamed OLD NEW NOTE)` for Lisp-defined functions
-/// that accept an old keyword of their own.
+/// that accept an old keyword of their own, and
+/// `(%kg-per-h-to-kg-per-s V)`, the per-hour to per-second conversion
+/// of [`Convert::PerHourToPerSecond`] (`nil` stays `nil`).
 pub(crate) fn register(ctx: &mut TulispContext) {
     ctx.defun("%warn-renamed", |old: String, new: String, note: String| {
         warn_renamed(&old, &new, &note);
         true
     });
+    ctx.defun(
+        "%kg-per-h-to-kg-per-s",
+        |ctx: &mut TulispContext, v: TulispObject| -> Result<TulispObject, Error> {
+            Convert::PerHourToPerSecond.apply(ctx, "%kg-per-h-to-kg-per-s", &v)
+        },
+    );
 }
 
 #[cfg(test)]

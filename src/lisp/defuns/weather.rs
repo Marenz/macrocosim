@@ -27,19 +27,20 @@ tulisp::AsPlist! {
         /// two spellings as `:sunrise`.
         sunset: Option<LispValue> {= None},
         /// Clear-sky output at solar noon, percent.
-        peak_pct<":peak%">: Option<f64> {= None},
-        /// Ambient cloud arrival rate, events per hour. Zero disables
+        peak_pct<":peak-pct">: Option<f64> {= None},
+        /// Mean gap between ambient clouds, seconds. Zero disables
         /// the ambient generator, leaving only scripted
-        /// `(pass-cloud)` events; a negative rate is an error.
-        cloud_rate<":cloud-rate">: Option<f64> {= None},
+        /// `(pass-cloud)` events; a negative gap, or a positive one
+        /// under a second, is an error.
+        cloud_mean_gap_s<":cloud-mean-gap-s">: Option<f64> {= None},
         /// Ambient cloud depth, percent — a number (fixed) or a
         /// two-element `(lo hi)` list drawn from uniformly.
-        cloud_depth<":cloud-depth">: Option<LispValue> {= None},
+        cloud_depth_pct<":cloud-depth-pct">: Option<LispValue> {= None},
         /// Ambient cloud total duration, seconds. Number or `(lo hi)`.
-        cloud_duration<":cloud-duration">: Option<LispValue> {= None},
+        cloud_duration_s<":cloud-duration-s">: Option<LispValue> {= None},
         /// Ambient cloud ramp-in/ramp-out time, seconds. Number or
         /// `(lo hi)`.
-        cloud_ramp<":cloud-ramp">: Option<LispValue> {= None},
+        cloud_ramp_s<":cloud-ramp-s">: Option<LispValue> {= None},
         /// Ambient generator seed. Passing it to `(set-weather)`
         /// re-seeds the generator (see the defun's docs).
         seed: Option<i64> {= None},
@@ -74,6 +75,25 @@ fn range_arg(kw: &str, v: &LispValue) -> Result<(f32, f32), Error> {
     )))
 }
 
+/// The ambient cloud rate, events per hour, for a mean gap in seconds.
+/// Zero is "no ambient clouds"; the weather model takes the rate.
+fn cloud_rate_per_h(form: &str, gap_s: f64) -> Result<f32, Error> {
+    if gap_s == 0.0 {
+        return Ok(0.0);
+    }
+    if !(gap_s.is_finite() && gap_s >= 0.0) {
+        return Err(Error::invalid_argument(format!(
+            "{form}: :cloud-mean-gap-s must be a non-negative number of seconds (0 disables), got {gap_s}"
+        )));
+    }
+    if gap_s < 1.0 {
+        return Err(Error::invalid_argument(format!(
+            "{form}: :cloud-mean-gap-s must be 0 or at least one second, got {gap_s}"
+        )));
+    }
+    Ok((3600.0 / gap_s) as f32)
+}
+
 /// A time-of-day kwarg: an `"HH:MM"` string, or a bare number of
 /// seconds since midnight. The number spelling matches what
 /// `(parse-time-of-day)` already accepts, so a scenario can compute
@@ -100,7 +120,7 @@ fn time_of_day_arg(kw: &str, v: &LispValue) -> Result<Duration, Error> {
 /// seconds for a time, a number or a `(lo hi)` list for a range. The
 /// fold order, the numeric validation and the sunrise/sunset pair
 /// check all belong to the patch, shared with the HTTP weather route.
-fn patch_args(a: &WeatherArgs) -> Result<WeatherPatch, Error> {
+fn patch_args(a: &WeatherArgs, form: &str) -> Result<WeatherPatch, Error> {
     let range = |kw, v: &Option<LispValue>| v.as_ref().map(|v| range_arg(kw, v)).transpose();
     Ok(WeatherPatch {
         sunrise: a
@@ -114,10 +134,13 @@ fn patch_args(a: &WeatherArgs) -> Result<WeatherPatch, Error> {
             .map(|v| time_of_day_arg(":sunset", v))
             .transpose()?,
         peak_pct: a.peak_pct.map(|v| v as f32),
-        cloud_rate_per_h: a.cloud_rate.map(|v| v as f32),
-        cloud_depth: range(":cloud-depth", &a.cloud_depth)?,
-        cloud_duration: range(":cloud-duration", &a.cloud_duration)?,
-        cloud_ramp: range(":cloud-ramp", &a.cloud_ramp)?,
+        cloud_rate_per_h: a
+            .cloud_mean_gap_s
+            .map(|g| cloud_rate_per_h(form, g))
+            .transpose()?,
+        cloud_depth: range(":cloud-depth-pct", &a.cloud_depth_pct)?,
+        cloud_duration: range(":cloud-duration-s", &a.cloud_duration_s)?,
+        cloud_ramp: range(":cloud-ramp-s", &a.cloud_ramp_s)?,
         seed: a.seed.map(|v| v as u64),
     })
 }
@@ -133,7 +156,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
         move |args: tulisp::Plist<Renamed<WeatherArgs>>| -> Result<bool, Error> {
             let a = args.into_inner().0;
             let mut cfg = WeatherConfig::default();
-            patch_args(&a)?
+            patch_args(&a, "make-weather")?
                 .apply_to(&mut cfg, WeatherDoor::Lisp("make-weather"))
                 .map_err(Error::invalid_argument)?;
             r.site().set_weather(Some(Weather::new(cfg)));
@@ -144,7 +167,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     // PARTIAL update of the site's existing weather config: only the
     // keys passed are touched, and the event list and anchor survive.
     // With no weather installed yet it starts from the defaults, so
-    // `(set-weather :cloud-rate 6)` on a fresh site is a valid way in.
+    // `(set-weather :cloud-mean-gap-s 600)` on a fresh site is a valid way in.
     //
     // `:seed` is the exception: an RNG can't be re-seeded in place
     // without disturbing the stream, so passing it rebuilds the
@@ -156,7 +179,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
         "set-weather",
         move |args: tulisp::Plist<Renamed<WeatherArgs>>| -> Result<bool, Error> {
             let a = args.into_inner().0;
-            patch_args(&a)?
+            patch_args(&a, "set-weather")?
                 .install(&r.site(), WeatherDoor::Lisp("set-weather"))
                 .map_err(Error::invalid_argument)?;
             Ok(true)
@@ -187,7 +210,8 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
         },
     );
 
-    // Read the sky back as `((pct . N) (clear-sky . N) (events . N))`,
+    // Read the sky back as
+    // `((sunlight-pct . N) (clear-sky-pct . N) (events . N))`,
     // evaluated at the weather's own anchor — the last `now` a tick
     // handed it, so the answer matches what the inverters just saw
     // rather than a wall clock that may be hours off in a stepped
@@ -213,8 +237,8 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
             let round2 = |v: f32| (v as f64 * 100.0).round() / 100.0;
             let mut cell = |k: &str, v: TulispObject| TulispObject::cons(ctx.intern(k), v);
             Ok(vec![
-                cell("pct", round2(pct).into()),
-                cell("clear-sky", round2(clear).into()),
+                cell("sunlight-pct", round2(pct).into()),
+                cell("clear-sky-pct", round2(clear).into()),
                 cell("events", events.into()),
             ]
             .into_iter()
@@ -261,6 +285,75 @@ mod tests {
         assert!(st.contains("(events . 1)"), "still armed, got {st}");
     }
 
+    /// The weather keywords carry their unit, the clouds are spaced by
+    /// a mean gap in seconds, and `(weather-status)` names its percents.
+    #[test]
+    fn weather_takes_unit_keywords_and_reports_them() {
+        let (cfg, _dir) = config_with("");
+        cfg.eval(
+            "(make-weather :peak-pct 80.0 :cloud-mean-gap-s 1200 :cloud-depth-pct 40
+                           :cloud-duration-s 120 :cloud-ramp-s 30)",
+        )
+        .unwrap();
+        let st = cfg.eval("(weather-status)").unwrap();
+        assert!(st.contains("sunlight-pct"), "{st}");
+        assert!(st.contains("clear-sky-pct"), "{st}");
+        assert!(!st.contains("(pct"), "{st}");
+        cfg.site()
+            .with_weather(|w| {
+                let c = w.config();
+                assert_eq!(c.peak_pct, 80.0);
+                assert_eq!(c.cloud_rate_per_h, Some(3.0));
+                assert_eq!(c.cloud_depth, (40.0, 40.0));
+                assert_eq!(c.cloud_duration, (120.0, 120.0));
+                assert_eq!(c.cloud_ramp, (30.0, 30.0));
+            })
+            .unwrap();
+    }
+
+    /// The old cloud rate (events per hour) and `:peak%` still load.
+    #[test]
+    fn old_weather_keywords_convert() {
+        let (old, _a) = config_with("");
+        old.eval("(make-weather :peak% 80.0 :cloud-rate 3 :cloud-depth 40 :cloud-duration 120 :cloud-ramp 30)")
+            .unwrap();
+        let (new, _b) = config_with("");
+        new.eval(
+            "(make-weather :peak-pct 80.0 :cloud-mean-gap-s 1200 :cloud-depth-pct 40
+                           :cloud-duration-s 120 :cloud-ramp-s 30)",
+        )
+        .unwrap();
+        assert_eq!(
+            old.eval("(weather-status)").unwrap(),
+            new.eval("(weather-status)").unwrap()
+        );
+        let rate = |c: &crate::lisp::Config| {
+            c.site()
+                .with_weather(|w| w.config().cloud_rate_per_h)
+                .unwrap()
+        };
+        assert_eq!(rate(&old), rate(&new));
+        assert_eq!(rate(&old), Some(3.0));
+    }
+
+    /// A zero mean gap is "no ambient clouds", from either spelling.
+    #[test]
+    fn a_zero_cloud_mean_gap_means_no_ambient_clouds() {
+        let (cfg, _dir) = config_with("");
+        cfg.eval("(make-weather :cloud-mean-gap-s 1200)").unwrap();
+        let rate = || {
+            cfg.site()
+                .with_weather(|w| w.config().cloud_rate_per_h)
+                .unwrap()
+        };
+        assert_eq!(rate(), Some(3.0));
+        cfg.eval("(set-weather :cloud-mean-gap-s 0)").unwrap();
+        assert_eq!(rate(), None);
+        cfg.eval("(set-weather :cloud-mean-gap-s 1200)").unwrap();
+        cfg.eval("(set-weather :cloud-rate 0)").unwrap();
+        assert_eq!(rate(), None);
+    }
+
     /// `(weather-status)` on a site with no weather is `nil`, not an
     /// error — a polling panel shouldn't need a handler for "the sky
     /// isn't modelled here".
@@ -279,16 +372,16 @@ mod tests {
     #[test]
     fn set_weather_updates_partially_and_reseeds() {
         let (cfg, _dir) = config_with("");
-        cfg.eval(r#"(make-weather :sunrise "05:00" :sunset "21:00" :peak% 80)"#)
+        cfg.eval(r#"(make-weather :sunrise "05:00" :sunset "21:00" :peak-pct 80)"#)
             .unwrap();
         cfg.eval("(pass-cloud 30 600)").unwrap();
-        cfg.eval("(set-weather :cloud-rate 6 :cloud-depth '(20 70) :cloud-ramp 15)")
+        cfg.eval("(set-weather :cloud-mean-gap-s 600 :cloud-depth-pct '(20 70) :cloud-ramp-s 15)")
             .unwrap();
         let site = cfg.site();
         site.with_weather(|w| {
             let c = w.config();
             assert_eq!(c.sunrise, Duration::from_secs(5 * 3600), "kept :sunrise");
-            assert_eq!(c.peak_pct, 80.0, "kept :peak%");
+            assert_eq!(c.peak_pct, 80.0, "kept :peak-pct");
             assert_eq!(c.cloud_rate_per_h, Some(6.0));
             assert_eq!(c.cloud_depth, (20.0, 70.0), "(lo hi) list");
             assert_eq!(c.cloud_ramp, (15.0, 15.0), "a bare number is a fixed value");
@@ -313,32 +406,36 @@ mod tests {
         );
 
         // Out-of-range depth is rejected.
-        let err = cfg.eval("(set-weather :cloud-depth '(0 140))").unwrap_err();
+        let err = cfg
+            .eval("(set-weather :cloud-depth-pct '(0 140))")
+            .unwrap_err();
         assert!(err.contains("[0, 100]"), "{err}");
     }
 
     /// Every numeric kwarg is checked at the door rather than left to
-    /// produce silently wrong physics: a negative `:peak%` inverts
+    /// produce silently wrong physics: a negative `:peak-pct` inverts
     /// the clear-sky arch into parked-at-0 non-generation, a negative
-    /// `:cloud-rate` would otherwise pass as a second spelling of
-    /// "disabled", and a negative duration/ramp panics
-    /// `Duration::from_secs_f32` downstream. A malformed range list
-    /// names its own kwarg.
+    /// `:cloud-mean-gap-s` is refused (only 0 means "no clouds"), and
+    /// a negative duration/ramp panics `Duration::from_secs_f32`
+    /// downstream. A malformed range list names its own kwarg.
     #[test]
     fn numeric_kwargs_are_validated_at_the_door() {
         let (cfg, _dir) = config_with("");
         cfg.eval("(make-weather)").unwrap();
         for (form, needle) in [
-            ("(set-weather :peak% -10)", ":peak%"),
-            ("(make-weather :peak% -0.5)", ":peak%"),
-            ("(set-weather :cloud-rate -1)", ":cloud-rate"),
+            ("(set-weather :peak-pct -10)", ":peak-pct"),
+            ("(make-weather :peak-pct -0.5)", ":peak-pct"),
+            ("(set-weather :cloud-mean-gap-s -1)", ":cloud-mean-gap-s"),
             (
-                "(set-weather :cloud-duration '(-60 600))",
-                ":cloud-duration",
+                "(set-weather :cloud-duration-s '(-60 600))",
+                ":cloud-duration-s",
             ),
-            ("(set-weather :cloud-ramp -5)", ":cloud-ramp"),
-            ("(set-weather :cloud-duration '(20))", ":cloud-duration"),
-            ("(set-weather :cloud-depth \"heavy\")", ":cloud-depth"),
+            ("(set-weather :cloud-ramp-s -5)", ":cloud-ramp-s"),
+            ("(set-weather :cloud-duration-s '(20))", ":cloud-duration-s"),
+            (
+                "(set-weather :cloud-depth-pct \"heavy\")",
+                ":cloud-depth-pct",
+            ),
         ] {
             let err = cfg.eval(form).unwrap_err();
             assert!(err.contains(needle), "{form} → {err}");
@@ -351,7 +448,7 @@ mod tests {
             })
             .unwrap();
         // 0 stays the "no ambient clouds" spelling.
-        cfg.eval("(set-weather :cloud-rate 0)").unwrap();
+        cfg.eval("(set-weather :cloud-mean-gap-s 0)").unwrap();
         cfg.site()
             .with_weather(|w| assert_eq!(w.config().cloud_rate_per_h, None))
             .unwrap();
@@ -361,20 +458,21 @@ mod tests {
     /// checks above would have waved through (`1e30` is finite and
     /// non-negative) is rejected at the door instead of surviving to
     /// panic `Duration::from_secs_f32` inside `Weather::advance` on the
-    /// physics task. Same for a vanishing `:cloud-rate`, which blows up
-    /// `exp_sample`'s `-ln(u)/rate` the same way, and for a rate above
-    /// "one cloud a second".
+    /// physics task. A `:cloud-mean-gap-s` under 1 s is refused too: it
+    /// is a typo, and a vanishing one would make `advance` add clouds
+    /// without end.
     #[test]
     fn absurd_magnitude_cloud_config_is_rejected_at_the_door() {
         let (cfg, _dir) = config_with("");
         cfg.eval("(make-weather)").unwrap();
         for (form, needle) in [
             (
-                "(set-weather :cloud-rate 1 :cloud-duration '(1e30 1e30))",
-                ":cloud-duration",
+                "(set-weather :cloud-mean-gap-s 3600 :cloud-duration-s '(1e30 1e30))",
+                ":cloud-duration-s",
             ),
-            ("(set-weather :cloud-ramp '(1e30 1e30))", ":cloud-ramp"),
-            ("(set-weather :cloud-rate 1e30)", ":cloud-rate"),
+            ("(set-weather :cloud-ramp-s '(1e30 1e30))", ":cloud-ramp-s"),
+            ("(set-weather :cloud-mean-gap-s 1e-30)", ":cloud-mean-gap-s"),
+            ("(set-weather :cloud-mean-gap-s 0.5)", ":cloud-mean-gap-s"),
         ] {
             let err = cfg.eval(form).unwrap_err();
             assert!(err.contains(needle), "{form} → {err}");
@@ -416,7 +514,7 @@ mod tests {
         let (cfg, _dir) = config_with(
             r#"(%make-solar-inverter :id 3 :rated-lower-w -10000.0 :rated-upper-w 0.0)"#,
         );
-        cfg.eval(r#"(make-weather :sunrise "00:00" :sunset "23:59" :peak% 100)"#)
+        cfg.eval(r#"(make-weather :sunrise "00:00" :sunset "23:59" :peak-pct 100)"#)
             .unwrap();
         let site = cfg.site();
         let dt = Duration::from_secs(60);
