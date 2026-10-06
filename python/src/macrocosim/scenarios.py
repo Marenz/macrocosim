@@ -241,6 +241,8 @@ class ScenarioRun:
     def __init__(self, site: Site, name: str) -> None:
         self._site = site
         self._name = name
+        # The microgrid run(wait=True) picked; None until one did.
+        self._mg: int | None = None
 
     @property
     def _http(self) -> HttpClient:
@@ -252,6 +254,27 @@ class ScenarioRun:
                 return scenario.get("length_s")
         return None
 
+    def _wait_length(self, until: timedelta | None) -> float:
+        length = until.total_seconds() if until is not None else self._length_s()
+        if length is None:
+            raise ValueError(
+                f"scenario {self._name!r} has no :length; pass until= to bound the wait"
+            )
+        return length
+
+    def _wait_target(self, until: timedelta | None) -> tuple[float, int]:
+        """The wait length and the microgrid to poll. One read of the
+        microgrid's journal makes a microgrid the server does not have
+        fail here."""
+        length = self._wait_length(until)
+        mg = self._site._resolve_mg(None)
+        self._http.get_json(scenario_path(mg))
+        return length, mg
+
+    def _run_mg(self) -> int:
+        """The microgrid run() picked, else the lowest one."""
+        return self._mg if self._mg is not None else self._site._resolve_mg(None)
+
     def run(
         self,
         *,
@@ -260,20 +283,15 @@ class ScenarioRun:
         poll: timedelta = timedelta(seconds=1),
     ) -> ScenarioRun:
         """Start the scenario; with ``wait`` block until it finishes, stop it."""
-        length = until.total_seconds() if until is not None else self._length_s()
-        # Resolve the wait length and the microgrid BEFORE starting, so
-        # an unwaitable scenario fails fast instead of being left
+        # Resolve the wait length and the microgrid BEFORE starting,
+        # so an unwaitable scenario fails fast instead of being left
         # running with nothing to stop it.
-        if not wait:
-            self._http.post(f"/api/scenarios/{self._name}/start")
-            return self
-        if length is None:
-            raise ValueError(
-                f"scenario {self._name!r} has no :length; pass until= to bound the wait"
-            )
-        mg = self._site._resolve_mg(None)
+        target = self._wait_target(until) if wait else None
         self._http.post(f"/api/scenarios/{self._name}/start")
-        return self._wait_for(length, poll, mg)
+        if target is None:
+            return self
+        length, self._mg = target
+        return self._wait_for(length, poll, self._mg)
 
     def wait(
         self,
@@ -286,12 +304,7 @@ class ScenarioRun:
         The companion to ``run(wait=False)`` — start the scenario, do
         other work, then wait for the report.
         """
-        length = until.total_seconds() if until is not None else self._length_s()
-        if length is None:
-            raise ValueError(
-                f"scenario {self._name!r} has no :length; pass until= to bound the wait"
-            )
-        return self._wait_for(length, poll, self._site._resolve_mg(None))
+        return self._wait_for(self._wait_length(until), poll, self._run_mg())
 
     def _assert_active(self, state: ScenarioReport) -> None:
         # The server tracks one scenario; a mismatched (or absent) name
@@ -307,24 +320,26 @@ class ScenarioRun:
     def _wait_for(self, length: float, poll: timedelta, mg: int) -> ScenarioRun:
         deadline = time.monotonic() + length + 5.0
         interval = poll.total_seconds()
-        while time.monotonic() < deadline:
-            state = self._http.get_json(scenario_path(mg))
-            self._assert_active(state)
-            if state.get("ended_at") is not None:
-                break
-            if (state.get("elapsed_s") or 0.0) >= length:
-                break
-            time.sleep(interval)
-        self._http.post("/api/scenarios/stop")
+        # The stop is posted even when a poll raises, so a failed wait
+        # leaves no scenario running.
+        try:
+            while time.monotonic() < deadline:
+                state = self._http.get_json(scenario_path(mg))
+                self._assert_active(state)
+                if state.get("ended_at") is not None:
+                    break
+                if (state.get("elapsed_s") or 0.0) >= length:
+                    break
+                time.sleep(interval)
+        finally:
+            self._http.post("/api/scenarios/stop")
         return self
 
     def report(self) -> ScenarioReport:
         """The parsed scenario report (pass/fail ledger + peak/soc stats)."""
         # The report carries the scenario name it belongs to; checking
         # it in the same response avoids a two-request race.
-        report = self._http.get_json(
-            scenario_path(self._site._resolve_mg(None), "/report")
-        )
+        report = self._http.get_json(scenario_path(self._run_mg(), "/report"))
         self._assert_active(report)
         return report
 
@@ -338,7 +353,7 @@ class ScenarioRun:
     def events(self, *, since: int = 0) -> list[JournalEvent]:
         """The scenario's journal events (list of ``{kind, payload, …}``)."""
         body = self._http.get_json(
-            scenario_path(self._site._resolve_mg(None), f"/events?since={since}")
+            scenario_path(self._run_mg(), f"/events?since={since}")
         )
         return body.get("events", [])
 

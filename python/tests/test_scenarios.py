@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import httpx
 import pytest
 from frequenz.quantities import Power
 
@@ -155,6 +156,57 @@ def test_run_wait_without_microgrids_raises_before_starting() -> None:
     with pytest.raises(RuntimeError, match="no microgrid endpoints"):
         ScenarioRun(site, "s").run(wait=True)
     assert http.posts == []  # never started → nothing to orphan
+
+
+def _not_found(path: str) -> httpx.HTTPStatusError:
+    """The error ``HttpClient.get_json`` raises on a 404 for ``path``."""
+    request = httpx.Request("GET", f"http://ui{path}")
+    response = httpx.Response(
+        404, json={"error": "microgrid 3 not registered"}, request=request
+    )
+    return httpx.HTTPStatusError("404 Not Found", request=request, response=response)
+
+
+def test_run_wait_on_a_missing_microgrid_raises_before_starting() -> None:
+    class MissingMgHttp(FakeHttp):
+        def get_json(self, path: str):
+            if path == "/api/mg/3/scenario":
+                raise _not_found(path)
+            return super().get_json(path)
+
+    site = FakeSite({})
+    site._http = MissingMgHttp({})
+    with pytest.raises(httpx.HTTPStatusError, match="404"):
+        ScenarioRun(site, "s").run(wait=True)
+    assert site._http.posts == []  # never started → nothing to orphan
+
+
+def test_run_wait_stops_the_scenario_when_a_poll_raises() -> None:
+    class FailingPollHttp(FakeHttp):
+        def get_json(self, path: str):
+            # The first journal read is the check before the start;
+            # the next one is the first poll.
+            if path == "/api/mg/3/scenario" and path in self.gets:
+                raise httpx.ReadTimeout("poll timed out")
+            return super().get_json(path)
+
+    site = FakeSite({})
+    site._http = FailingPollHttp({})
+    with pytest.raises(httpx.ReadTimeout, match="poll timed out"):
+        ScenarioRun(site, "s").run(wait=True)
+    assert site._http.posts == ["/api/scenarios/s/start", "/api/scenarios/stop"]
+
+
+def test_readouts_after_a_run_use_the_microgrid_it_picked() -> None:
+    site = FakeSite({"checks_passed": 1, "checks_failed": 0, "checks": []})
+    run = ScenarioRun(site, "s").run(wait=True)
+    site.microgrids[1] = object()  # a lower microgrid appears afterwards
+    run.report()
+    run.events()
+    assert site._http.gets[-2:] == [
+        "/api/mg/3/scenario/report",
+        "/api/mg/3/scenario/events?since=0",
+    ]
 
 
 def test_assert_passed_returns_report_when_clean() -> None:

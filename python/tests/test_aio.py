@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
+import httpx
 import pytest
 from frequenz.quantities import Energy, Power, ReactivePower
 
@@ -248,23 +249,62 @@ async def test_scenario_run_fails_fast_without_a_length() -> None:
         await site.scenario("soak").run(wait=True)
 
 
-async def test_scenario_run_fails_fast_without_microgrids() -> None:
-    site = mc.aio.connect(ui="127.0.0.1:9")
+def _recording_posts(site: mc.aio.Site) -> list[str]:
+    """Fake ``site``'s POSTs; returns the list the paths land in."""
     posts: list[str] = []
-
-    async def fake_get_json(path: str) -> Any:
-        assert path == "/api/scenarios"
-        return [{"name": "soak", "length_s": 1.0}]
 
     async def fake_post(path: str, content: str = "") -> Any:
         posts.append(path)
         return {}
 
-    site._http.get_json = fake_get_json  # type: ignore[method-assign]
     site._http.post = fake_post  # type: ignore[method-assign]
+    return posts
+
+
+async def test_scenario_run_fails_fast_without_microgrids() -> None:
+    site = mc.aio.connect(ui="127.0.0.1:9")
+    posts = _recording_posts(site)
     with pytest.raises(RuntimeError, match="no microgrid endpoints"):
-        await site.scenario("soak").run(wait=True)
+        await site.scenario("soak").run(wait=True, until=timedelta(seconds=1))
     assert posts == []  # never started → nothing to orphan
+
+
+async def test_scenario_run_on_a_missing_microgrid_starts_nothing() -> None:
+    site = _site()
+    posts = _recording_posts(site)
+
+    async def fake_get_json(path: str) -> Any:
+        assert path == "/api/mg/1/scenario"
+        request = httpx.Request("GET", f"http://ui{path}")
+        response = httpx.Response(
+            404, json={"error": "microgrid 1 not registered"}, request=request
+        )
+        raise httpx.HTTPStatusError("404 Not Found", request=request, response=response)
+
+    site._http.get_json = fake_get_json  # type: ignore[method-assign]
+    with pytest.raises(httpx.HTTPStatusError, match="404"):
+        await site.scenario("soak").run(wait=True, until=timedelta(seconds=1))
+    assert posts == []  # never started → nothing to orphan
+
+
+async def test_scenario_run_stops_when_a_poll_raises() -> None:
+    site = _site()
+    posts = _recording_posts(site)
+    reads: list[str] = []
+
+    async def fake_get_json(path: str) -> Any:
+        assert path == "/api/mg/1/scenario"
+        reads.append(path)
+        # The first read is the check before the start; the next one
+        # is the first poll.
+        if len(reads) > 1:
+            raise httpx.ReadTimeout("poll timed out")
+        return {"name": "soak", "ended_at": None, "elapsed_s": 0.0}
+
+    site._http.get_json = fake_get_json  # type: ignore[method-assign]
+    with pytest.raises(httpx.ReadTimeout, match="poll timed out"):
+        await site.scenario("soak").run(wait=True, until=timedelta(seconds=1))
+    assert posts == ["/api/scenarios/soak/start", "/api/scenarios/stop"]
 
 
 async def test_scenario_wait_requires_a_length() -> None:
