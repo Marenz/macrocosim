@@ -210,7 +210,7 @@ impl MicrogridServer {
             let unit = if matches!(power_type, PowerType::Active) {
                 "W"
             } else {
-                "VAR"
+                "VAr"
             };
             return Err(tonic::Status::invalid_argument(format!(
                 "Requested {label} {} {unit} exceeds the maximum allowed {allowed} {unit}",

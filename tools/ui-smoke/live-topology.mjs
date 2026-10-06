@@ -777,7 +777,7 @@ check("e2e: hover card draws the reactive envelope bar", hcBars.bars >= 2 && hcB
 // (the card is still open on 1001), so it never shows a stale fetch.
 await page.evaluate(async () => {
   const { topology } = await import("/assets/topology.js");
-  topology.noteSetpoint({ id: 1001, ts_ms: Date.now(), setpoint_kind: "active_power", value: -8000, accepted: true, reason: null });
+  topology.noteSetpoint({ component_id: 1001, ts: new Date().toISOString(), setpoint_kind: "active_power", value: -8000, accepted: true, reason: null });
 });
 const notedCard = await waitFor(async () => {
   const s = await readCard();

@@ -46,7 +46,7 @@ SIM=$!
 # of hanging the job until CI's global timeout.
 until [ -s endpoints.json ]; do kill -0 $SIM 2>/dev/null || exit 1; sleep 0.1; done
 
-GRPC=$(jq -r '.microgrids[0].grpc' endpoints.json)   # e.g. [::1]:41979
+GRPC=$(jq -r '.microgrids[0].grpc_addr' endpoints.json)   # e.g. [::1]:41979
 UI=$(jq -r '.ui' endpoints.json)                     # e.g. 127.0.0.1:33565
 
 # 2. boot YOUR app against the simulator's gRPC address.
@@ -70,7 +70,7 @@ any failed `(check …)`. On failure, upload your app's logs and any recorded CS
 (as above) or stdout if given no path:
 
 ```json
-{"ui":"127.0.0.1:33565","microgrids":[{"id":9,"name":"demo","grpc":"[::1]:41979"}],"assets":"[::1]:33881","dispatch":"[::1]:43253"}
+{"ui":"127.0.0.1:33565","microgrids":[{"id":9,"name":"demo","grpc_addr":"[::1]:41979"}],"assets":"[::1]:33881","dispatch":"[::1]:43253"}
 ```
 
 ## Structuring fixtures

@@ -2,7 +2,7 @@
 //!
 //! `/ws/events` upgrades to a long-lived socket; `event_pump`
 //! subscribes to every microgrid's `SiteEvent` broadcast and
-//! fans them out as JSON wrapped in a per-event mg_id tag.
+//! fans them out as JSON wrapped in a per-event microgrid_id tag.
 //! Enterprise-scoped events (terminal log lines) ride without
 //! a tag.
 
@@ -30,12 +30,12 @@ pub(super) async fn events_ws(
 
 /// Wrap a SiteEvent with the originating microgrid id so the SPA
 /// can filter samples / topology bumps / setpoint events by the
-/// currently-active microgrid. `mg_id` is `None` for enterprise-
+/// currently-active microgrid. `microgrid_id` is `None` for enterprise-
 /// scoped events (terminal log lines, ws lag notices).
 #[derive(Serialize)]
 struct WireEvent<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
-    mg_id: Option<u64>,
+    microgrid_id: Option<u64>,
     #[serde(flatten)]
     event: &'a SiteEvent,
 }
@@ -116,7 +116,7 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
         tokio::select! {
             ev = fwd_rx.recv() => match ev {
                 Some((mg_id, event)) => {
-                    let wire = WireEvent { mg_id: Some(mg_id), event: &event };
+                    let wire = WireEvent { microgrid_id: Some(mg_id), event: &event };
                     let json = match serde_json::to_string(&wire) {
                         Ok(j) => j,
                         Err(e) => {
@@ -145,7 +145,7 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
                         target: line.target,
                         message: line.message,
                     };
-                    let wire = WireEvent { mg_id: None, event: &event };
+                    let wire = WireEvent { microgrid_id: None, event: &event };
                     if let Ok(json) = serde_json::to_string(&wire)
                         && socket.send(Message::Text(json.into())).await.is_err()
                     {
@@ -175,7 +175,7 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
                         change,
                     };
                     let wire = WireEvent {
-                        mg_id: Some(dev.microgrid_id),
+                        microgrid_id: Some(dev.microgrid_id),
                         event: &event,
                     };
                     if let Ok(json) = serde_json::to_string(&wire)

@@ -425,7 +425,9 @@ def _site_from_endpoints(
     tmpdir: Path | None = None,
 ) -> Site:
     microgrids = {
-        int(m["id"]): MicrogridEndpoint(id=int(m["id"]), name=m["name"], grpc=m["grpc"])
+        int(m["id"]): MicrogridEndpoint(
+            id=int(m["id"]), name=m["name"], grpc=m["grpc_addr"]
+        )
         for m in endpoints.get("microgrids", [])
     }
     return Site(

@@ -374,7 +374,7 @@ export function openWebSocket(onTopologyChanged) {
   const MAX_DELAY = 30000;
   let delay = MIN_DELAY;
   let everConnected = false;
-  let lastConfigError = { message: null, ts_ms: 0 };
+  let lastConfigError = { message: null, tsMs: 0 };
   function connect() {
     const ws = new WebSocket(url);
     ws.onopen = () => {
@@ -404,28 +404,28 @@ export function openWebSocket(onTopologyChanged) {
         console.warn("WS: JSON parse failed:", e.message, "payload was:", msg.data);
         return;
       }
-      // Per-microgrid events carry mg_id (post-D3); we filter out
+      // Per-microgrid events carry microgrid_id; we filter out
       // anything from a microgrid other than the currently-selected
       // one, and all of them with nothing selected, so the metrics
       // panel doesn't paint with samples from a neighbour. The one
       // exception is topology_changed with nothing selected: the list
       // view refreshes its microgrid cards on it. Enterprise-scoped
-      // events (log, lagged) ship mg_id = undefined and pass through
+      // events (log, lagged) ship microgrid_id = undefined and pass through
       // regardless.
       const selectedMg = readSelectedMg();
       const perMg = ev.kind === "sample" || ev.kind === "microgrid_sample"
                  || ev.kind === "topology_changed" || ev.kind === "setpoint"
                  || ev.kind === "dispatch_changed" || ev.kind === "knob_changed";
       const forList = ev.kind === "topology_changed" && selectedMg == null;
-      if (perMg && !forList && ev.mg_id != null && ev.mg_id !== selectedMg) {
+      if (perMg && !forList && ev.microgrid_id != null && ev.microgrid_id !== selectedMg) {
         return;
       }
       if (ev.kind === "sample") {
-        liveCharts.pushSample(ev.id, ev.metric, ev.ts_ms, ev.value);
+        liveCharts.pushSample(ev.component_id, ev.metric, Date.parse(ev.ts) / 1000, ev.value);
         topology.applySample(ev);
         inspectorLive.applySample(ev);
       } else if (ev.kind === "microgrid_sample") {
-        metricsStore.applySample({ ...ev, t_s: ev.ts_ms / 1000 });
+        metricsStore.applySample({ ...ev, t_s: Date.parse(ev.ts) / 1000 });
         topology.applyMicrogridSample(ev);
       } else if (ev.kind === "topology_changed") {
         onTopologyChanged(ev.version);
@@ -441,7 +441,7 @@ export function openWebSocket(onTopologyChanged) {
         // one. topology ignores the tokens it does not draw.
         topology.applyKnob(ev);
       } else if (ev.kind === "log") {
-        appendLog({ ...ev, ts: ev.ts_ms });
+        appendLog(ev);
       } else if (ev.kind === "config_error") {
         // A failed hot-reload (site already reset) or an eval the
         // microgrid's file could not record — the one moment the user most
@@ -450,17 +450,15 @@ export function openWebSocket(onTopologyChanged) {
         // bus (the WS pump has no enterprise channel for it), so a
         // multi-microgrid setup delivers N copies — collapse repeats
         // of the same message arriving close together into one toast.
-        if (
-          ev.message === lastConfigError.message &&
-          ev.ts_ms - lastConfigError.ts_ms < 1000
-        ) {
+        const tsMs = Date.parse(ev.ts);
+        if (ev.message === lastConfigError.message && tsMs - lastConfigError.tsMs < 1000) {
           return;
         }
-        lastConfigError = { message: ev.message, ts_ms: ev.ts_ms };
+        lastConfigError = { message: ev.message, tsMs };
         notify(ev.message);
-        appendLog({ ts: ev.ts_ms, level: "error", message: ev.message });
+        appendLog({ ts: ev.ts, level: "error", message: ev.message });
       } else if (ev.kind === "dispatch_changed") {
-        // The dispatch store changed for ev.mg_id; refetch only if
+        // The dispatch store changed for ev.microgrid_id; refetch only if
         // we're actually looking at that microgrid's Dispatches tab.
         if (selectedMg != null && readSubview() === "dispatches") {
           dispatchesPanel.render(selectedMg);

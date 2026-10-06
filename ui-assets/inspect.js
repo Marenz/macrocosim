@@ -122,11 +122,11 @@ export const liveCharts = (() => {
       for (const ch of active.charts.values()) ch.plot.destroy();
       active = null;
     },
-    pushSample(id, metric, ts_ms, value) {
+    pushSample(id, metric, tS, value) {
       if (!active || active.id !== Number(id)) return;
       const series = active.charts.get(metric);
       if (!series) return;
-      series.xs.push(ts_ms / 1000);
+      series.xs.push(tS);
       // Apply the chart's chosen unit scale so live samples stay
       // consistent with the backfilled ones.
       series.ys.push(value / series.scale.div);
@@ -1177,7 +1177,7 @@ function appendSetpointEvent(ev) {
   // The WS event carries the setpoint kind on `setpoint_kind` to
   // dodge collision with the SiteEvent discriminator (also called
   // `kind`).
-  list.prepend(setpointEventLi(ev.ts_ms, ev.setpoint_kind, ev.value, ev.accepted, ev.reason));
+  list.prepend(setpointEventLi(ev.ts, ev.setpoint_kind, ev.value, ev.accepted, ev.reason));
   // Trim if the list is getting long — match the 600s window used by
   // the initial fetch.
   while (list.children.length > 100) list.removeChild(list.lastChild);
@@ -1190,7 +1190,7 @@ function appendSetpointEvent(ev) {
 // selected" guard liveCharts.pushSample uses.
 export const inspectorLive = {
   applyKnob(ev) {
-    if (!liveState || Number(ev.id) !== liveState.id) return;
+    if (!liveState || Number(ev.component_id) !== liveState.id) return;
     const entry = liveState.knobEntries.get(ev.knob);
     if (!entry) return;
     // paintKnobEntry always refreshes dataset.live (and the resolved
@@ -1199,7 +1199,7 @@ export const inspectorLive = {
     paintKnobEntry(entry, ev.value, ev.expr, ev.leading);
   },
   applySample(ev) {
-    if (!liveState || Number(ev.id) !== liveState.id) return;
+    if (!liveState || Number(ev.component_id) !== liveState.id) return;
     const axes = liveState.axes;
     switch (ev.metric) {
       case "active_power_w":
@@ -1227,7 +1227,7 @@ export const inspectorLive = {
     paintAxis("reactive", "VAr");
   },
   applySetpoint(ev) {
-    if (!liveState || Number(ev.id) !== liveState.id) return;
+    if (!liveState || Number(ev.component_id) !== liveState.id) return;
     // The Recent setpoints list gets every event, accepted or not —
     // unlike the envelope/TTL refresh below, which only an accepted
     // setpoint can move.

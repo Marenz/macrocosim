@@ -570,6 +570,7 @@ impl MicrogridSite {
             id,
             ts_ms: chrono::Utc::now().timestamp_millis(),
             knob,
+            unit: crate::sim::events::knob_unit(knob),
             value,
             expr,
             leading,
@@ -1383,6 +1384,7 @@ impl MicrogridSite {
     pub fn log_setpoint(&self, id: u64, event: SetpointEvent) {
         let ts_ms = event.ts.timestamp_millis();
         let kind = event.kind.as_str();
+        let event_unit = event.kind.unit();
         let value = event.value;
         let (accepted, reason) = match &event.outcome {
             SetpointOutcome::Accepted { .. } => (true, None),
@@ -1407,6 +1409,7 @@ impl MicrogridSite {
             id,
             ts_ms,
             setpoint_kind: kind,
+            unit: event_unit,
             value,
             accepted,
             reason,

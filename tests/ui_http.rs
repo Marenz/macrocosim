@@ -1140,3 +1140,105 @@ async fn a_repl_registered_microgrid_is_running() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+/// A minimal WebSocket client for `/ws/events`: the handshake, then
+/// server text frames (never masked).
+struct WsClient {
+    stream: tokio::net::TcpStream,
+}
+
+impl WsClient {
+    async fn connect(ui_url: &str) -> Self {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let host = ui_url.trim_start_matches("http://");
+        let mut stream = tokio::net::TcpStream::connect(host).await.unwrap();
+        let request = format!(
+            "GET /ws/events HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\n\
+             Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(stream.read_u8().await.unwrap());
+        }
+        let head = String::from_utf8_lossy(&head);
+        assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+        Self { stream }
+    }
+
+    /// The next text frame, parsed as JSON.
+    async fn next_json(&mut self) -> Value {
+        use tokio::io::AsyncReadExt;
+        loop {
+            let b0 = self.stream.read_u8().await.unwrap();
+            let len = match self.stream.read_u8().await.unwrap() & 0x7f {
+                126 => u64::from(self.stream.read_u16().await.unwrap()),
+                127 => self.stream.read_u64().await.unwrap(),
+                n => u64::from(n),
+            };
+            let mut payload = vec![0; len as usize];
+            self.stream.read_exact(&mut payload).await.unwrap();
+            if b0 & 0x0f == 1 {
+                return serde_json::from_slice(&payload).unwrap();
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_events_name_ids_and_times_like_the_http_bodies() {
+    let s = TestServer::start(TINY_TOPOLOGY).await;
+    let mut ws = WsClient::connect(&s.ui_url).await;
+    // The pump subscribes after the upgrade completes; a first frame
+    // proves it is listening before the one-shot knob event fires.
+    let first = tokio::time::timeout(Duration::from_secs(20), ws.next_json())
+        .await
+        .expect("a first WebSocket frame");
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/eval", s.ui_url))
+        .body("(set-meter-power 2 1500)")
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    // A history pass sends many metrics back to back; keep the first
+    // active-power sample.
+    let is_power_sample = |ev: &Value| ev["kind"] == "sample" && ev["metric"] == "active_power_w";
+    let mut sample = is_power_sample(&first).then_some(first);
+    let mut knob = None;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while sample.is_none() || knob.is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no sample and knob_changed"
+        );
+        let ev = tokio::time::timeout(Duration::from_secs(20), ws.next_json())
+            .await
+            .expect("a WebSocket frame");
+        if sample.is_none() && is_power_sample(&ev) {
+            sample = Some(ev);
+        } else if ev["kind"] == "knob_changed" {
+            knob = Some(ev);
+        }
+    }
+    for ev in [sample.as_ref().unwrap(), knob.as_ref().unwrap()] {
+        assert_eq!(ev["microgrid_id"], s.mg_id, "{ev}");
+        assert!(ev["component_id"].is_u64(), "{ev}");
+        assert!(
+            DateTime::parse_from_rfc3339(ev["ts"].as_str().expect("ts is a string")).is_ok(),
+            "{ev}"
+        );
+        for gone in ["mg_id", "id", "ts_ms"] {
+            assert!(ev.get(gone).is_none(), "{gone} in {ev}");
+        }
+    }
+    let sample = sample.unwrap();
+    assert_eq!(sample["unit"], "W", "{sample}");
+    let knob = knob.unwrap();
+    assert_eq!(knob["knob"], "meter-power");
+    assert_eq!(knob["value"], 1500.0);
+    assert_eq!(knob["unit"], "W");
+}

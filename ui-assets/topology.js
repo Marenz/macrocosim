@@ -1476,10 +1476,10 @@ export function createGraphCanvas(containerId, adapter = {}) {
     /// 1 Hz flush.
     applySample(ev) {
       const mg = readSelectedMg();
-      if (mg == null || (ev.mg_id != null && ev.mg_id !== mg)) return;
+      if (mg == null || (ev.microgrid_id != null && ev.microgrid_id !== mg)) return;
       syncLiveMg();
-      const e = liveEntry(ev.id);
-      e.ts = ev.ts_ms ?? Date.now();
+      const e = liveEntry(ev.component_id);
+      e.ts = Date.parse(ev.ts) || Date.now();
       let drawn = true;
       switch (ev.metric) {
         case "active_power_w": e.p = ev.value; break;
@@ -1499,13 +1499,13 @@ export function createGraphCanvas(containerId, adapter = {}) {
       }
       // 60 s power history for the hover sparkline; batteries are
       // judged by their DC side.
-      const histMetric = componentById.get(ev.id)?.category === "battery" ? "dc_power_w" : "active_power_w";
+      const histMetric = componentById.get(ev.component_id)?.category === "battery" ? "dc_power_w" : "active_power_w";
       if (ev.metric === histMetric && Number.isFinite(ev.value)) {
         e.hist.push([e.ts, ev.value]);
         if (e.hist.length > 60) e.hist.splice(0, e.hist.length - 60);
       }
       if (!drawn) return;
-      liveDirty.add(ev.id);
+      liveDirty.add(ev.component_id);
       armLiveFlush();
     },
     /// Live-overlay feed: one site-level WS sample. The grid samples
@@ -1517,10 +1517,10 @@ export function createGraphCanvas(containerId, adapter = {}) {
     applyMicrogridSample(ev) {
       if (ev.stream !== "grid_frequency") return;
       const mg = readSelectedMg();
-      if (mg == null || (ev.mg_id != null && ev.mg_id !== mg)) return;
+      if (mg == null || (ev.microgrid_id != null && ev.microgrid_id !== mg)) return;
       syncLiveMg();
       const hz = Number.isFinite(ev.value) ? ev.value : null;
-      const ts = ev.ts_ms ?? Date.now();
+      const ts = Date.parse(ev.ts) || Date.now();
       for (const c of componentById.values()) {
         if (c.category !== "grid") continue;
         const g = liveEntry(c.id);
@@ -1543,16 +1543,16 @@ export function createGraphCanvas(containerId, adapter = {}) {
       const field = KNOB_LIVE_FIELD.get(ev.knob);
       if (!field) return;
       const mg = readSelectedMg();
-      if (mg == null || (ev.mg_id != null && ev.mg_id !== mg)) return;
+      if (mg == null || (ev.microgrid_id != null && ev.microgrid_id !== mg)) return;
       syncLiveMg();
-      liveEntry(ev.id)[field] = Number.isFinite(ev.value) ? ev.value : null;
-      liveDirty.add(ev.id);
+      liveEntry(ev.component_id)[field] = Number.isFinite(ev.value) ? ev.value : null;
+      liveDirty.add(ev.component_id);
       armLiveFlush();
     },
     /// WS setpoint event: keeps the hover card's "Last command"
     /// current without another fetch.
     noteSetpoint(ev) {
-      setpointCache.set(ev.id, { at: Date.now(), last: { kind: ev.setpoint_kind, value: ev.value, ts: ev.ts_ms, accepted: ev.accepted, reason: ev.reason || "" } });
+      setpointCache.set(ev.component_id, { at: Date.now(), last: { kind: ev.setpoint_kind, value: ev.value, ts: Date.parse(ev.ts), accepted: ev.accepted, reason: ev.reason || "" } });
     },
     /// Apply pending live updates now — subview enter calls this so
     /// a hidden tab's accumulated samples land immediately.

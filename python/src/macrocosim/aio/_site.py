@@ -812,7 +812,7 @@ async def launch(
             )
         microgrids = {
             int(m["id"]): MicrogridEndpoint(
-                id=int(m["id"]), name=m["name"], grpc=m["grpc"]
+                id=int(m["id"]), name=m["name"], grpc=m["grpc_addr"]
             )
             for m in endpoints.get("microgrids", [])
         }

@@ -207,7 +207,7 @@ async fn main() {
                 .filter_map(|id| {
                     let name = config.microgrids().lock().get(id)?.def.name.clone();
                     let addr = runtimes.status(*id)?.grpc_addr?;
-                    Some(serde_json::json!({ "id": id, "name": name, "grpc": addr }))
+                    Some(serde_json::json!({ "id": id, "name": name, "grpc_addr": addr }))
                 })
                 .collect::<Vec<_>>(),
             "assets": assets_addr.to_string(),

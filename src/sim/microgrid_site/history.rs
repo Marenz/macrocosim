@@ -147,6 +147,7 @@ impl MicrogridSite {
                 id,
                 metric: metric.as_str(),
                 ts_ms,
+                unit: metric.unit(),
                 value,
             });
         }
@@ -353,10 +354,7 @@ mod tests {
         for _ in 0..3 {
             match rx.recv().await.unwrap() {
                 SiteEvent::Sample {
-                    id,
-                    metric,
-                    ts_ms,
-                    value: _,
+                    id, metric, ts_ms, ..
                 } => {
                     assert_eq!(id, 7);
                     assert_eq!(ts_ms, 1_000_000);

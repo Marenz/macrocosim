@@ -89,21 +89,20 @@ pub(in crate::ui) async fn component(
 fn knob(
     knob: &'static str,
     value: Option<f32>,
-    unit: Option<&'static str>,
     expr: Option<String>,
     leading: Option<bool>,
 ) -> KnobState {
     KnobState {
         knob,
         value,
-        unit,
+        unit: crate::sim::events::knob_unit(knob),
         expr,
         leading,
     }
 }
 
-fn scalar_knob(name: &'static str, unit: &'static str, r: ScalarReading) -> KnobState {
-    knob(name, Some(r.value), Some(unit), r.expr, None)
+fn scalar_knob(name: &'static str, r: ScalarReading) -> KnobState {
+    knob(name, Some(r.value), r.expr, None)
 }
 
 /// The runtime knobs the component has, one set per capability it
@@ -113,49 +112,27 @@ fn knobs_for(c: &dyn crate::sim::SimulatedComponent) -> Vec<KnobState> {
     let mut knobs = Vec::new();
     if let Some(meter) = c.meter_drive() {
         if let Some(r) = meter.meter_power_reading() {
-            knobs.push(scalar_knob("meter-power", "W", r));
+            knobs.push(scalar_knob("meter-power", r));
         }
         match meter.meter_reactive_reading() {
-            Some(ReactiveReading::Var(r)) => {
-                knobs.push(scalar_knob("meter-reactive-power", "VAr", r))
-            }
+            Some(ReactiveReading::Var(r)) => knobs.push(scalar_knob("meter-reactive-power", r)),
             Some(ReactiveReading::PowerFactor { pf, leading }) => {
-                knobs.push(knob(
-                    "meter-power-factor",
-                    Some(pf),
-                    None,
-                    None,
-                    Some(leading),
-                ));
+                knobs.push(knob("meter-power-factor", Some(pf), None, Some(leading)));
             }
             None => {}
         }
     }
     if let Some(sun) = c.sunlight_drive() {
-        knobs.push(scalar_knob("solar-sunlight", "%", sun.sunlight_reading()));
+        knobs.push(scalar_knob("solar-sunlight", sun.sunlight_reading()));
     }
     if let Some(r) = c.reactive_limits() {
         let cap = r.reactive_capability();
-        knobs.push(knob("reactive-pf-limit", cap.pf_limit, None, None, None));
-        knobs.push(knob(
-            "reactive-apparent-va",
-            cap.apparent_va,
-            Some("VA"),
-            None,
-            None,
-        ));
+        knobs.push(knob("reactive-pf-limit", cap.pf_limit, None, None));
+        knobs.push(knob("reactive-apparent-va", cap.apparent_va, None, None));
     }
     if let Some(boiler) = c.steam_drive() {
-        knobs.push(scalar_knob(
-            "boiler-demand",
-            "kg/s",
-            boiler.demand_reading(),
-        ));
-        knobs.push(scalar_knob(
-            "boiler-pressure",
-            "bar",
-            boiler.pressure_reading(),
-        ));
+        knobs.push(scalar_knob("boiler-demand", boiler.demand_reading()));
+        knobs.push(scalar_knob("boiler-pressure", boiler.pressure_reading()));
     }
     knobs
 }

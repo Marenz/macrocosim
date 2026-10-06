@@ -198,7 +198,7 @@ def _fake_spawn(tmp_path, monkeypatch) -> None:
     endpoints = tmp_path / "endpoints.json"
     endpoints.write_text(
         '{"ui": "127.0.0.1:9", "microgrids":'
-        ' [{"id": 1, "name": "a", "grpc": "10.0.0.1:61000"}]}'
+        ' [{"id": 1, "name": "a", "grpc_addr": "10.0.0.1:61000"}]}'
     )
     log = tmp_path / "macrocosim.log"
     log.write_text("")
