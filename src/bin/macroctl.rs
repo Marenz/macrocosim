@@ -21,9 +21,10 @@
 //!   macroctl stream 1001
 //!   macroctl stream 1001 --samples 5 --json
 //!   macroctl set-power 1001 8000
-//!   macroctl set-power 1001 -5000 --lifetime 30   # negative → discharge
-//!   macroctl augment-bounds 1001 --lower -15000 --upper 15000 --lifetime 60
-//!   macroctl augment-bounds 1001 --lower -3000 --upper 3000 --reactive --lifetime 60
+//!   macroctl set-power 1001 -5000 --lifetime-s 30   # negative → discharge
+//!   macroctl set-reactive-power 1001 3000 --lifetime-s 30
+//!   macroctl augment-bounds 1001 --lower-w -15000 --upper-w 15000 --lifetime-s 60
+//!   macroctl augment-reactive-bounds 1001 --lower-var -3000 --upper-var 3000 --lifetime-s 60
 //!
 //! Scenario commands — HTTP (default --ui-addr http://127.0.0.1:8801):
 //!   macroctl scenario start "demo"
@@ -108,7 +109,7 @@ enum Cmd {
         #[arg(long)]
         category: Option<Category>,
         /// Filter by component ID (repeatable).
-        #[arg(long = "id")]
+        #[arg(long = "component-id")]
         ids: Vec<u64>,
     },
 
@@ -140,40 +141,60 @@ enum Cmd {
         metrics: Vec<String>,
     },
 
-    /// Set the active or reactive power set-point on a component.
+    /// Set the active power set-point on a component.
     SetPower {
         /// Component ID.
         id: u64,
-        /// Power in watts (or VARs with --reactive). Negative = discharge.
+        /// Active power in watts. Negative = discharge.
         #[arg(allow_hyphen_values = true)]
-        power: f32,
-        /// Treat power as reactive (VAR) rather than active (W).
-        #[arg(long)]
-        reactive: bool,
-        /// Request lifetime in seconds (10..=900).
-        #[arg(long)]
-        lifetime: Option<u64>,
+        power_w: f32,
+        /// Request lifetime in whole seconds (10..=900).
+        #[arg(long = "lifetime-s")]
+        lifetime_s: Option<u64>,
     },
 
-    /// Augment a component's active- or reactive-power bounds for a
-    /// limited time.
+    /// Set the reactive power set-point on a component.
+    SetReactivePower {
+        /// Component ID.
+        id: u64,
+        /// Reactive power in VAr.
+        #[arg(allow_hyphen_values = true)]
+        power_var: f32,
+        /// Request lifetime in whole seconds (10..=900).
+        #[arg(long = "lifetime-s")]
+        lifetime_s: Option<u64>,
+    },
+
+    /// Augment a component's active-power bounds for a limited time.
     AugmentBounds {
         /// Component ID.
         id: u64,
-        /// New lower bound (W, or VAR with --reactive).
-        #[arg(long, allow_hyphen_values = true)]
-        lower: f32,
-        /// New upper bound (W, or VAR with --reactive).
-        #[arg(long, allow_hyphen_values = true)]
-        upper: f32,
-        /// Target the reactive (Q) axis instead of active (P). The
-        /// server validates the bounds against the live Q envelope at
-        /// the component's current P.
-        #[arg(long)]
-        reactive: bool,
-        /// Request lifetime in seconds (10..=900).
-        #[arg(long, default_value_t = 60)]
-        lifetime: u64,
+        /// New lower bound in watts.
+        #[arg(long = "lower-w", allow_hyphen_values = true)]
+        lower_w: f32,
+        /// New upper bound in watts.
+        #[arg(long = "upper-w", allow_hyphen_values = true)]
+        upper_w: f32,
+        /// Request lifetime in whole seconds (10..=900).
+        #[arg(long = "lifetime-s", default_value_t = 60)]
+        lifetime_s: u64,
+    },
+
+    /// Augment a component's reactive-power bounds for a limited
+    /// time. The server validates the bounds against the live Q
+    /// envelope at the component's current P.
+    AugmentReactiveBounds {
+        /// Component ID.
+        id: u64,
+        /// New lower bound in VAr.
+        #[arg(long = "lower-var", allow_hyphen_values = true)]
+        lower_var: f32,
+        /// New upper bound in VAr.
+        #[arg(long = "upper-var", allow_hyphen_values = true)]
+        upper_var: f32,
+        /// Request lifetime in whole seconds (10..=900).
+        #[arg(long = "lifetime-s", default_value_t = 60)]
+        lifetime_s: u64,
     },
 
     /// Create / list / pause / resume / delete dispatches via the
@@ -213,9 +234,9 @@ enum Cmd {
         /// and exiting.
         #[arg(long)]
         tail: bool,
-        /// Polling cadence in seconds (only with --tail).
-        #[arg(long, default_value_t = 1.0)]
-        interval: f64,
+        /// Polling cadence in seconds (only with --tail); at least 0.1.
+        #[arg(long = "interval-s", value_parser = parse_secs, default_value = "1")]
+        interval: std::time::Duration,
     },
 }
 
@@ -239,8 +260,8 @@ enum DispatchCmd {
         /// Target components.
         target: String,
         /// Duration in seconds; omit for an indefinite dispatch.
-        #[arg(long)]
-        duration: Option<u32>,
+        #[arg(long = "duration-s")]
+        duration_s: Option<u32>,
         /// JSON payload object, e.g. '{"target_power_w": 5000}'.
         #[arg(long)]
         payload: Option<String>,
@@ -301,7 +322,7 @@ enum SnapshotCmd {
         /// Load the snapshot as a NEW microgrid under this id
         /// instead of restoring it over the original.
         #[arg(long)]
-        as_id: Option<u64>,
+        id: Option<u64>,
     },
     /// List the microgrid's snapshots, alphabetical.
     List,
@@ -328,15 +349,16 @@ enum ScenarioCmd {
         /// registered the scenario).
         #[arg(long)]
         config: Option<String>,
-        /// `--stepped` clock step in milliseconds (default 100).
-        #[arg(long)]
-        step: Option<u64>,
+        /// `--stepped` clock step in seconds; fractions allowed.
+        #[arg(long = "step-s", value_parser = parse_step, default_value = "0.1")]
+        step: std::time::Duration,
         /// Seconds: the `--stepped` run length, or the `--wait` cap for
-        /// a live run. Defaults to the scenario's `:length`.
-        #[arg(long)]
-        until: Option<u64>,
+        /// a live run; fractions allowed. Defaults to the scenario's
+        /// `:length`.
+        #[arg(long = "until-s", value_parser = parse_secs)]
+        until: Option<std::time::Duration>,
         /// Live runs only: block until the scenario finishes (its
-        /// `:length`, or `--until`), then stop it — so `--assert` can
+        /// `:length`, or `--until-s`), then stop it — so `--assert` can
         /// gate on the result.
         #[arg(long)]
         wait: bool,
@@ -463,6 +485,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let endpoint =
                 grpc_endpoint(&http, &cli.ui_addr, cli.addr.as_deref(), cli.microgrid_id).await?;
             let mut client = MicrogridClient::connect(endpoint).await?;
+            if let Some(req) = set_power_request(&cmd) {
+                return cmd_set_power(&mut client, req).await;
+            }
+            if let Some(req) = augment_request(&cmd) {
+                return cmd_augment(&mut client, req).await;
+            }
             match cmd {
                 Cmd::Info => cmd_info(&mut client, cli.json).await,
                 Cmd::List { category, ids } => cmd_list(&mut client, category, ids, cli.json).await,
@@ -475,23 +503,25 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     samples,
                     metrics,
                 } => cmd_stream(&mut client, id, samples, metrics, cli.json).await,
-                Cmd::SetPower {
-                    id,
-                    power,
-                    reactive,
-                    lifetime,
-                } => cmd_set_power(&mut client, id, power, reactive, lifetime).await,
-                Cmd::AugmentBounds {
-                    id,
-                    lower,
-                    upper,
-                    reactive,
-                    lifetime,
-                } => cmd_augment(&mut client, id, lower, upper, reactive, lifetime).await,
-                _ => unreachable!("HTTP-backed commands are dispatched above"),
+                _ => unreachable!("HTTP-backed and write commands are dispatched above"),
             }
         }
     }
+}
+
+/// A clap value parser for a non-negative, finite number of seconds.
+fn parse_secs(s: &str) -> Result<std::time::Duration, String> {
+    let secs: f64 = s.parse().map_err(|e| format!("{e}"))?;
+    std::time::Duration::try_from_secs_f64(secs).map_err(|e| format!("{e}"))
+}
+
+/// A clap value parser for a clock step: positive seconds.
+fn parse_step(s: &str) -> Result<std::time::Duration, String> {
+    let step = parse_secs(s)?;
+    if step.is_zero() {
+        return Err("the step must be above zero".into());
+    }
+    Ok(step)
 }
 
 fn str_err(e: String) -> Box<dyn std::error::Error> {
@@ -622,7 +652,7 @@ async fn run_dispatch(
         DispatchCmd::Create {
             type_,
             target,
-            duration,
+            duration_s,
             payload,
             inactive,
             dry_run,
@@ -644,7 +674,7 @@ async fn run_dispatch(
             let data = DispatchData {
                 r#type: type_,
                 start_time,
-                duration,
+                duration: duration_s,
                 target: Some(target),
                 is_active: !inactive,
                 is_dry_run: dry_run,
@@ -982,18 +1012,19 @@ async fn build_pool_line(
 }
 
 /// Polls /api/mg/{mg}/topology + /api/mg/{mg}/metrics/latest at
-/// `interval` seconds and prints a one-line pulse summary per tick.
+/// `interval` (at least 0.1 s) and prints a one-line pulse summary per
+/// tick.
 /// With `tail=false` (single snapshot mode) the loop runs once and
 /// exits, matching `macroctl dashboard` without a flag.
 async fn run_dashboard(
     ui_addr: &str,
     microgrid_id: Option<u64>,
     tail: bool,
-    interval: f64,
+    interval: std::time::Duration,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let http = reqwest::Client::new();
     let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
-    let dt = std::time::Duration::from_secs_f64(interval.max(0.1));
+    let dt = interval.max(std::time::Duration::from_millis(100));
     loop {
         // In --tail mode a transient HTTP error (server mid-reload,
         // loopback rebuilding) must not abort an overnight watch —
@@ -1122,15 +1153,14 @@ async fn run_scenario(
                 // clock, prints the report, and (with --assert) exits
                 // non-zero on any failed check: the CI gate.
                 let config = config.ok_or("`scenario run --stepped` needs --config <file>")?;
-                let dt = std::time::Duration::from_millis(step.unwrap_or(100));
+                let dt = step;
                 let (cfg, _clock) = macrocosim::lisp::Config::new_headless(&config)
                     .map_err(|e| format!("headless boot failed: {e}"))?;
-                // `--until` overrides the scenario's own `:length`;
+                // `--until-s` overrides the scenario's own `:length`;
                 // without it the declared length is the run length.
                 // Same runner either way, so both paths tear down —
                 // cancel timers + restore driven knobs — identically.
-                let steps =
-                    cfg.run_scenario_stepped(&name, dt, until.map(std::time::Duration::from_secs))?;
+                let steps = cfg.run_scenario_stepped(&name, dt, until)?;
                 let rv = cfg.scenario_report_json();
                 if json {
                     println!("{}", serde_json::to_string_pretty(&rv)?);
@@ -1161,19 +1191,21 @@ async fn run_scenario(
                 // start.
                 let mg = resolve_scenario_mg(http, ui_addr, microgrid_id, assert).await?;
                 // Resolve the wait length BEFORE starting, so a --wait on
-                // a scenario with no :length and no --until fails fast
+                // a scenario with no :length and no --until-s fails fast
                 // instead of leaving the run orphaned server-side with
                 // nothing to stop it.
                 let wait_secs = match until {
-                    Some(s) => s,
+                    Some(d) => d.as_secs_f64(),
                     None => {
                         // Default to the scenario's declared :length.
                         let list = get_json(http, format!("{ui_addr}/api/scenarios")).await?;
                         list.as_array()
                             .and_then(|a| a.iter().find(|s| s["name"] == name.as_str()))
                             .and_then(|s| s["length_s"].as_f64())
-                            .ok_or("live `--wait` needs `--until` for a scenario with no :length")?
-                            .ceil() as u64
+                            .ok_or(
+                                "live `--wait` needs `--until-s` for a scenario with no :length",
+                            )?
+                            .ceil()
                     }
                 };
                 checked(http.post(start).send().await?).await?;
@@ -1181,7 +1213,7 @@ async fn run_scenario(
                 // reports ended, or elapsed reaches the run length), then
                 // stop it so the report freezes + any CSV sinks flush.
                 eprintln!("waiting up to {wait_secs}s for {name} to finish…");
-                let deadline = wait_secs + 5; // small grace past the run length
+                let deadline = wait_secs.ceil() as u64 + 5; // small grace past the run length
                 let mut waited = 0u64;
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -1200,7 +1232,7 @@ async fn run_scenario(
                             Ok(s) => {
                                 let ended = !s["ended_at"].is_null();
                                 let elapsed = s["elapsed_s"].as_f64().unwrap_or(0.0);
-                                ended || elapsed >= wait_secs as f64
+                                ended || elapsed >= wait_secs
                             }
                             Err(_) => false,
                         },
@@ -1320,9 +1352,9 @@ async fn run_snapshot(
                 );
             }
         }
-        SnapshotCmd::Load { name, as_id } => {
+        SnapshotCmd::Load { name, id } => {
             let mut body = serde_json::json!({ "name": name });
-            if let Some(id) = as_id {
+            if let Some(id) = id {
                 body["id"] = serde_json::json!(id);
             }
             let resp = send_json(
@@ -1462,6 +1494,22 @@ fn print_summary(s: &serde_json::Value, json: bool) {
     println!("events      {n}");
 }
 
+/// One `FAIL` row of the report for a check entry of its `checks`
+/// array. The actual value carries the check's `unit` when the report
+/// gives one.
+fn failed_check_row(c: &serde_json::Value) -> String {
+    let id = c["component_id"].as_u64().unwrap_or(0);
+    let metric = c["metric"].as_str().unwrap_or("?");
+    let expectation = c["expectation"].as_str().unwrap_or("?");
+    let unit = c["unit"].as_str().unwrap_or("");
+    let actual = match c["actual"].as_f64() {
+        Some(v) if unit.is_empty() => format!("{v}"),
+        Some(v) => format!("{v} {unit}"),
+        None => "unavailable".into(),
+    };
+    format!("  FAIL  {id} {metric}: expected {expectation}, actual {actual}")
+}
+
 fn print_report(r: &serde_json::Value, json: bool) {
     if json {
         println!("{r:#}");
@@ -1485,14 +1533,7 @@ fn print_report(r: &serde_json::Value, json: bool) {
         println!("checks               {passed} passed, {failed} failed");
         if let Some(arr) = r["checks"].as_array() {
             for c in arr.iter().filter(|c| c["passed"] != true) {
-                let id = c["component_id"].as_u64().unwrap_or(0);
-                let metric = c["metric"].as_str().unwrap_or("?");
-                let expectation = c["expectation"].as_str().unwrap_or("?");
-                let actual = c["actual"]
-                    .as_f64()
-                    .map(|v| format!("{v}"))
-                    .unwrap_or_else(|| "unavailable".into());
-                println!("  FAIL  {id} {metric}: expected {expectation}, actual {actual}");
+                println!("{}", failed_check_row(c));
             }
         }
     }
@@ -1595,14 +1636,11 @@ async fn cmd_list(
         println!("{:#?}", resp.electrical_components);
         return Ok(());
     }
-    println!(
-        "{:>5}  {:<24}  {:<10}  {:<10}  {:>12}  {:>12}",
-        "id", "name", "category", "subtype", "rated_lower", "rated_upper"
-    );
+    println!("{}", list_header());
     for c in &resp.electrical_components {
         let (lo, hi) = active_bounds(c);
         println!(
-            "{:>5}  {:<24}  {:<10}  {:<10}  {:>12}  {:>12}",
+            "{:>5}  {:<24}  {:<10}  {:<12}  {:>14}  {:>14}",
             c.id,
             c.name,
             short_category(c.category),
@@ -1612,6 +1650,13 @@ async fn cmd_list(
         );
     }
     Ok(())
+}
+
+fn list_header() -> String {
+    format!(
+        "{:>5}  {:<24}  {:<10}  {:<12}  {:>14}  {:>14}",
+        "id", "name", "category", "subtype", "rated_lower_w", "rated_upper_w"
+    )
 }
 
 async fn cmd_connections(
@@ -1739,10 +1784,7 @@ async fn cmd_stream(
         .into_inner();
 
     if !json {
-        println!(
-            "{:<24}  {:<26}  {:>14}  {:<22}",
-            "time", "metric", "value", "bounds"
-        );
+        println!("{}", stream_header());
     }
 
     let mut got = 0usize;
@@ -1779,11 +1821,8 @@ async fn cmd_stream(
                     .as_ref()
                     .map(format_ts)
                     .unwrap_or_else(|| "-".into());
-                let val_str = match value {
-                    Some(v) => format!("{:>14.2}", v),
-                    None => format!("{:>14}", "-"),
-                };
-                println!("{ts:<24}  {metric:<26}  {val_str}  {bounds}");
+                let unit = Metric::try_from(s.metric).map_or("", metric_unit);
+                println!("{}", stream_row(&ts, &metric, value, unit, &bounds));
             }
         }
         got += 1;
@@ -1791,23 +1830,133 @@ async fn cmd_stream(
     Ok(())
 }
 
-async fn cmd_set_power(
-    client: &mut MicrogridClient<Channel>,
-    id: u64,
-    power: f32,
-    reactive: bool,
-    lifetime: Option<u64>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let req = SetElectricalComponentPowerRequest {
+fn stream_header() -> String {
+    format!(
+        "{:<24}  {:<26}  {:>14}  {:<5}  {:<22}",
+        "time", "metric", "value", "unit", "bounds"
+    )
+}
+
+fn stream_row(ts: &str, metric: &str, value: Option<f32>, unit: &str, bounds: &str) -> String {
+    let value = match value {
+        Some(v) => format!("{v:>14.2}"),
+        None => format!("{:>14}", "-"),
+    };
+    format!("{ts:<24}  {metric:<26}  {value}  {unit:<5}  {bounds}")
+}
+
+/// The unit a metric's samples and bounds are in. Electrical metrics
+/// (power, energy, voltage, current, frequency, battery capacity), SoC
+/// and humidity have one. A ratio (power factor, harmonic distortion),
+/// temperature, dew point, wind, air pressure, irradiance and an
+/// unspecified metric print none.
+fn metric_unit(m: Metric) -> &'static str {
+    let name = m.as_str_name();
+    let no_unit = [
+        "POWER_FACTOR",
+        "HARMONIC_DISTORTION",
+        "TEMPERATURE",
+        "DEW_POINT",
+        "WIND_",
+        "AIR_PRESSURE",
+        "IRRADIANCE",
+    ];
+    if no_unit.iter().any(|family| name.contains(family)) {
+        ""
+    } else if name.contains("_ENERGY_") {
+        if name.contains("REACTIVE") {
+            "VArh"
+        } else if name.contains("APPARENT") {
+            "VAh"
+        } else {
+            "Wh"
+        }
+    } else if name.contains("POWER_REACTIVE") {
+        "VAr"
+    } else if name.contains("POWER_APPARENT") {
+        "VA"
+    } else if name.contains("POWER") {
+        "W"
+    } else if name.contains("BATTERY_CAPACITY") {
+        "Wh"
+    } else if name.contains("VOLTAGE") {
+        "V"
+    } else if name.contains("CURRENT") {
+        "A"
+    } else if name.contains("FREQUENCY") {
+        "Hz"
+    } else if name.contains("SOC_PCT") || name.contains("HUMIDITY") {
+        "%"
+    } else {
+        ""
+    }
+}
+
+/// The setpoint request `set-power` (active) or `set-reactive-power`
+/// (reactive) sends; `None` for any other command.
+fn set_power_request(cmd: &Cmd) -> Option<SetElectricalComponentPowerRequest> {
+    let (id, power, power_type, lifetime_s) = match *cmd {
+        Cmd::SetPower {
+            id,
+            power_w,
+            lifetime_s,
+        } => (id, power_w, PowerType::Active, lifetime_s),
+        Cmd::SetReactivePower {
+            id,
+            power_var,
+            lifetime_s,
+        } => (id, power_var, PowerType::Reactive, lifetime_s),
+        _ => return None,
+    };
+    Some(SetElectricalComponentPowerRequest {
         electrical_component_id: id,
         power,
-        power_type: if reactive {
-            PowerType::Reactive as i32
-        } else {
-            PowerType::Active as i32
-        },
-        request_lifetime: lifetime,
+        power_type: power_type as i32,
+        request_lifetime: lifetime_s,
+    })
+}
+
+/// The bounds request `augment-bounds` (active) or
+/// `augment-reactive-bounds` (reactive) sends; `None` for any other
+/// command.
+fn augment_request(cmd: &Cmd) -> Option<AugmentElectricalComponentBoundsRequest> {
+    use macrocosim::proto::common::metrics::Bounds;
+    let (id, target_metric, lower, upper, lifetime_s) = match *cmd {
+        Cmd::AugmentBounds {
+            id,
+            lower_w,
+            upper_w,
+            lifetime_s,
+        } => (id, Metric::AcPowerActive, lower_w, upper_w, lifetime_s),
+        Cmd::AugmentReactiveBounds {
+            id,
+            lower_var,
+            upper_var,
+            lifetime_s,
+        } => (
+            id,
+            Metric::AcPowerReactive,
+            lower_var,
+            upper_var,
+            lifetime_s,
+        ),
+        _ => return None,
     };
+    Some(AugmentElectricalComponentBoundsRequest {
+        electrical_component_id: id,
+        target_metric: target_metric as i32,
+        bounds: vec![Bounds {
+            lower: Some(lower),
+            upper: Some(upper),
+        }],
+        request_lifetime: Some(lifetime_s),
+    })
+}
+
+async fn cmd_set_power(
+    client: &mut MicrogridClient<Channel>,
+    req: SetElectricalComponentPowerRequest,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = client
         .set_electrical_component_power(req)
         .await?
@@ -1833,27 +1982,8 @@ async fn cmd_set_power(
 
 async fn cmd_augment(
     client: &mut MicrogridClient<Channel>,
-    id: u64,
-    lower: f32,
-    upper: f32,
-    reactive: bool,
-    lifetime: u64,
+    req: AugmentElectricalComponentBoundsRequest,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use macrocosim::proto::common::metrics::Bounds;
-    let target_metric = if reactive {
-        Metric::AcPowerReactive
-    } else {
-        Metric::AcPowerActive
-    };
-    let req = AugmentElectricalComponentBoundsRequest {
-        electrical_component_id: id,
-        target_metric: target_metric as i32,
-        bounds: vec![Bounds {
-            lower: Some(lower),
-            upper: Some(upper),
-        }],
-        request_lifetime: Some(lifetime),
-    };
     let resp = client
         .augment_electrical_component_bounds(req)
         .await?
@@ -1905,7 +2035,7 @@ fn short_subtype(c: &ElectricalComponent) -> String {
         Kind::Inverter(i) => format!("{:?}", i.r#type()),
         Kind::Battery(b) => format!("{:?}", b.r#type()),
         Kind::EvCharger(e) => format!("{:?}", e.r#type()),
-        Kind::GridConnectionPoint(g) => format!("fuse={}", g.rated_fuse_current),
+        Kind::GridConnectionPoint(g) => format!("fuse={} A", g.rated_fuse_current),
         _ => String::new(),
     }
 }
@@ -2165,8 +2295,8 @@ mod tests {
             name: "s".to_string(),
             stepped: false,
             config: None,
-            step: None,
-            until: Some(1),
+            step: std::time::Duration::from_millis(100),
+            until: Some(std::time::Duration::from_secs(1)),
             wait: true,
             assert: false,
         };
@@ -2175,6 +2305,245 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.to_string(), "microgrid 9 not registered");
         assert_eq!(*requests.lock().unwrap(), ["GET /api/microgrids"]);
+    }
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("macroctl").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn scenario_run_takes_fractional_seconds() {
+        let cli = parse(&[
+            "scenario",
+            "run",
+            "demo",
+            "--step-s",
+            "0.25",
+            "--until-s",
+            "90.5",
+        ])
+        .unwrap();
+        let Cmd::Scenario(ScenarioCmd::Run { step, until, .. }) = cli.cmd else {
+            panic!("not scenario run");
+        };
+        assert_eq!(step, std::time::Duration::from_millis(250));
+        assert_eq!(until, Some(std::time::Duration::from_secs_f64(90.5)));
+    }
+
+    #[test]
+    fn scenario_run_step_defaults_to_a_tenth_of_a_second() {
+        let cli = parse(&["scenario", "run", "demo"]).unwrap();
+        let Cmd::Scenario(ScenarioCmd::Run { step, until, .. }) = cli.cmd else {
+            panic!("not scenario run");
+        };
+        assert_eq!(step, std::time::Duration::from_millis(100));
+        assert_eq!(until, None);
+    }
+
+    #[test]
+    fn scenario_run_refuses_the_unitless_flags() {
+        assert!(parse(&["scenario", "run", "demo", "--step", "100"]).is_err());
+        assert!(parse(&["scenario", "run", "demo", "--until", "9"]).is_err());
+        assert_eq!(
+            parse(&["scenario", "run", "demo", "--step-s=-1"])
+                .unwrap_err()
+                .kind(),
+            clap::error::ErrorKind::ValueValidation
+        );
+        assert!(parse(&["scenario", "run", "demo", "--step-s", "0"]).is_err());
+        assert!(parse(&["scenario", "run", "demo", "--step-s", "1e-12"]).is_err());
+    }
+
+    #[test]
+    fn power_flags_carry_their_unit() {
+        let cli = parse(&["set-power", "5", "-300", "--lifetime-s", "30"]).unwrap();
+        assert!(matches!(
+            cli.cmd,
+            Cmd::SetPower {
+                id: 5,
+                power_w: -300.0,
+                lifetime_s: Some(30)
+            }
+        ));
+        let cli = parse(&["set-reactive-power", "5", "300"]).unwrap();
+        assert!(matches!(
+            cli.cmd,
+            Cmd::SetReactivePower {
+                id: 5,
+                power_var: 300.0,
+                lifetime_s: None
+            }
+        ));
+        assert!(parse(&["set-power", "5", "300", "--reactive"]).is_err());
+        assert!(parse(&["set-power", "5", "300", "--lifetime", "30"]).is_err());
+    }
+
+    #[test]
+    fn bounds_flags_carry_their_unit() {
+        let cli = parse(&["augment-bounds", "5", "--lower-w", "-10", "--upper-w", "20"]).unwrap();
+        assert!(matches!(
+            cli.cmd,
+            Cmd::AugmentBounds {
+                id: 5,
+                lower_w: -10.0,
+                upper_w: 20.0,
+                lifetime_s: 60
+            }
+        ));
+        let cli = parse(&[
+            "augment-reactive-bounds",
+            "5",
+            "--lower-var",
+            "-1",
+            "--upper-var",
+            "2",
+            "--lifetime-s",
+            "15",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.cmd,
+            Cmd::AugmentReactiveBounds {
+                id: 5,
+                lower_var: -1.0,
+                upper_var: 2.0,
+                lifetime_s: 15
+            }
+        ));
+        assert!(parse(&["augment-bounds", "5", "--lower", "1", "--upper", "2"]).is_err());
+        assert!(
+            parse(&[
+                "augment-bounds",
+                "5",
+                "--lower-w",
+                "1",
+                "--upper-w",
+                "2",
+                "--reactive"
+            ])
+            .is_err()
+        );
+    }
+
+    /// The reactive subcommands send the reactive axis and the active
+    /// ones the active axis.
+    #[test]
+    fn write_commands_send_their_own_axis() {
+        let set = |args: &[&str]| set_power_request(&parse(args).unwrap().cmd).unwrap();
+        let req = set(&["set-power", "5", "-300", "--lifetime-s", "30"]);
+        assert_eq!(req.electrical_component_id, 5);
+        assert_eq!(req.power, -300.0);
+        assert_eq!(req.power_type, PowerType::Active as i32);
+        assert_eq!(req.request_lifetime, Some(30));
+        let req = set(&["set-reactive-power", "5", "300"]);
+        assert_eq!(req.power, 300.0);
+        assert_eq!(req.power_type, PowerType::Reactive as i32);
+        assert_eq!(req.request_lifetime, None);
+
+        let augment = |args: &[&str]| augment_request(&parse(args).unwrap().cmd).unwrap();
+        let req = augment(&["augment-bounds", "5", "--lower-w", "-10", "--upper-w", "20"]);
+        assert_eq!(req.target_metric, Metric::AcPowerActive as i32);
+        assert_eq!(req.bounds[0].lower, Some(-10.0));
+        assert_eq!(req.bounds[0].upper, Some(20.0));
+        assert_eq!(req.request_lifetime, Some(60));
+        let req = augment(&[
+            "augment-reactive-bounds",
+            "5",
+            "--lower-var",
+            "-1",
+            "--upper-var",
+            "2",
+        ]);
+        assert_eq!(req.target_metric, Metric::AcPowerReactive as i32);
+
+        let info = parse(&["info"]).unwrap().cmd;
+        assert!(set_power_request(&info).is_none());
+        assert!(augment_request(&info).is_none());
+    }
+
+    #[test]
+    fn other_flags_carry_their_unit_or_name_their_id() {
+        assert!(parse(&["dashboard", "--tail", "--interval-s", "2.5"]).is_ok());
+        assert!(parse(&["dashboard", "--interval", "2"]).is_err());
+        assert!(parse(&["dashboard", "--tail", "--interval-s", "inf"]).is_err());
+        assert!(parse(&["dashboard", "--tail", "--interval-s", "1e300"]).is_err());
+        assert_eq!(
+            parse(&["dashboard", "--tail", "--interval-s=-1"])
+                .unwrap_err()
+                .kind(),
+            clap::error::ErrorKind::ValueValidation
+        );
+        assert!(parse(&["dispatch", "create", "t", "battery", "--duration-s", "60"]).is_ok());
+        assert!(parse(&["dispatch", "create", "t", "battery", "--duration", "60"]).is_err());
+        let cli = parse(&["snapshot", "load", "x", "--id", "7"]).unwrap();
+        assert!(matches!(
+            cli.cmd,
+            Cmd::Snapshot(SnapshotCmd::Load { id: Some(7), .. })
+        ));
+        assert!(parse(&["snapshot", "load", "x", "--as-id", "7"]).is_err());
+        let cli = parse(&["list", "--component-id", "4", "--component-id", "5"]).unwrap();
+        assert!(matches!(cli.cmd, Cmd::List { ids, .. } if ids == [4, 5]));
+        assert!(parse(&["list", "--id", "4"]).is_err());
+    }
+
+    #[test]
+    fn stream_rows_name_each_metrics_unit() {
+        let header = stream_header();
+        assert!(header.contains("unit"), "{header}");
+        assert_eq!(metric_unit(Metric::AcPowerActive), "W");
+        assert_eq!(metric_unit(Metric::AcPowerReactive), "VAr");
+        assert_eq!(metric_unit(Metric::AcPowerApparent), "VA");
+        assert_eq!(metric_unit(Metric::AcVoltage), "V");
+        assert_eq!(metric_unit(Metric::AcCurrent), "A");
+        assert_eq!(metric_unit(Metric::AcFrequency), "Hz");
+        assert_eq!(metric_unit(Metric::BatterySocPct), "%");
+        assert_eq!(metric_unit(Metric::AcEnergyActive), "Wh");
+        assert_eq!(metric_unit(Metric::InverterTemperature), "");
+        let row = stream_row("t", "AC_POWER_ACTIVE", Some(12.5), "W", "");
+        assert_eq!(
+            row,
+            format!(
+                "{:<24}  {:<26}  {:>14}  {:<5}  ",
+                "t", "AC_POWER_ACTIVE", "12.50", "W"
+            )
+        );
+    }
+
+    #[test]
+    fn a_failed_check_row_names_the_unit_of_its_actual_value() {
+        let check = serde_json::json!({
+            "component_id": 4,
+            "metric": "active_power_w",
+            "expectation": "approx 5000 (tol 100)",
+            "passed": false,
+            "actual": 4200.0,
+            "unit": "W",
+        });
+        assert_eq!(
+            failed_check_row(&check),
+            "  FAIL  4 active_power_w: expected approx 5000 (tol 100), actual 4200 W"
+        );
+        let no_unit = serde_json::json!({
+            "component_id": 4,
+            "metric": "some_metric",
+            "expectation": "approx 50 (tol 1)",
+            "actual": 40.5,
+        });
+        assert!(failed_check_row(&no_unit).ends_with("actual 40.5"));
+        let missing = serde_json::json!({
+            "component_id": 4,
+            "metric": "active_power_w",
+            "expectation": "approx 5000 (tol 100)",
+            "actual": null,
+            "unit": "W",
+        });
+        assert!(failed_check_row(&missing).ends_with("actual unavailable"));
+    }
+
+    #[test]
+    fn list_labels_its_units() {
+        assert!(list_header().contains("rated_lower_w"));
+        assert!(list_header().contains("rated_upper_w"));
     }
 
     #[tokio::test]

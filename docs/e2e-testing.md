@@ -23,8 +23,8 @@ faster than real time, no server, no app:
 ```sh
 macroctl scenario run my-scenario \
   --stepped --config graph.lisp --assert
-#  --until <secs>  override the scenario's :length
-#  --step <ms>     clock step (default 100)
+#  --until-s <s>   override the scenario's :length (fractions allowed)
+#  --step-s <s>    clock step in seconds (default 0.1)
 ```
 
 This boots a headless simulator in-process, runs `my-scenario` to its `:length`,
@@ -62,7 +62,7 @@ exit $RC
 ```
 
 `scenario run … --wait` starts the scenario, blocks until it finishes (its
-`:length`, or `--until <secs>`), stops it, and with `--assert` exits non-zero on
+`:length`, or `--until-s <secs>`), stops it, and with `--assert` exits non-zero on
 any failed `(check …)`. On failure, upload your app's logs and any recorded CSVs
 (`(scenario-record-csv …)`) as CI artifacts.
 
@@ -119,8 +119,8 @@ zero command-delay so steady state is reached quickly.
 
 - `macrocosim <config>` — `--ui-port N` · `--ephemeral-ports` ·
   `--emit-endpoints[=PATH]`.
-- `macroctl scenario run NAME` — `--stepped --config X [--until S] [--step MS]`
-  (headless) · `--wait [--until S]` (live) · `--assert` (gate).
+- `macroctl scenario run NAME` — `--stepped --config X [--until-s S] [--step-s S]`
+  (headless) · `--wait [--until-s S]` (live) · `--assert` (gate).
 - `macroctl scenario report [--assert]`, `macroctl scenario list`,
   `macroctl --microgrid-id N --ui-addr …` (the global
   `--microgrid-id` selects the microgrid for the readouts, default

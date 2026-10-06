@@ -89,8 +89,10 @@ macroctl tree
 macroctl list --category battery
 macroctl connections --from 4                                  # filter graph edges
 macroctl stream 1001 --samples 5
-macroctl set-power 1001 -5000 --lifetime 30                    # negative = discharge
-macroctl augment-bounds 1001 --lower -1000 --upper 5000        # TTL-limited bounds
+macroctl set-power 1001 -5000 --lifetime-s 30                  # watts; negative = discharge
+macroctl set-reactive-power 1001 2000                          # VAr
+macroctl augment-bounds 1001 --lower-w -1000 --upper-w 5000    # TTL-limited bounds
+macroctl augment-reactive-bounds 1001 --lower-var -500 --upper-var 500
 macroctl pool battery                                          # loopback BatteryPool snapshot
 macroctl scenario report                                       # journal report / CI gate
 macroctl scenario list                                         # registered scenarios
@@ -98,7 +100,7 @@ macroctl scenario run cloud-fade --wait --assert              # run one live + g
 macroctl snapshot save before-test                             # freeze the mg's managed file
 macroctl dashboard --tail                                      # one-line/sec pulse bar
 macroctl dispatch list                                         # dispatch API CRUD
-macroctl dispatch create <type> battery --duration 3600
+macroctl dispatch create <type> battery --duration-s 3600
 macroctl --microgrid-id 2 info                                 # pick another microgrid
 ```
 

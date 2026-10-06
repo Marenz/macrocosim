@@ -424,9 +424,9 @@ def run_scenario_stepped(
             "--json",
         ]
         if until is not None:
-            args += ["--until", str(int(until.total_seconds()))]
+            args += ["--until-s", str(until.total_seconds())]
         if step is not None:
-            args += ["--step", str(int(step))]
+            args += ["--step-s", str(step / 1000)]
         if assert_pass:
             args += ["--assert"]
 

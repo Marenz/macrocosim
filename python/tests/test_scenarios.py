@@ -332,6 +332,25 @@ def test_run_scenario_stepped_returns_report(monkeypatch, tmp_path) -> None:
     assert report["checks_passed"] == 1
 
 
+def test_run_scenario_stepped_writes_seconds_flags(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(scenarios_mod, "resolve_binary", lambda *a, **k: "macroctl")
+    seen: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        seen.append(args)
+        return _FakeProc(0, '{"checks_passed": 1, "checks_failed": 0}')
+
+    monkeypatch.setattr(scenarios_mod.subprocess, "run", fake_run)
+    run_scenario_stepped(
+        str(tmp_path / "c.lisp"), "s", until=timedelta(seconds=90.5), step=250
+    )
+    args = seen[0]
+    assert args[args.index("--until-s") + 1] == "90.5"
+    assert args[args.index("--step-s") + 1] == "0.25"
+    assert "--until" not in args
+    assert "--step" not in args
+
+
 def test_run_scenario_stepped_raises_when_no_check_ran(monkeypatch, tmp_path) -> None:
     # macroctl's --assert exits 0 when nothing ran; the zero-check counts
     # must be caught even though the exit code alone looks clean.
