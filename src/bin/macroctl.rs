@@ -778,11 +778,7 @@ fn pick_grpc_addr(list: &serde_json::Value, mg: Option<u64>) -> Result<(u64, Str
     let entries = list.as_array().ok_or("unexpected /api/microgrids reply")?;
     let id = match mg {
         Some(id) => id,
-        None => entries
-            .iter()
-            .filter_map(|m| m.get("id")?.as_u64())
-            .min()
-            .ok_or("no microgrids registered")?,
+        None => lowest_id(list).ok_or("no microgrids registered")?,
     };
     let entry = entries
         .iter()
@@ -847,14 +843,17 @@ async fn resolve_microgrid_id(
     if let Some(id) = explicit {
         return Ok(id);
     }
-    let list: serde_json::Value =
-        checked(http.get(format!("{ui_addr}/api/microgrids")).send().await?)
-            .await?
-            .json()
-            .await?;
-    list.as_array()
-        .and_then(|a| a.iter().filter_map(|m| m.get("id")?.as_u64()).min())
-        .ok_or_else(|| "no microgrids registered".into())
+    let list = get_json(http, format!("{ui_addr}/api/microgrids")).await?;
+    lowest_id(&list).ok_or_else(|| "no microgrids registered".into())
+}
+
+/// The lowest microgrid id in an `/api/microgrids` reply; `None` for
+/// an empty list or a reply that is not a list.
+fn lowest_id(list: &serde_json::Value) -> Option<u64> {
+    list.as_array()?
+        .iter()
+        .filter_map(|m| m.get("id")?.as_u64())
+        .min()
 }
 
 async fn build_pool_line(
@@ -864,14 +863,7 @@ async fn build_pool_line(
     kind: &str,
     json: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let latest: serde_json::Value = checked(
-        http.get(format!("{ui_addr}/api/mg/{mg_id}/metrics/latest"))
-            .send()
-            .await?,
-    )
-    .await?
-    .json()
-    .await?;
+    let latest = get_json(http, format!("{ui_addr}/api/mg/{mg_id}/metrics/latest")).await?;
     let stream_for = |s: &str| latest.get(s).cloned();
     if json {
         let mut out = serde_json::Map::new();
@@ -950,22 +942,8 @@ async fn build_dashboard_line(
     ui_addr: &str,
     mg_id: u64,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let topo: serde_json::Value = checked(
-        http.get(format!("{ui_addr}/api/mg/{mg_id}/topology"))
-            .send()
-            .await?,
-    )
-    .await?
-    .json()
-    .await?;
-    let latest: serde_json::Value = checked(
-        http.get(format!("{ui_addr}/api/mg/{mg_id}/metrics/latest"))
-            .send()
-            .await?,
-    )
-    .await?
-    .json()
-    .await?;
+    let topo = get_json(http, format!("{ui_addr}/api/mg/{mg_id}/topology")).await?;
+    let latest = get_json(http, format!("{ui_addr}/api/mg/{mg_id}/metrics/latest")).await?;
     let now = chrono::Local::now().format("%H:%M:%S");
     let components = topo
         .get("components")
@@ -1029,14 +1007,7 @@ async fn fetch_print_assert_report(
     json: bool,
     assert: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let r: serde_json::Value = checked(
-        http.get(format!("{ui_addr}/api/mg/{mg}/scenario/report"))
-            .send()
-            .await?,
-    )
-    .await?
-    .json()
-    .await?;
+    let r = get_json(http, format!("{ui_addr}/api/mg/{mg}/scenario/report")).await?;
     print_report(&r, json);
     if assert {
         let failed = r["checks_failed"].as_u64().unwrap_or(0);
@@ -1056,11 +1027,7 @@ async fn run_scenario(
     let http = reqwest::Client::new();
     match cmd {
         ScenarioCmd::List => {
-            let resp: serde_json::Value =
-                checked(http.get(format!("{ui_addr}/api/scenarios")).send().await?)
-                    .await?
-                    .json()
-                    .await?;
+            let resp = get_json(&http, format!("{ui_addr}/api/scenarios")).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
@@ -1125,11 +1092,7 @@ async fn run_scenario(
                         Some(s) => s,
                         None => {
                             // Default to the scenario's declared :length.
-                            let list: serde_json::Value =
-                                checked(http.get(format!("{ui_addr}/api/scenarios")).send().await?)
-                                    .await?
-                                    .json()
-                                    .await?;
+                            let list = get_json(&http, format!("{ui_addr}/api/scenarios")).await?;
                             let len = list
                                 .as_array()
                                 .and_then(|a| a.iter().find(|s| s["name"] == name.as_str()))
@@ -1256,14 +1219,7 @@ async fn run_scenario(
         }
         ScenarioCmd::Summary => {
             let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
-            let s: serde_json::Value = checked(
-                http.get(format!("{ui_addr}/api/mg/{mg}/scenario"))
-                    .send()
-                    .await?,
-            )
-            .await?
-            .json()
-            .await?;
+            let s = get_json(&http, format!("{ui_addr}/api/mg/{mg}/scenario")).await?;
             print_summary(&s, json);
         }
         ScenarioCmd::Report { assert } => {
@@ -1272,14 +1228,10 @@ async fn run_scenario(
         }
         ScenarioCmd::Events { since, limit } => {
             let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
-            let e: serde_json::Value = checked(
+            let e = send_json(
                 http.get(format!("{ui_addr}/api/mg/{mg}/scenario/events"))
-                    .query(&[("since", since.to_string()), ("limit", limit.to_string())])
-                    .send()
-                    .await?,
+                    .query(&[("since", since.to_string()), ("limit", limit.to_string())]),
             )
-            .await?
-            .json()
             .await?;
             print_events(&e, json);
         }
@@ -1300,14 +1252,10 @@ async fn run_snapshot(
     let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
     match cmd {
         SnapshotCmd::Save { name } => {
-            let resp: serde_json::Value = checked(
+            let resp = send_json(
                 http.post(format!("{ui_addr}/api/mg/{mg}/snapshots"))
-                    .json(&serde_json::json!({ "name": name }))
-                    .send()
-                    .await?,
+                    .json(&serde_json::json!({ "name": name })),
             )
-            .await?
-            .json()
             .await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
@@ -1324,14 +1272,10 @@ async fn run_snapshot(
             if let Some(id) = as_id {
                 body["as_id"] = serde_json::json!(id);
             }
-            let resp: serde_json::Value = checked(
+            let resp = send_json(
                 http.post(format!("{ui_addr}/api/mg/{mg}/snapshots/load"))
-                    .json(&body)
-                    .send()
-                    .await?,
+                    .json(&body),
             )
-            .await?
-            .json()
             .await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
@@ -1341,14 +1285,7 @@ async fn run_snapshot(
             }
         }
         SnapshotCmd::List => {
-            let resp: serde_json::Value = checked(
-                http.get(format!("{ui_addr}/api/mg/{mg}/snapshots"))
-                    .send()
-                    .await?,
-            )
-            .await?
-            .json()
-            .await?;
+            let resp = get_json(&http, format!("{ui_addr}/api/mg/{mg}/snapshots")).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
@@ -1390,6 +1327,23 @@ async fn eval(
         .json()
         .await?;
     Ok(body["value"].as_str().unwrap_or("").to_string())
+}
+
+/// The JSON body of a GET of `url`; a failed response is an error as
+/// [`checked`] reports it.
+async fn get_json(
+    http: &reqwest::Client,
+    url: impl reqwest::IntoUrl,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    send_json(http.get(url)).await
+}
+
+/// The JSON body of the response to `req`; a failed response is an
+/// error as [`checked`] reports it.
+async fn send_json(
+    req: reqwest::RequestBuilder,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    Ok(checked(req.send().await?).await?.json().await?)
 }
 
 /// `resp` when it succeeded; otherwise an error carrying the
