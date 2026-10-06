@@ -13,14 +13,15 @@ use crate::sim::{
     reactive::ReactiveCapability,
 };
 
-/// The device delay a component gets when `:device-delay-ms` is not
+/// The device delay a component gets when `:device-delay-s` is not
 /// given; it is not written into a managed file.
 pub(crate) const DEFAULT_DEVICE_DELAY: Duration = Duration::from_millis(100);
 
-/// The `:device-delay-ms` kwarg for `d`, or `None` when `d` is the
+/// The `:device-delay-s` kwarg for `d`, or `None` when `d` is the
 /// default and so stays out of the rendered constructor.
 pub(crate) fn device_delay_kw(d: Duration) -> Option<(&'static str, String)> {
-    (d != DEFAULT_DEVICE_DELAY).then(|| (":device-delay-ms", d.as_millis().to_string()))
+    (d != DEFAULT_DEVICE_DELAY)
+        .then(|| (":device-delay-s", crate::lisp::lisp_float(d.as_secs_f64())))
 }
 
 /// Telemetry shared by both inverters: P/Q with per-phase splits,
@@ -74,15 +75,18 @@ pub(crate) fn common_inverter_kwargs(cfg: CommonInverterCfg) -> Vec<(&'static st
         (":rated-lower", lf(cfg.rated_lower_w)),
         (":rated-upper", lf(cfg.rated_upper_w)),
         (
-            ":command-delay-ms",
-            cfg.command_delay.as_millis().to_string(),
+            ":command-delay-s",
+            crate::lisp::lisp_float(cfg.command_delay.as_secs_f64()),
         ),
     ];
     if cfg.ramp_rate_w_per_s.is_finite() {
         kw.push((":ramp-rate", lf(cfg.ramp_rate_w_per_s)));
     }
     if cfg.interval != Duration::from_millis(1000) {
-        kw.push((":interval", cfg.interval.as_millis().to_string()));
+        kw.push((
+            ":interval-s",
+            crate::lisp::lisp_float(cfg.interval.as_secs_f64()),
+        ));
     }
     if cfg.stream_jitter_pct != 0.0 {
         kw.push((":stream-jitter-pct", lf(cfg.stream_jitter_pct)));
@@ -101,8 +105,8 @@ pub(crate) fn common_inverter_kwargs(cfg: CommonInverterCfg) -> Vec<(&'static st
             .unwrap_or_else(|| "0".into()),
     ));
     kw.push((
-        ":reactive-command-delay-ms",
-        cfg.reactive_command_delay.as_millis().to_string(),
+        ":reactive-command-delay-s",
+        crate::lisp::lisp_float(cfg.reactive_command_delay.as_secs_f64()),
     ));
     if cfg.reactive_ramp_rate_var_per_s.is_finite() {
         kw.push((":reactive-ramp-rate", lf(cfg.reactive_ramp_rate_var_per_s)));

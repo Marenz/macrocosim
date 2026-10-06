@@ -39,7 +39,7 @@ pub(in crate::ui) async fn defaults(
         for cat in DEFAULT_CATEGORIES {
             let var = format!("{cat}-defaults");
             // Variables that aren't bound just get skipped.
-            if let Ok(value) = config.eval_silent(&var) {
+            if let Ok(value) = config.defaults_silent(&var) {
                 // One `:key value` pair per line. tulisp-fmt's
                 // width-based breaking splits keys from their values
                 // at side-panel widths, which reads terribly in the

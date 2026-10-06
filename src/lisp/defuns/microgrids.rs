@@ -584,6 +584,35 @@ mod tests {
         assert_eq!(copy.all_connections(), expected, "isomorphic edge set");
     }
 
+    /// A managed file with the old millisecond keyword `:interval 500`
+    /// still renumbers, loads, and carries the converted values.
+    #[test]
+    fn load_as_renumbers_a_file_written_with_old_keywords() {
+        let (cfg, dir) =
+            config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))");
+        let src = dir.join("old.lisp");
+        std::fs::write(
+            &src,
+            crate::lisp::microgrid_file::compose(
+                "(make-microgrid :id 9 :name \"m\" :grpc-port 8800\n  :topology\n  \
+                 (lambda ()\n    (%make-meter :id 77 :interval 500)))",
+                "",
+            ),
+        )
+        .unwrap();
+        let id = cfg.load_as(&src, 11).expect("copy loads under a free id");
+        assert_eq!(id, 11);
+        let reg = cfg.microgrids();
+        let r = reg.lock();
+        let copy = r.get(&11).expect("copy registered");
+        assert_ne!(copy.def.grpc_port, 8800, "the copy has a port of its own");
+        let comps = copy.site.components();
+        assert_eq!(comps.len(), 1);
+        assert_ne!(comps[0].id(), 77, "under a fresh component id");
+        let kw = comps[0].constructor_kwargs();
+        assert!(kw.contains(&(":interval-s", "0.5".to_string())), "{kw:?}");
+    }
+
     /// `set-microgrid-name` / `set-microgrid-tso` edit the registry
     /// def AND land in the managed file's `(make-microgrid …)` head,
     /// so the new name survives a reload. Neither moves a component,

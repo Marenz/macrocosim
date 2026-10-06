@@ -28,7 +28,7 @@
         :stream-jitter-pct  1.0))
 
 (setq meter-defaults
-      '(:interval          200
+      '(:interval-s        0.2
         :stream-jitter-pct 4.0))
 
 (setq battery-defaults
@@ -37,7 +37,7 @@
         :health             ok))
 
 (setq battery-inverter-defaults
-      '(:command-delay-ms     1500
+      '(:command-delay-s      1.5
         :ramp-rate             5000.0
         :stream-jitter-pct     8.0
         :reactive-pf-limit     0.0         ;; 0 = disabled
@@ -52,14 +52,14 @@
         :stream-jitter-pct  5.0))
 
 (setq ev-charger-defaults
-      '(:command-delay-ms    500
+      '(:command-delay-s     0.5
         :ramp-rate           3000.0
         :stream-jitter-pct   10.0))
 
 ;; Steam boiler: hybrid gas/electric — the electric side ramps and
 ;; delays like the EV charger.
 (setq steam-boiler-defaults
-      '(:command-delay-ms 500
+      '(:command-delay-s 0.5
         :ramp-rate 50000.0
         :stream-jitter-pct 10.0))
 

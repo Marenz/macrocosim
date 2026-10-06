@@ -340,15 +340,18 @@ impl SimulatedComponent for SteamBoiler {
             kw.push((":demand", lf(self.cfg.demand_kg_h)));
         }
         kw.push((
-            ":command-delay-ms",
-            self.cfg.command_delay.as_millis().to_string(),
+            ":command-delay-s",
+            crate::lisp::lisp_float(self.cfg.command_delay.as_secs_f64()),
         ));
         if self.cfg.ramp_rate_w_per_s.is_finite() {
             kw.push((":ramp-rate", lf(self.cfg.ramp_rate_w_per_s)));
         }
         kw.extend(crate::sim::inverter::device_delay_kw(self.cfg.device_delay));
         if self.interval != Duration::from_millis(1000) {
-            kw.push((":interval", self.interval.as_millis().to_string()));
+            kw.push((
+                ":interval-s",
+                crate::lisp::lisp_float(self.interval.as_secs_f64()),
+            ));
         }
         if self.cfg.stream_jitter_pct != d.stream_jitter_pct {
             kw.push((":stream-jitter-pct", lf(self.cfg.stream_jitter_pct)));
@@ -743,7 +746,7 @@ mod tests {
     }
 
     /// Every construction kwarg round-trips; :ramp-rate renders only
-    /// when finite, :interval only off-default, :demand only when
+    /// when finite, :interval-s only off-default, :demand only when
     /// the source is a plain number, :initial-bar only when it
     /// departs from target.
     #[test]
@@ -771,7 +774,7 @@ mod tests {
         assert!(s.contains(":target-bar 6.0"));
         assert!(s.contains(":max-bar 9.0"));
         assert!(s.contains(":demand 40.0"));
-        assert!(s.contains(":interval 500"));
+        assert!(s.contains(":interval-s 0.5"));
         assert!(s.contains(":stream-jitter-pct 5.0"));
         assert!(!s.contains(":ramp-rate"), "infinite ramp omitted");
         assert!(!s.contains(":initial-bar"), "default initial omitted");

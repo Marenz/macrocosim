@@ -222,7 +222,10 @@ impl SimulatedComponent for Battery {
             (":soc-protect-margin", lf(self.cfg.soc_protect_margin_pct)),
         ];
         if self.interval != Duration::from_millis(1000) {
-            kw.push((":interval", self.interval.as_millis().to_string()));
+            kw.push((
+                ":interval-s",
+                crate::lisp::lisp_float(self.interval.as_secs_f64()),
+            ));
         }
         if self.cfg.stream_jitter_pct != 0.0 {
             kw.push((":stream-jitter-pct", lf(self.cfg.stream_jitter_pct)));
@@ -346,7 +349,7 @@ mod tests {
     }
 
     /// Every construction kwarg round-trips into the rendered form,
-    /// and `:interval` renders only when it departs from the 1000 ms
+    /// and `:interval-s` renders only when it departs from the 1000 ms
     /// default.
     #[test]
     fn constructor_kwargs_round_trip_battery() {
@@ -365,7 +368,7 @@ mod tests {
             .join(" ");
         assert!(s.contains(":capacity 50000.0"));
         assert!(s.contains(":initial-soc 20.0"));
-        assert!(s.contains(":interval 500"));
+        assert!(s.contains(":interval-s 0.5"));
         assert!(s.contains(":rated-lower -30000.0"));
     }
 

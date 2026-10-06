@@ -81,7 +81,28 @@ pub(crate) struct Rename {
 
 /// Every renamed Lisp keyword. An old keyword means the same thing in
 /// every defun that takes it.
-pub(crate) const RENAMES: &[Rename] = &[];
+pub(crate) const RENAMES: &[Rename] = &[
+    Rename {
+        old: ":interval",
+        new: ":interval-s",
+        convert: Convert::MsToS,
+    },
+    Rename {
+        old: ":command-delay-ms",
+        new: ":command-delay-s",
+        convert: Convert::MsToS,
+    },
+    Rename {
+        old: ":device-delay-ms",
+        new: ":device-delay-s",
+        convert: Convert::MsToS,
+    },
+    Rename {
+        old: ":reactive-command-delay-ms",
+        new: ":reactive-command-delay-s",
+        convert: Convert::MsToS,
+    },
+];
 
 /// Remembers which keys already warned.
 struct WarnOnce(Mutex<HashSet<String>>);

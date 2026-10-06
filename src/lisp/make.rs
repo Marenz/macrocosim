@@ -58,7 +58,7 @@ AsPlist! {
     pub struct MeterArgs {
         id: Option<i64> {= None},
         name: Option<String> {= None},
-        interval: Option<i64> {= None},
+        interval_s<":interval-s">: Option<f64> {= None},
         /// Constant, lambda, or symbol. Resolved into a
         /// [`DynamicScalar`] in the constructor — see
         /// [`crate::sim::dynamic_scalar::DynamicScalar::from_lisp`].
@@ -91,7 +91,7 @@ AsPlist! {
     pub struct BatteryArgs {
         id: Option<i64> {= None},
         name: Option<String> {= None},
-        interval: Option<i64> {= None},
+        interval_s<":interval-s">: Option<f64> {= None},
         capacity_wh<":capacity">: Option<f64> {= None},
         initial_soc<":initial-soc">: Option<f64> {= None},
         soc_lower<":soc-lower">: Option<f64> {= None},
@@ -116,15 +116,15 @@ AsPlist! {
     pub struct BatteryInverterArgs {
         id: Option<i64> {= None},
         name: Option<String> {= None},
-        interval: Option<i64> {= None},
+        interval_s<":interval-s">: Option<f64> {= None},
         successors: Option<Vec<ComponentHandle>> {= None},
         rated_lower<":rated-lower">: Option<f64> {= None},
         rated_upper<":rated-upper">: Option<f64> {= None},
-        command_delay_ms<":command-delay-ms">: Option<i64> {= None},
+        command_delay_s<":command-delay-s">: Option<f64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
         /// Time a command takes to reach the output once the
-        /// component has it, in ms, on both axes. 100 unless set.
-        device_delay_ms<":device-delay-ms">: Option<i64> {= None},
+        /// component has it, in seconds, on both axes. 0.1 unless set.
+        device_delay_s<":device-delay-s">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
         operational_mode<":operational-mode">: Option<OperationalMode> {= None},
         health<":health">: Option<Health> {= None},
@@ -135,8 +135,8 @@ AsPlist! {
         /// kVA-style Q cap: P² + Q² ≤ apparent². Pass 0 to disable (nil inherits the default).
         reactive_apparent_va<":reactive-apparent-va">: Option<f64> {= None},
         /// Inverter-internal latency before a Q setpoint starts
-        /// being tracked. Defaults to 100 ms.
-        reactive_command_delay_ms<":reactive-command-delay-ms">: Option<i64> {= None},
+        /// being tracked, in seconds. Defaults to 0.1.
+        reactive_command_delay_s<":reactive-command-delay-s">: Option<f64> {= None},
         /// Reactive slew rate (VAR/s). Default 2000 ≈ IEEE 1547-2018
         /// Cat B 5 s OLRT for a 10 kVAR window.
         reactive_ramp_rate<":reactive-ramp-rate">: Option<f64> {= None},
@@ -151,7 +151,7 @@ AsPlist! {
     pub struct SolarInverterArgs {
         id: Option<i64> {= None},
         name: Option<String> {= None},
-        interval: Option<i64> {= None},
+        interval_s<":interval-s">: Option<f64> {= None},
         /// Cloud-cover percentage. May be a number, a lambda, or a
         /// symbol — see [`crate::sim::dynamic_scalar::DynamicScalar::from_lisp`].
         /// Resolved each tick via the scheduler's pre-tick hook.
@@ -175,11 +175,11 @@ AsPlist! {
         /// sample, in percent of the value. Only meaningful without
         /// `:sunlight%`.
         weather_jitter_pct<":weather-jitter-pct">: Option<f64> {= None},
-        command_delay_ms<":command-delay-ms">: Option<i64> {= None},
+        command_delay_s<":command-delay-s">: Option<f64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
         /// Time a command takes to reach the output once the
-        /// component has it, in ms, on both axes. 100 unless set.
-        device_delay_ms<":device-delay-ms">: Option<i64> {= None},
+        /// component has it, in seconds, on both axes. 0.1 unless set.
+        device_delay_s<":device-delay-s">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
         operational_mode<":operational-mode">: Option<OperationalMode> {= None},
         health<":health">: Option<Health> {= None},
@@ -190,8 +190,8 @@ AsPlist! {
         /// kVA-style Q cap: P² + Q² ≤ apparent². Pass 0 to disable.
         reactive_apparent_va<":reactive-apparent-va">: Option<f64> {= None},
         /// Inverter-internal latency before a Q setpoint starts being
-        /// tracked. Defaults to 100 ms.
-        reactive_command_delay_ms<":reactive-command-delay-ms">: Option<i64> {= None},
+        /// tracked, in seconds. Defaults to 0.1.
+        reactive_command_delay_s<":reactive-command-delay-s">: Option<f64> {= None},
         /// Reactive slew rate (VAR/s). Default 2000.
         reactive_ramp_rate<":reactive-ramp-rate">: Option<f64> {= None},
     }
@@ -205,14 +205,14 @@ AsPlist! {
     pub struct EvChargerArgs {
         id: Option<i64> {= None},
         name: Option<String> {= None},
-        interval: Option<i64> {= None},
+        interval_s<":interval-s">: Option<f64> {= None},
         rated_lower<":rated-lower">: Option<f64> {= None},
         rated_upper<":rated-upper">: Option<f64> {= None},
-        command_delay_ms<":command-delay-ms">: Option<i64> {= None},
+        command_delay_s<":command-delay-s">: Option<f64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
         /// Time a command takes to reach the output once the
-        /// component has it, in ms, on both axes. 100 unless set.
-        device_delay_ms<":device-delay-ms">: Option<i64> {= None},
+        /// component has it, in seconds, on both axes. 0.1 unless set.
+        device_delay_s<":device-delay-s">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
         // The pack kwargs a charger used to own. The pack is the car's
         // now, so these are taken and ignored (with a warning) rather
@@ -253,7 +253,7 @@ AsPlist! {
     pub struct SteamBoilerArgs {
         id: Option<i64> {= None},
         name: Option<String> {= None},
-        interval: Option<i64> {= None},
+        interval_s<":interval-s">: Option<f64> {= None},
         /// kg/h; number seeds a constant, lambda/symbol installs a
         /// dynamic source resolved each tick.
         demand<":demand">: Option<LispValue> {= None},
@@ -264,11 +264,11 @@ AsPlist! {
         initial_bar<":initial-bar">: Option<f64> {= None},
         capacity_wh_per_bar<":capacity-wh-per-bar">: Option<f64> {= None},
         wh_per_kg<":wh-per-kg">: Option<f64> {= None},
-        command_delay_ms<":command-delay-ms">: Option<i64> {= None},
+        command_delay_s<":command-delay-s">: Option<f64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
         /// Time a command takes to reach the output once the
-        /// component has it, in ms, on both axes. 100 unless set.
-        device_delay_ms<":device-delay-ms">: Option<i64> {= None},
+        /// component has it, in seconds, on both axes. 0.1 unless set.
+        device_delay_s<":device-delay-s">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
         operational_mode<":operational-mode">: Option<OperationalMode> {= None},
         health<":health">: Option<Health> {= None},
@@ -359,7 +359,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             let w = r.site();
             let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
-            let interval = ms_to_duration(a.interval, 1000);
+            let interval = secs_to_duration(":interval-s", a.interval_s, Duration::from_secs(1))?;
             let hidden = a.hidden.unwrap_or(false);
             // :power may be a number, a lambda, or a symbol. The
             // wrapper-expanded category default lands in `a.power`
@@ -402,7 +402,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             let w = r.site();
             let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
-            let interval = ms_to_duration(a.interval, 1000);
+            let interval = secs_to_duration(":interval-s", a.interval_s, Duration::from_secs(1))?;
             let mut cfg = BatteryConfig::default();
             if let Some(v) = a.capacity_wh {
                 cfg.capacity_wh = v as f32;
@@ -451,7 +451,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             let w = r.site();
             let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
-            let interval = ms_to_duration(a.interval, 1000);
+            let interval = secs_to_duration(":interval-s", a.interval_s, Duration::from_secs(1))?;
             let mut cfg = BatteryInverterConfig::default();
             if let Some(v) = a.rated_lower {
                 cfg.rated_lower_w = v as f32;
@@ -459,22 +459,20 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             if let Some(v) = a.rated_upper {
                 cfg.rated_upper_w = v as f32;
             }
-            if let Some(v) = a.command_delay_ms {
-                cfg.command_delay = Duration::from_millis(v.max(0) as u64);
-            }
+            cfg.command_delay =
+                secs_to_duration(":command-delay-s", a.command_delay_s, cfg.command_delay)?;
             if let Some(v) = a.ramp_rate {
                 cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate", v)?;
             }
-            if let Some(v) = a.device_delay_ms {
-                cfg.device_delay = Duration::from_millis(v.max(0) as u64);
-            }
+            cfg.device_delay =
+                secs_to_duration(":device-delay-s", a.device_delay_s, cfg.device_delay)?;
             if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
             }
             ReactiveKwargs {
                 pf_limit: a.reactive_pf_limit,
                 apparent_va: a.reactive_apparent_va,
-                command_delay_ms: a.reactive_command_delay_ms,
+                command_delay_s: a.reactive_command_delay_s,
                 ramp_rate: a.reactive_ramp_rate,
             }
             .apply(
@@ -503,7 +501,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             let w = r.site();
             let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
-            let interval = ms_to_duration(a.interval, 1000);
+            let interval = secs_to_duration(":interval-s", a.interval_s, Duration::from_secs(1))?;
             let mut cfg = SolarInverterConfig::default();
             // :sunlight% accepts a number, lambda, or symbol. Number
             // seeds the initial ramp target on `cfg.sunlight_pct`;
@@ -582,22 +580,20 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             if let Some(v) = a.rated_upper {
                 cfg.rated_upper_w = v as f32;
             }
-            if let Some(v) = a.command_delay_ms {
-                cfg.command_delay = Duration::from_millis(v.max(0) as u64);
-            }
+            cfg.command_delay =
+                secs_to_duration(":command-delay-s", a.command_delay_s, cfg.command_delay)?;
             if let Some(v) = a.ramp_rate {
                 cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate", v)?;
             }
-            if let Some(v) = a.device_delay_ms {
-                cfg.device_delay = Duration::from_millis(v.max(0) as u64);
-            }
+            cfg.device_delay =
+                secs_to_duration(":device-delay-s", a.device_delay_s, cfg.device_delay)?;
             if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
             }
             ReactiveKwargs {
                 pf_limit: a.reactive_pf_limit,
                 apparent_va: a.reactive_apparent_va,
-                command_delay_ms: a.reactive_command_delay_ms,
+                command_delay_s: a.reactive_command_delay_s,
                 ramp_rate: a.reactive_ramp_rate,
             }
             .apply(
@@ -629,7 +625,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             let w = r.site();
             let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
-            let interval = ms_to_duration(a.interval, 1000);
+            let interval = secs_to_duration(":interval-s", a.interval_s, Duration::from_secs(1))?;
             let mut cfg = EvChargerConfig::default();
             if let Some(v) = a.rated_lower {
                 cfg.rated_lower_w = v as f32;
@@ -637,15 +633,13 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             if let Some(v) = a.rated_upper {
                 cfg.rated_upper_w = v as f32;
             }
-            if let Some(v) = a.command_delay_ms {
-                cfg.command_delay = Duration::from_millis(v.max(0) as u64);
-            }
+            cfg.command_delay =
+                secs_to_duration(":command-delay-s", a.command_delay_s, cfg.command_delay)?;
             if let Some(v) = a.ramp_rate {
                 cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate", v)?;
             }
-            if let Some(v) = a.device_delay_ms {
-                cfg.device_delay = Duration::from_millis(v.max(0) as u64);
-            }
+            cfg.device_delay =
+                secs_to_duration(":device-delay-s", a.device_delay_s, cfg.device_delay)?;
             if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
             }
@@ -709,7 +703,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             let w = r.site();
             let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
-            let interval = ms_to_duration(a.interval, 1000);
+            let interval = secs_to_duration(":interval-s", a.interval_s, Duration::from_secs(1))?;
             let mut cfg = SteamBoilerConfig::default();
             if let Some(v) = a.rated_lower {
                 cfg.rated_lower_w = v as f32;
@@ -732,15 +726,13 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             if let Some(v) = a.wh_per_kg {
                 cfg.wh_per_kg = v as f32;
             }
-            if let Some(v) = a.command_delay_ms {
-                cfg.command_delay = Duration::from_millis(v.max(0) as u64);
-            }
+            cfg.command_delay =
+                secs_to_duration(":command-delay-s", a.command_delay_s, cfg.command_delay)?;
             if let Some(v) = a.ramp_rate {
                 cfg.ramp_rate_w_per_s = checked_ramp_rate(":ramp-rate", v)?;
             }
-            if let Some(v) = a.device_delay_ms {
-                cfg.device_delay = Duration::from_millis(v.max(0) as u64);
-            }
+            cfg.device_delay =
+                secs_to_duration(":device-delay-s", a.device_delay_s, cfg.device_delay)?;
             if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
             }
@@ -831,8 +823,17 @@ fn connect_successors(
     }
 }
 
-fn ms_to_duration(ms: Option<i64>, default_ms: u64) -> Duration {
-    Duration::from_millis(ms.map(|x| x.max(0) as u64).unwrap_or(default_ms))
+/// A seconds keyword as a `Duration`, `default` when absent. Negative,
+/// NaN and infinite values are refused, naming the keyword.
+fn secs_to_duration(kw: &str, secs: Option<f64>, default: Duration) -> Result<Duration, Error> {
+    match secs {
+        None => Ok(default),
+        Some(s) => Duration::try_from_secs_f64(s).map_err(|_| {
+            Error::invalid_argument(format!(
+                "{kw} must be a non-negative number of seconds, got {s}"
+            ))
+        }),
+    }
 }
 
 /// The reactive kwargs shared by both inverter constructors,
@@ -841,7 +842,7 @@ fn ms_to_duration(ms: Option<i64>, default_ms: u64) -> Duration {
 struct ReactiveKwargs {
     pf_limit: Option<f64>,
     apparent_va: Option<f64>,
-    command_delay_ms: Option<i64>,
+    command_delay_s: Option<f64>,
     ramp_rate: Option<f64>,
 }
 
@@ -872,9 +873,11 @@ impl ReactiveKwargs {
         };
         reactive.pf_limit = merge(self.pf_limit, reactive.pf_limit);
         reactive.apparent_va = merge(self.apparent_va, reactive.apparent_va);
-        if let Some(v) = self.command_delay_ms {
-            *command_delay = Duration::from_millis(v.max(0) as u64);
-        }
+        *command_delay = secs_to_duration(
+            ":reactive-command-delay-s",
+            self.command_delay_s,
+            *command_delay,
+        )?;
         if let Some(v) = self.ramp_rate {
             *ramp_rate = checked_ramp_rate(":reactive-ramp-rate", v)?;
         }
@@ -1695,18 +1698,18 @@ mod tests {
         );
     }
 
-    /// `:device-delay-ms` reaches each controllable component and is
+    /// `:device-delay-s` reaches each controllable component and is
     /// written back only when it is not the 100 ms default, so
     /// existing managed files are not rewritten.
     #[test]
-    fn device_delay_ms_round_trips_and_the_default_renders_nothing() {
+    fn device_delay_s_round_trips_and_the_default_renders_nothing() {
         let (site, _ctx) = run_with_ctx(
-            r#"(%make-battery-inverter :id 21 :device-delay-ms 250)
-               (%make-solar-inverter :id 22 :device-delay-ms 0)
-               (%make-ev-charger :id 23 :device-delay-ms 40)
-               (%make-steam-boiler :id 24 :device-delay-ms 300)
+            r#"(%make-battery-inverter :id 21 :device-delay-s 0.25)
+               (%make-solar-inverter :id 22 :device-delay-s 0.0)
+               (%make-ev-charger :id 23 :device-delay-s 0.04)
+               (%make-steam-boiler :id 24 :device-delay-s 0.3)
                (%make-battery-inverter :id 25)
-               (%make-ev-charger :id 26 :device-delay-ms 100)"#,
+               (%make-ev-charger :id 26 :device-delay-s 0.1)"#,
         );
         let kw = |id: u64| {
             site.get(id)
@@ -1717,11 +1720,67 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        assert!(kw(21).contains(":device-delay-ms 250"), "{}", kw(21));
-        assert!(kw(22).contains(":device-delay-ms 0"), "{}", kw(22));
-        assert!(kw(23).contains(":device-delay-ms 40"), "{}", kw(23));
-        assert!(kw(24).contains(":device-delay-ms 300"), "{}", kw(24));
-        assert!(!kw(25).contains(":device-delay-ms"), "{}", kw(25));
-        assert!(!kw(26).contains(":device-delay-ms"), "{}", kw(26));
+        assert!(kw(21).contains(":device-delay-s 0.25"), "{}", kw(21));
+        assert!(kw(22).contains(":device-delay-s 0.0"), "{}", kw(22));
+        assert!(kw(23).contains(":device-delay-s 0.04"), "{}", kw(23));
+        assert!(kw(24).contains(":device-delay-s 0.3"), "{}", kw(24));
+        assert!(!kw(25).contains(":device-delay-s"), "{}", kw(25));
+        assert!(!kw(26).contains(":device-delay-s"), "{}", kw(26));
+    }
+
+    #[test]
+    fn time_keywords_are_seconds() {
+        let site = run("(setq b (%make-battery :id 1))
+             (%make-battery-inverter :id 2 :interval-s 0.5 :command-delay-s 0.2
+                                     :device-delay-s 0.05 :reactive-command-delay-s 0.3
+                                     :successors (list b))");
+        let kw = site.get(2).unwrap().constructor_kwargs();
+        let get = |k: &str| kw.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone());
+        assert_eq!(get(":interval-s").as_deref(), Some("0.5"));
+        assert_eq!(get(":command-delay-s").as_deref(), Some("0.2"));
+        assert_eq!(get(":device-delay-s").as_deref(), Some("0.05"));
+        assert_eq!(get(":reactive-command-delay-s").as_deref(), Some("0.3"));
+        assert!(
+            kw.iter()
+                .all(|(n, _)| !n.ends_with("-ms") && *n != ":interval")
+        );
+    }
+
+    #[test]
+    fn old_millisecond_keywords_load_as_seconds() {
+        let old = run("(setq b (%make-battery :id 1))
+             (%make-battery-inverter :id 2 :interval 500 :command-delay-ms 200
+                                     :device-delay-ms 250
+                                     :reactive-command-delay-ms 400
+                                     :successors (list b))");
+        let new = run("(setq b (%make-battery :id 1))
+             (%make-battery-inverter :id 2 :interval-s 0.5 :command-delay-s 0.2
+                                     :device-delay-s 0.25
+                                     :reactive-command-delay-s 0.4
+                                     :successors (list b))");
+        let kw = new.get(2).unwrap().constructor_kwargs();
+        for want in [
+            (":device-delay-s", "0.25"),
+            (":reactive-command-delay-s", "0.4"),
+        ] {
+            assert!(kw.contains(&(want.0, want.1.to_string())), "{kw:?}");
+        }
+        assert_eq!(old.get(2).unwrap().constructor_kwargs(), kw);
+    }
+
+    #[test]
+    fn a_new_keyword_after_an_old_one_wins() {
+        let site = run("(%make-meter :id 1 :interval 500 :interval-s 2.0)");
+        let kw = site.get(1).unwrap().constructor_kwargs();
+        assert!(kw.contains(&(":interval-s", "2.0".to_string())), "{kw:?}");
+    }
+
+    #[test]
+    fn a_negative_duration_is_refused() {
+        let mut ctx = run_with_ctx("").1;
+        let err = ctx
+            .eval_string("(%make-meter :id 1 :interval-s -1.0)")
+            .unwrap_err();
+        assert!(err.to_string().contains(":interval-s"), "{err}");
     }
 }

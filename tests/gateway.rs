@@ -156,8 +156,8 @@ fn trips_follow_each_components_rules() {
         "(%make-battery-inverter :id 3 :successors (list (%make-battery :id 4)))
          (%make-solar-inverter :id 5 :sunlight% 100.0 :rated-lower -10000.0 :rated-upper 0.0
                                :reactive-pf-limit 0 :reactive-apparent-va 10000.0
-                               :reactive-command-delay-ms 0)
-         (%make-ev-charger :id 6 :command-delay-ms 0 :resume-on-recovery t)",
+                               :reactive-command-delay-s 0)
+         (%make-ev-charger :id 6 :command-delay-s 0 :resume-on-recovery t)",
     );
     for form in [
         "(set-active-power 3 3000.0 600000)",
@@ -217,7 +217,7 @@ fn trips_follow_each_components_rules() {
 fn a_command_crosses_the_gateway_and_device_delays_at_any_tick() {
     for (tick_ms, quiet) in [(100_u64, 5_usize), (250, 3)] {
         let (cfg, _dir) = headless(
-            "(%make-battery-inverter :id 3 :command-delay-ms 300 :device-delay-ms 200
+            "(%make-battery-inverter :id 3 :command-delay-s 0.3 :device-delay-s 0.2
                :successors (list (%make-battery :id 4)))",
         );
         let dt = Duration::from_millis(tick_ms);

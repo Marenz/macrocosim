@@ -129,6 +129,17 @@ impl Config {
         }
     }
 
+    /// Read-only value of the `*-defaults` variable `var`, printed
+    /// with old keywords shown under their new names. Nothing is
+    /// saved.
+    pub fn defaults_silent(&self, var: &str) -> Result<String, String> {
+        let mut ctx = self.ctx.borrow_mut();
+        match ctx.eval_string(var) {
+            Ok(v) => Ok(renamed_defaults(&mut ctx, v).to_string()),
+            Err(e) => Err(e.format(&ctx)),
+        }
+    }
+
     /// Every registered microgrid's structural version, snapshotted
     /// before an eval so the save pass can tell which microgrids the
     /// eval actually moved. Pokes (power, health, modes) don't touch
@@ -309,7 +320,7 @@ impl Config {
             if value.null() {
                 continue;
             }
-            let value = crate::lisp::renames::rename_plist_value(ctx, &value).unwrap_or(value);
+            let value = renamed_defaults(ctx, value);
             let text = value.to_string();
             // format_with_width returns the source unchanged on
             // failure; either way the text re-reads as the same
@@ -364,6 +375,25 @@ impl Config {
     fn set_unsaved(&self, id: u64, unsaved: bool) {
         if let Some(entry) = self.microgrids.lock().get_mut(&id) {
             entry.unsaved = unsaved;
+        }
+    }
+}
+
+/// A `*-defaults` value with old keywords renamed. Only a list is
+/// renamed; any other value, and a list whose rename fails (the error
+/// is logged), comes back unchanged.
+fn renamed_defaults(
+    ctx: &mut tulisp::TulispContext,
+    value: tulisp::TulispObject,
+) -> tulisp::TulispObject {
+    if !value.consp() {
+        return value;
+    }
+    match super::renames::rename_plist_value(ctx, &value) {
+        Ok(renamed) => renamed,
+        Err(e) => {
+            log::warn!("a defaults list was kept as written: {}", e.format(ctx));
+            value
         }
     }
 }
@@ -477,6 +507,31 @@ mod tests {
                 .is_none()
         );
         assert_eq!(cfg.eval("(boundp 'http-race-probe)").unwrap(), "nil");
+    }
+
+    /// An `enterprise.lisp` with the old millisecond keyword
+    /// `:command-delay-ms 200` is saved back under the new names.
+    #[test]
+    fn old_defaults_are_saved_with_new_names() {
+        let (cfg, dir) = config_with("(setq battery-inverter-defaults '(:command-delay-ms 200))");
+        cfg.persist_enterprise().unwrap();
+        let text = std::fs::read_to_string(dir.join("enterprise.lisp")).unwrap();
+        assert!(text.contains(":command-delay-s 0.2"), "{text}");
+        assert!(!text.contains("command-delay-ms"), "{text}");
+    }
+
+    /// A `*-defaults` value that is not a list is written back as it
+    /// is, and a list that cannot be renamed keeps its old keywords.
+    #[test]
+    fn defaults_that_cannot_be_renamed_are_kept() {
+        let (cfg, dir) = config_with(
+            "(setq meter-defaults 7)
+             (setq battery-inverter-defaults '(:command-delay-ms \"soon\"))",
+        );
+        cfg.persist_enterprise().unwrap();
+        let text = std::fs::read_to_string(dir.join("enterprise.lisp")).unwrap();
+        assert!(text.contains("(setq meter-defaults\n      '7)"), "{text}");
+        assert!(text.contains(":command-delay-ms \"soon\""), "{text}");
     }
 
     /// A `(load "file")` eval records the file for reload replay

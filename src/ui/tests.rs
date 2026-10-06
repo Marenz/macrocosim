@@ -496,6 +496,25 @@ async fn format_endpoint_pretty_prints_lisp() {
     );
 }
 
+/// The Defaults panel shows old keywords under their new names.
+#[tokio::test]
+async fn defaults_endpoint_shows_new_keyword_names() {
+    let cfg = config_with("").await;
+    cfg.eval("(setq meter-defaults '(:interval 500))").unwrap();
+    let (status, body) = call(cfg, get("/api/defaults")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let meter = v["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["var_name"] == "meter-defaults")
+        .unwrap();
+    let value = meter["value"].as_str().unwrap();
+    assert!(value.contains(":interval-s 0.5"), "{value}");
+    assert!(!value.contains(":interval "), "{value}");
+}
+
 #[tokio::test]
 async fn format_endpoint_returns_400_on_parse_error() {
     let cfg = config_with("").await;

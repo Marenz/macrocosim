@@ -289,8 +289,8 @@ impl SimulatedComponent for EvCharger {
             (":rated-lower", lf(self.cfg.rated_lower_w)),
             (":rated-upper", lf(self.cfg.rated_upper_w)),
             (
-                ":command-delay-ms",
-                self.cfg.command_delay.as_millis().to_string(),
+                ":command-delay-s",
+                crate::lisp::lisp_float(self.cfg.command_delay.as_secs_f64()),
             ),
         ];
         if self.cfg.phases != 3 {
@@ -304,7 +304,10 @@ impl SimulatedComponent for EvCharger {
         }
         kw.extend(crate::sim::inverter::device_delay_kw(self.cfg.device_delay));
         if self.interval != Duration::from_millis(1000) {
-            kw.push((":interval", self.interval.as_millis().to_string()));
+            kw.push((
+                ":interval-s",
+                crate::lisp::lisp_float(self.interval.as_secs_f64()),
+            ));
         }
         if self.cfg.stream_jitter_pct != 0.0 {
             kw.push((":stream-jitter-pct", lf(self.cfg.stream_jitter_pct)));

@@ -676,7 +676,7 @@ mod tests {
             "None must pin as 0, got {s}"
         );
         assert!(!s.contains(":ramp-rate"), "infinite ramp is omitted");
-        assert!(s.contains(":command-delay-ms 0"));
+        assert!(s.contains(":command-delay-s 0.0"));
     }
 
     /// f32 config renders without widened-f64 noise.

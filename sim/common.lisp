@@ -167,7 +167,7 @@ a battery inverter charging at the highest power the live cap allows:
 The optional :id is a readability/label. The timer is tracked on
 `active-timers` so `reset-state` cancels it on reload.
 
-Cadence vs command-delay: each command takes :command-delay-ms to
+Cadence vs command-delay: each command takes :command-delay-s to
 execute, and while one executes only the newest incoming command waits
 for its turn. A controller that re-sends every :every-ms therefore
 trails the target by about one delay; re-sending faster than the delay

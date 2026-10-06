@@ -348,7 +348,10 @@ impl SimulatedComponent for Meter {
     fn constructor_kwargs(&self) -> Vec<(&'static str, String)> {
         let mut kw = Vec::new();
         if self.interval != Duration::from_millis(1000) {
-            kw.push((":interval", self.interval.as_millis().to_string()));
+            kw.push((
+                ":interval-s",
+                crate::lisp::lisp_float(self.interval.as_secs_f64()),
+            ));
         }
         if let Some(p) = self.constructed_power.read().filter(|p| p.is_finite()) {
             kw.push((":power", crate::lisp::lisp_float32(p)));

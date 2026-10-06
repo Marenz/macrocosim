@@ -237,7 +237,7 @@ mod tests {
          (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
                                    :reactive-pf-limit 0
                                    :reactive-apparent-va 5000.0
-                                   :reactive-command-delay-ms 0
+                                   :reactive-command-delay-s 0
                                    :reactive-ramp-rate 1e9
                                    :successors (list b1))";
 
@@ -416,7 +416,7 @@ mod tests {
              (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
                                        :reactive-pf-limit 0
                                        :reactive-apparent-va 5000.0
-                                       :reactive-command-delay-ms 0
+                                       :reactive-command-delay-s 0
                                        :reactive-ramp-rate 1e9
                                        :successors (list pv bat))",
         );
