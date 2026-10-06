@@ -4,8 +4,9 @@
 //! `dispatch`, `snapshot`, `pool`, `dashboard` and the scenario
 //! readouts (`summary`, `report`, `events`, `run --wait`); the
 //! default is the lowest id `GET /api/microgrids` reports. `scenario
-//! list`, `start`, `stop`, `event`, `load` and a run's start and stop
-//! are site-wide, and a scenario's work lands on the lowest
+//! list` and `load` are site-wide. `scenario start`, `stop` and a
+//! run's start and stop reach every microgrid's journal; `scenario
+//! event` and a scenario's checks and recordings land on the lowest
 //! microgrid, so `--assert` works only on that one.
 //!
 //! gRPC commands connect to the microgrid's server as the UI server
@@ -446,7 +447,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|e| format!("{e}; pass --microgrid-id"))?;
             run_dispatch(d, &cli.dispatch_addr, mg, cli.json).await
         }
-        Cmd::Scenario(s) => run_scenario(s, &cli.ui_addr, cli.microgrid_id, cli.json).await,
+        Cmd::Scenario(s) => {
+            let http = reqwest::Client::new();
+            run_scenario(&http, s, &cli.ui_addr, cli.microgrid_id, cli.json).await
+        }
         Cmd::Snapshot(s) => run_snapshot(s, &cli.ui_addr, cli.microgrid_id, cli.json).await,
         Cmd::Dashboard { tail, interval } => {
             run_dashboard(&cli.ui_addr, cli.microgrid_id, tail, interval).await
@@ -822,17 +826,9 @@ async fn grpc_endpoint(
     if let (Some(addr), None) = (addr, mg) {
         return Ok(addr.to_string());
     }
-    let resp = http
-        .get(format!("{ui_addr}/api/microgrids"))
-        .send()
+    let list = fetch_microgrids(http, ui_addr)
         .await
-        .map_err(|e| {
-            format!(
-                "cannot reach the UI server at {ui_addr} to find a microgrid ({e}); \
-                 pass --addr to connect directly"
-            )
-        })?;
-    let list: serde_json::Value = checked(resp).await?.json().await?;
+        .map_err(|e| format!("{e}; pass --addr to connect directly"))?;
     let (id, found) = pick_grpc_addr(&list, mg)?;
     if let Some(addr) = addr
         && !same_endpoint(addr, &found)
@@ -854,6 +850,39 @@ async fn resolve_microgrid_id(
     if let Some(id) = explicit {
         return Ok(id);
     }
+    let list = fetch_microgrids(http, ui_addr).await?;
+    lowest_id(&list).ok_or_else(|| "no microgrids registered".into())
+}
+
+/// The microgrid a live `scenario run --wait` or a `scenario report
+/// --assert` reads, from one read of `/api/microgrids`: `explicit`
+/// when the listing has it, otherwise the lowest id. With `assert`,
+/// [`assert_target`] checks it against the same listing.
+async fn resolve_scenario_mg(
+    http: &reqwest::Client,
+    ui_addr: &str,
+    explicit: Option<u64>,
+    assert: bool,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let list = fetch_microgrids(http, ui_addr).await?;
+    let mg = match explicit {
+        Some(id) if listed_ids(&list).any(|m| m == id) => id,
+        Some(id) => return Err(format!("microgrid {id} not registered").into()),
+        None => lowest_id(&list).ok_or("no microgrids registered")?,
+    };
+    if assert {
+        assert_target(&list, mg)?;
+    }
+    Ok(mg)
+}
+
+/// The UI server's `/api/microgrids` listing. A failed connect names
+/// the UI server; a failed response is an error as [`checked`]
+/// reports it.
+async fn fetch_microgrids(
+    http: &reqwest::Client,
+    ui_addr: &str,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let resp = http
         .get(format!("{ui_addr}/api/microgrids"))
         .send()
@@ -861,17 +890,22 @@ async fn resolve_microgrid_id(
         .map_err(|e| {
             format!("cannot reach the UI server at {ui_addr} to find a microgrid ({e})")
         })?;
-    let list: serde_json::Value = checked(resp).await?.json().await?;
-    lowest_id(&list).ok_or_else(|| "no microgrids registered".into())
+    Ok(checked(resp).await?.json().await?)
+}
+
+/// The microgrid ids in an `/api/microgrids` reply; none for a reply
+/// that is not a list.
+fn listed_ids(list: &serde_json::Value) -> impl Iterator<Item = u64> + '_ {
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.get("id")?.as_u64())
 }
 
 /// The lowest microgrid id in an `/api/microgrids` reply; `None` for
 /// an empty list or a reply that is not a list.
 fn lowest_id(list: &serde_json::Value) -> Option<u64> {
-    list.as_array()?
-        .iter()
-        .filter_map(|m| m.get("id")?.as_u64())
-        .min()
+    listed_ids(list).min()
 }
 
 /// Whether `--assert` on microgrid `mg` checks anything. A
@@ -885,18 +919,8 @@ fn assert_target(list: &serde_json::Value, mg: u64) -> Result<(), String> {
              --assert on microgrid {mg} would check nothing \
              (drop --microgrid-id or pass {lowest})"
         )),
-        _ => Ok(()),
+        Some(_) | None => Ok(()),
     }
-}
-
-/// [`assert_target`] against the UI server's microgrid listing.
-async fn check_assert_target(
-    http: &reqwest::Client,
-    ui_addr: &str,
-    mg: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let list = get_json(http, format!("{ui_addr}/api/microgrids")).await?;
-    Ok(assert_target(&list, mg)?)
 }
 
 async fn build_pool_line(
@@ -1062,15 +1086,15 @@ async fn fetch_print_assert_report(
 }
 
 async fn run_scenario(
+    http: &reqwest::Client,
     cmd: ScenarioCmd,
     ui_addr: &str,
     microgrid_id: Option<u64>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let http = reqwest::Client::new();
     match cmd {
         ScenarioCmd::List => {
-            let resp = get_json(&http, format!("{ui_addr}/api/scenarios")).await?;
+            let resp = get_json(http, format!("{ui_addr}/api/scenarios")).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             } else {
@@ -1114,68 +1138,42 @@ async fn run_scenario(
                 }
             } else {
                 // Live: start on the running server's wall clock.
-                if assert && !wait {
-                    return Err(
-                        "`--assert` on a live run needs `--wait` (or use `--stepped`)".into(),
-                    );
+                let start = format!("{ui_addr}/api/scenarios/{name}/start");
+                if !wait {
+                    if assert {
+                        return Err(
+                            "`--assert` on a live run needs `--wait` (or use `--stepped`)".into(),
+                        );
+                    }
+                    // Fire-and-forget; the run continues server-side.
+                    checked(http.post(start).send().await?).await?;
+                    println!("scenario run {name} (live)");
+                    return Ok(());
                 }
                 // The microgrid whose journal --wait polls and
-                // reports. One read of its journal makes an
-                // unregistered --microgrid-id fail before the start.
-                let mg = if wait {
-                    let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
-                    get_json(&http, format!("{ui_addr}/api/mg/{mg}/scenario")).await?;
-                    if assert {
-                        check_assert_target(&http, ui_addr, mg).await?;
-                    }
-                    Some(mg)
-                } else {
-                    None
-                };
+                // reports, checked against the listing before the
+                // start.
+                let mg = resolve_scenario_mg(http, ui_addr, microgrid_id, assert).await?;
                 // Resolve the wait length BEFORE starting, so a --wait on
                 // a scenario with no :length and no --until fails fast
                 // instead of leaving the run orphaned server-side with
                 // nothing to stop it.
-                let wait_secs = if wait {
-                    Some(match until {
-                        Some(s) => s,
-                        None => {
-                            // Default to the scenario's declared :length.
-                            let list = get_json(&http, format!("{ui_addr}/api/scenarios")).await?;
-                            let len = list
-                                .as_array()
-                                .and_then(|a| a.iter().find(|s| s["name"] == name.as_str()))
-                                .and_then(|s| s["length_s"].as_f64());
-                            match len {
-                                Some(l) => l.ceil() as u64,
-                                None => {
-                                    return Err(
-                                        "live `--wait` needs `--until` for a scenario with no :length"
-                                            .into(),
-                                    );
-                                }
-                            }
-                        }
-                    })
-                } else {
-                    None
+                let wait_secs = match until {
+                    Some(s) => s,
+                    None => {
+                        // Default to the scenario's declared :length.
+                        let list = get_json(http, format!("{ui_addr}/api/scenarios")).await?;
+                        list.as_array()
+                            .and_then(|a| a.iter().find(|s| s["name"] == name.as_str()))
+                            .and_then(|s| s["length_s"].as_f64())
+                            .ok_or("live `--wait` needs `--until` for a scenario with no :length")?
+                            .ceil() as u64
+                    }
                 };
-                checked(
-                    http.post(format!("{ui_addr}/api/scenarios/{name}/start"))
-                        .send()
-                        .await?,
-                )
-                .await?;
-                if !wait {
-                    // Fire-and-forget; the run continues server-side.
-                    println!("scenario run {name} (live)");
-                    return Ok(());
-                }
+                checked(http.post(start).send().await?).await?;
                 // --wait: block until the scenario finishes (the journal
                 // reports ended, or elapsed reaches the run length), then
                 // stop it so the report freezes + any CSV sinks flush.
-                let wait_secs = wait_secs.expect("wait ⇒ wait_secs resolved above");
-                let mg = mg.expect("wait ⇒ mg resolved above");
                 eprintln!("waiting up to {wait_secs}s for {name} to finish…");
                 let deadline = wait_secs + 5; // small grace past the run length
                 let mut waited = 0u64;
@@ -1216,7 +1214,7 @@ async fn run_scenario(
                 )
                 .await
                 .map_err(|e| format!("failed to stop scenario: {e}"))?;
-                fetch_print_assert_report(&http, ui_addr, mg, json, assert).await?;
+                fetch_print_assert_report(http, ui_addr, mg, json, assert).await?;
             }
         }
         ScenarioCmd::Start { name } => {
@@ -1224,7 +1222,7 @@ async fn run_scenario(
             // arbitrary expressions here on purpose — names are
             // labels, not code.
             eval(
-                &http,
+                http,
                 ui_addr,
                 &format!("(scenario-start {})", lisp_string(&name)),
             )
@@ -1232,7 +1230,7 @@ async fn run_scenario(
             println!("scenario-start {name}");
         }
         ScenarioCmd::Stop => {
-            eval(&http, ui_addr, "(scenario-stop)").await?;
+            eval(http, ui_addr, "(scenario-stop)").await?;
             println!("scenario-stopped");
         }
         ScenarioCmd::Event { kind, payload } => {
@@ -1255,7 +1253,7 @@ async fn run_scenario(
                 .into());
             }
             let id = eval(
-                &http,
+                http,
                 ui_addr,
                 &format!("(scenario-event '{kind} {})", lisp_string(&payload)),
             )
@@ -1263,23 +1261,24 @@ async fn run_scenario(
             println!("event id={id}");
         }
         ScenarioCmd::Load { path } => {
-            eval(&http, ui_addr, &format!("(load {})", lisp_string(&path))).await?;
+            eval(http, ui_addr, &format!("(load {})", lisp_string(&path))).await?;
             println!("loaded {path}");
         }
         ScenarioCmd::Summary => {
-            let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
-            let s = get_json(&http, format!("{ui_addr}/api/mg/{mg}/scenario")).await?;
+            let mg = resolve_microgrid_id(http, ui_addr, microgrid_id).await?;
+            let s = get_json(http, format!("{ui_addr}/api/mg/{mg}/scenario")).await?;
             print_summary(&s, json);
         }
         ScenarioCmd::Report { assert } => {
-            let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
-            if assert {
-                check_assert_target(&http, ui_addr, mg).await?;
-            }
-            fetch_print_assert_report(&http, ui_addr, mg, json, assert).await?;
+            let mg = if assert {
+                resolve_scenario_mg(http, ui_addr, microgrid_id, true).await?
+            } else {
+                resolve_microgrid_id(http, ui_addr, microgrid_id).await?
+            };
+            fetch_print_assert_report(http, ui_addr, mg, json, assert).await?;
         }
         ScenarioCmd::Events { since, limit } => {
-            let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
+            let mg = resolve_microgrid_id(http, ui_addr, microgrid_id).await?;
             let e = send_json(
                 http.get(format!("{ui_addr}/api/mg/{mg}/scenario/events"))
                     .query(&[("since", since.to_string()), ("limit", limit.to_string())]),
@@ -2042,13 +2041,18 @@ mod tests {
         );
     }
 
+    /// The requests a [`canned_ui_server`] got, each as `METHOD path`.
+    type Requests = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
     /// A UI server stand-in on 127.0.0.1 that answers each of `n`
     /// connections with `body` as a JSON 200, then stops. Returns its
-    /// base URL.
-    fn canned_ui_server(body: &'static str, n: usize) -> String {
+    /// base URL and the requests it got.
+    fn canned_ui_server(body: &'static str, n: usize) -> (String, Requests) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Requests::default();
+        let seen = requests.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming().take(n) {
                 let mut stream = stream.unwrap();
@@ -2061,6 +2065,9 @@ mod tests {
                     }
                     req.extend_from_slice(&buf[..got]);
                 }
+                let head = String::from_utf8_lossy(&req);
+                let line: Vec<&str> = head.split_whitespace().take(2).collect();
+                seen.lock().unwrap().push(line.join(" "));
                 let reply = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
                      content-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -2069,7 +2076,7 @@ mod tests {
                 stream.write_all(reply.as_bytes()).unwrap();
             }
         });
-        url
+        (url, requests)
     }
 
     fn test_client() -> reqwest::Client {
@@ -2092,7 +2099,7 @@ mod tests {
 
     #[tokio::test]
     async fn grpc_endpoint_checks_addr_against_the_microgrid() {
-        let ui = canned_ui_server(
+        let (ui, _) = canned_ui_server(
             r#"[{"id": 3, "runtime": {"status": "running", "grpc_addr": "[::1]:8803", "error": null}}]"#,
             2,
         );
@@ -2108,5 +2115,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(got, "http://[::1]:8803");
+    }
+
+    #[tokio::test]
+    async fn resolve_scenario_mg_checks_the_listing() {
+        let http = test_client();
+        let (ui, _) = canned_ui_server(r#"[{"id": 3}, {"id": 7}]"#, 1);
+        let err = resolve_scenario_mg(&http, &ui, Some(7), true)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "scenario checks land on microgrid 3, the lowest registered one; \
+             --assert on microgrid 7 would check nothing \
+             (drop --microgrid-id or pass 3)"
+        );
+        let (ui, _) = canned_ui_server(r#"[{"id": 3}]"#, 2);
+        let err = resolve_scenario_mg(&http, &ui, Some(9), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "microgrid 9 not registered");
+        let got = resolve_scenario_mg(&http, &ui, None, true).await.unwrap();
+        assert_eq!(got, 3);
+    }
+
+    #[tokio::test]
+    async fn scenario_run_wait_starts_nothing_on_an_unregistered_microgrid() {
+        // Room for a second request, so a start POST would be seen.
+        let (ui, requests) = canned_ui_server(r#"[{"id": 3}]"#, 2);
+        let cmd = ScenarioCmd::Run {
+            name: "s".to_string(),
+            stepped: false,
+            config: None,
+            step: None,
+            until: Some(1),
+            wait: true,
+            assert: false,
+        };
+        let err = run_scenario(&test_client(), cmd, &ui, Some(9), false)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "microgrid 9 not registered");
+        assert_eq!(*requests.lock().unwrap(), ["GET /api/microgrids"]);
     }
 }

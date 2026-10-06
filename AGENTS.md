@@ -369,10 +369,11 @@ data reaches the UI whether or not its public port is bound.
 macroctl's global `--microgrid-id` selects the microgrid for the
 gRPC commands, `dispatch`, `snapshot`, `pool`, `dashboard` and the
 scenario readouts (`summary`, `report`, `events`, `run --wait`);
-the default is the lowest id. `scenario list` / `start` / `stop` /
-`event` / `load` and a run's start and stop are site-wide, and a
-scenario's work lands on the lowest microgrid, so `--assert` works
-only on that one. `--addr` names the gRPC server directly; with
+the default is the lowest id. `scenario list` / `load` are
+site-wide. `scenario start` / `stop` and a run's start and stop
+reach every microgrid's journal; `scenario event` and a scenario's
+checks and recordings land on the lowest microgrid, so `--assert`
+works only on that one. `--addr` names the gRPC server directly; with
 `--microgrid-id` the lookup still runs and the two must agree. The
 UI server binds `127.0.0.1:8801` by default; override the
 port with `--ui-port N`, or pass `--ephemeral-ports` to bind the UI

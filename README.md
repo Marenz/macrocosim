@@ -105,16 +105,18 @@ macroctl --microgrid-id 2 info                                 # pick another mi
 `--microgrid-id` selects the microgrid for the gRPC commands,
 `dispatch`, `snapshot`, `pool`, `dashboard` and the scenario readouts
 (`summary`, `report`, `events`, `run --wait`); the default is the
-lowest id. `scenario list` / `start` / `stop` / `event` / `load` and
-a run's start and stop are site-wide, and a scenario's work lands on
-the lowest microgrid, so `--assert` works only on that one. `--addr`
+lowest id. `scenario list` / `load` are site-wide. `scenario start` /
+`stop` and a run's start and stop reach every microgrid's journal;
+`scenario event` and a scenario's checks and recordings land on the
+lowest microgrid, so `--assert` works only on that one. `--addr`
 names the gRPC server directly; with `--microgrid-id` the lookup
-still runs and the two must agree. `--ui-addr` (default `http://127.0.0.1:8801`) points at the
-UI server, which the HTTP-driven verbs (`scenario*`, `snapshot`,
-`dashboard`, `pool`) talk to. The gRPC commands ask it for the
-microgrid's address unless `--addr` alone is given, and `dispatch`
-asks it for the lowest microgrid id when `--microgrid-id` is not
-given. `--json` swaps any human table for the raw JSON.
+still runs and the two must agree. `--ui-addr` (default
+`http://127.0.0.1:8801`) points at the UI server, which the
+HTTP-driven verbs (`scenario*`, `snapshot`, `dashboard`, `pool`) talk
+to. The gRPC commands ask it for the microgrid's address unless
+`--addr` alone is given, and `dispatch` asks it for the lowest
+microgrid id when `--microgrid-id` is not given. `--json` swaps any
+human table for the raw JSON.
 
 The `scenario` subcommand covers both the ad-hoc journal verbs
 (start / stop / event / load / report / events / summary) and the

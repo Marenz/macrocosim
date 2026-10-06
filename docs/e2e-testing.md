@@ -123,6 +123,8 @@ zero command-delay so steady state is reached quickly.
   (headless) · `--wait [--until S]` (live) · `--assert` (gate).
 - `macroctl scenario report [--assert]`, `macroctl scenario list`,
   `macroctl --microgrid-id N --ui-addr …` (the global
-  `--microgrid-id` picks the microgrid, default the lowest id;
-  `--addr` optionally overrides the gRPC address).
+  `--microgrid-id` selects the microgrid for the readouts, default
+  the lowest id; `--assert` works only on the lowest microgrid,
+  where a scenario's checks land; `--addr` optionally overrides the
+  gRPC address).
 - [`scenarios/DESIGN.md`](../scenarios/DESIGN.md) — the scenario model.
