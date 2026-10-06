@@ -3223,8 +3223,7 @@ async fn weather_reports_unit_names() {
     ] {
         assert!(v.get(k).is_none(), "old {k} still in {v}");
     }
-    let gap = v["cloud_mean_gap_s"].as_f64().unwrap();
-    assert!((gap - 1200.0).abs() < 0.01, "{gap}");
+    assert_eq!(v["cloud_mean_gap_s"], 1200.0, "{v}");
 
     // The request takes the same names; an old one is refused.
     let (status, body) = call(
@@ -3238,7 +3237,17 @@ async fn weather_reports_unit_names() {
     assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["cloud_depth_pct"], serde_json::json!([10.0, 20.0]));
-    assert!((v["cloud_mean_gap_s"].as_f64().unwrap() - 600.0).abs() < 0.01);
+    assert_eq!(v["cloud_mean_gap_s"], 600.0, "{v}");
+    // The gap reads back exactly as it was given.
+    let (status, body) = call(
+        cfg.clone(),
+        post_json("/api/mg/2200/weather", r#"{"cloud_mean_gap_s": 13}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let (_, body) = call(cfg.clone(), get("/api/mg/2200/weather")).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["cloud_mean_gap_s"], 13.0, "{v}");
     let (status, body) = call_json(
         cfg.clone(),
         post_json("/api/mg/2200/weather", r#"{"cloud_depth": [10, 20]}"#),
@@ -3251,7 +3260,7 @@ async fn weather_reports_unit_names() {
         error_of(&body)
     );
     let (status, body) = call_json(
-        cfg,
+        cfg.clone(),
         post_json("/api/mg/2200/weather", r#"{"cloud_mean_gap_s": 0.5}"#),
     )
     .await;
@@ -3260,6 +3269,17 @@ async fn weather_reports_unit_names() {
         error_of(&body).contains("cloud_mean_gap_s"),
         "{}",
         error_of(&body)
+    );
+    let (status, body) = call_json(
+        cfg,
+        post_json("/api/mg/2200/weather", r#"{"cloud_mean_gap_s": 1e14}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let err = error_of(&body);
+    assert!(
+        err.contains("cloud_mean_gap_s") && err.contains("no more than 1000000000 s"),
+        "{err}"
     );
 }
 

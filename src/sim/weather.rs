@@ -8,7 +8,7 @@
 //! Cloud cover comes from two producers that both just push
 //! [`CloudEvent`]s onto the same list: an ambient Poisson-arrival
 //! generator (driven by [`Weather::advance`], when
-//! `cloud_rate_per_h` is configured) and a scripted door
+//! `cloud_mean_gap_s` is configured) and a scripted door
 //! ([`Weather::pass_cloud`]) for scenarios and the weather panel.
 //! [`Weather::pct_at`] multiplies every event's transmission
 //! together, so overlapping clouds compound.
@@ -23,6 +23,7 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 use crate::sim::{MicrogridSite, sim_clock::parse_time_of_day};
+use crate::timeout_tracker::deadline_after;
 
 /// How long an expired [`CloudEvent`] is kept in the list after it
 /// ends, so a lagged reader (an inverter reading `pct_at(now -
@@ -39,7 +40,7 @@ fn retention_margin() -> chrono::Duration {
 
 /// `Duration::from_secs_f32` panics on a negative, NaN, or overflowing
 /// input. The doors validate their inputs (`validate::secs_range`,
-/// `validate::cloud_rate`) before they ever reach here, but `Weather`
+/// `validate::cloud_mean_gap_s`) before they ever reach here, but `Weather`
 /// itself has no way to enforce that a caller went through a door —
 /// direct construction (tests, a future embedder) can hand it anything
 /// — so every conversion on the `advance` hot path saturates to `cap`
@@ -50,7 +51,7 @@ fn saturating_secs_to_duration(v: f32, cap: Duration) -> Duration {
 }
 
 /// Config for one [`Weather`] instance: the clear-sky window and the
-/// ambient cloud generator's rates and ranges.
+/// ambient cloud generator's mean gap and ranges.
 #[derive(Clone, Debug)]
 pub struct WeatherConfig {
     /// Time of day (UTC) the clear-sky curve turns on.
@@ -59,10 +60,11 @@ pub struct WeatherConfig {
     pub sunset: Duration,
     /// Clear-sky output at solar noon, in percent.
     pub peak_pct: f32,
-    /// Ambient cloud arrival rate, events per hour. `None` disables
-    /// the ambient generator — only scripted [`Weather::pass_cloud`]
+    /// Mean gap between ambient clouds, in seconds, as given. `None`,
+    /// or a gap under one second (which no door admits), disables the
+    /// ambient generator — only scripted [`Weather::pass_cloud`]
     /// events appear.
-    pub cloud_rate_per_h: Option<f32>,
+    pub cloud_mean_gap_s: Option<f64>,
     /// Uniform (min, max) range an ambient cloud's depth is drawn
     /// from, in percent.
     pub cloud_depth: (f32, f32),
@@ -83,7 +85,7 @@ impl Default for WeatherConfig {
             sunrise: parse_time_of_day("06:00").expect("valid literal"),
             sunset: parse_time_of_day("20:00").expect("valid literal"),
             peak_pct: 100.0,
-            cloud_rate_per_h: None,
+            cloud_mean_gap_s: None,
             cloud_depth: (20.0, 70.0),
             cloud_duration: (60.0, 600.0),
             cloud_ramp: (10.0, 60.0),
@@ -216,20 +218,12 @@ impl Weather {
     }
 
     /// Draw one exponential inter-arrival duration for a Poisson
-    /// process at `rate` events/hour.
-    fn exp_sample(rng: &mut SmallRng, rate: f32) -> Duration {
+    /// process with a mean gap of `gap_s` seconds.
+    fn exp_sample(rng: &mut SmallRng, gap_s: f64) -> Duration {
         let u: f32 = rng.gen_range(1e-6..1.0f32);
-        // Capped at the re-anchor bound: a gap that long is already
-        // past what `advance` will ever walk one arrival at a time
-        // (it re-anchors instead), so there is no behavioral
-        // difference between this and the true, unrepresentable gap —
-        // just the difference between saturating and panicking.
-        saturating_secs_to_duration(
-            -u.ln() / rate * 3600.0,
-            retention_margin()
-                .to_std()
-                .unwrap_or(Duration::from_secs(3600)),
-        )
+        // A sample too large for a `Duration` (only from a gap no door
+        // admits) saturates to `Duration::MAX`.
+        saturating_secs_to_duration(-u.ln() * gap_s as f32, Duration::MAX)
     }
 
     /// Draw a value uniformly from `(lo, hi)` (order-independent).
@@ -238,7 +232,7 @@ impl Weather {
         if hi <= lo { lo } else { rng.gen_range(lo..hi) }
     }
 
-    /// Materialize ambient cloud events (if `cloud_rate_per_h` is
+    /// Materialize ambient cloud events (if `cloud_mean_gap_s` is
     /// configured) up to `now`, then prune events that expired more
     /// than an hour ago.
     ///
@@ -258,11 +252,13 @@ impl Weather {
                 base = now;
             }
         }
-        if let Some(rate) = self.cfg.cloud_rate_per_h
-            && rate > 0.0
+        if let Some(gap_s) = self.cfg.cloud_mean_gap_s
+            && gap_s >= validate::MIN_GAP_S
         {
             if self.next_arrival.is_none() {
-                self.next_arrival = Some(base + Self::exp_sample(&mut self.rng, rate));
+                // An arrival at `MAX_UTC` never comes.
+                self.next_arrival =
+                    Some(deadline_after(base, Self::exp_sample(&mut self.rng, gap_s)));
             }
             while let Some(arrival) = self.next_arrival {
                 if arrival > now {
@@ -285,12 +281,16 @@ impl Weather {
                     ramp_out: ramp,
                     depth_pct: depth,
                 });
-                self.next_arrival = Some(arrival + Self::exp_sample(&mut self.rng, rate));
+                self.next_arrival = Some(deadline_after(
+                    arrival,
+                    Self::exp_sample(&mut self.rng, gap_s),
+                ));
             }
         } else {
-            // The ambient generator is off, so its arrival clock stops
-            // with it. Keeping a stale `next_arrival` while the anchor
-            // kept advancing would make the first `advance` after a
+            // The ambient generator is off (no gap, or one under
+            // `validate::MIN_GAP_S`), so its arrival clock stops with it.
+            // Keeping a stale `next_arrival` while the anchor kept
+            // advancing would make the first `advance` after a
             // re-enable grind the ENTIRE disabled gap through the loop
             // above one arrival at a time, materializing a backlog of
             // clouds that all started in the past. Clearing it
@@ -409,44 +409,42 @@ pub mod validate {
         Ok(())
     }
 
-    /// More than one cloud a second is not a sky, it's a typo — and
-    /// without an upper bound, a tiny positive rate near the other
-    /// end (e.g. `1e-30`) blows up `exp_sample`'s `-ln(u) / rate` the
-    /// same way an absurd `:cloud-duration-s` blows up the trapezoid.
-    pub const MAX_PER_H: f32 = 3_600.0;
-
-    /// Ambient cloud arrival rate: 0 is the natural "no ambient
-    /// clouds" spelling, but a NEGATIVE rate is a mistake, not a
-    /// second spelling of "off". Returns the config slot's own
-    /// `Option<f32>` shape: `Some` above zero, `None` at zero.
-    pub fn cloud_rate(v: f32) -> Result<Option<f32>, String> {
-        if !(v.is_finite() && v >= 0.0) {
-            return Err(format!("must be a non-negative rate (0 disables), got {v}"));
-        }
-        if v > MAX_PER_H {
-            return Err(format!(
-                "must be no more than {MAX_PER_H} (one cloud a second), got {v}"
-            ));
-        }
-        Ok(if v > 0.0 { Some(v) } else { None })
-    }
-
-    /// The ambient cloud rate (events per hour) for a mean gap in
-    /// seconds. Zero is "no ambient clouds" and gives a zero rate.
-    pub fn cloud_rate_for_gap(gap_s: f64) -> Result<f32, String> {
+    /// The ambient cloud mean gap in seconds, in the config slot's
+    /// own `Option<f64>` shape. A gap of 0 is the natural "no ambient
+    /// clouds" spelling and gives `None`; a NEGATIVE gap is a mistake,
+    /// not a second spelling of "off". A gap under [`MIN_GAP_S`] (more
+    /// than one cloud a second) is not a sky, it's a typo; one over
+    /// [`MAX_GAP_S`] is too.
+    pub fn cloud_mean_gap_s(gap_s: f64) -> Result<Option<f64>, String> {
         if gap_s == 0.0 {
-            return Ok(0.0);
+            return Ok(None);
         }
         if !(gap_s.is_finite() && gap_s >= 0.0) {
             return Err(format!(
                 "must be a non-negative number of seconds (0 disables), got {gap_s}"
             ));
         }
-        if gap_s < 1.0 {
-            return Err(format!("must be 0 or at least one second, got {gap_s}"));
+        if gap_s < MIN_GAP_S {
+            return Err(format!("must be 0 or at least {MIN_GAP_S} s, got {gap_s}"));
         }
-        Ok((3600.0 / gap_s) as f32)
+        if gap_s > MAX_GAP_S {
+            return Err(format!(
+                "must be no more than {MAX_GAP_S} s (about 31 years), got {gap_s}"
+            ));
+        }
+        Ok(Some(gap_s))
     }
+
+    /// The shortest ambient cloud mean gap, in seconds. More than one
+    /// cloud a second is not a sky, and a tiny gap would spin `advance`
+    /// on zero-length draws, so the doors refuse a positive gap below it
+    /// and `advance` treats one as off.
+    pub const MIN_GAP_S: f64 = 1.0;
+
+    /// The longest ambient cloud mean gap, in seconds (about 31
+    /// years). The longest draw from it (about 14 times the gap) stays
+    /// far inside the range of a `DateTime<Utc>`.
+    pub const MAX_GAP_S: f64 = 1e9;
 
     /// Checked after both land, so a form/request moving the whole
     /// window is judged on the pair it produces rather than the half
@@ -539,10 +537,9 @@ pub struct WeatherPatch {
     pub sunset: Option<Duration>,
     /// Clear-sky output at solar noon, percent.
     pub peak_pct: Option<f32>,
-    /// Ambient cloud arrival rate as the caller wrote it, before
-    /// [`validate::cloud_rate`] turns it into the config's own
-    /// `Option` shape (where zero means "off").
-    pub cloud_rate_per_h: Option<f32>,
+    /// Mean gap between ambient clouds, seconds, as the caller wrote
+    /// it; zero means "off".
+    pub cloud_mean_gap_s: Option<f64>,
     /// Ambient cloud depth `(lo, hi)`, percent.
     pub cloud_depth: Option<(f32, f32)>,
     /// Ambient cloud total duration `(lo, hi)`, seconds.
@@ -582,13 +579,10 @@ impl WeatherPatch {
             validate::peak_pct(v).map_err(|e| format!("{at} {e}"))?;
             cfg.peak_pct = v;
         }
-        if let Some(v) = self.cloud_rate_per_h {
-            // 0 is the natural "no ambient clouds" spelling from Lisp,
-            // where `None` has no keyword of its own — but a NEGATIVE
-            // rate is a mistake, not a second spelling of "off", so it
-            // says so rather than silently disabling the generator.
+        if let Some(gap_s) = self.cloud_mean_gap_s {
             let at = door.label(":cloud-mean-gap-s", "cloud_mean_gap_s", true);
-            cfg.cloud_rate_per_h = validate::cloud_rate(v).map_err(|e| format!("{at} {e}"))?;
+            cfg.cloud_mean_gap_s =
+                validate::cloud_mean_gap_s(gap_s).map_err(|e| format!("{at} {e}"))?;
         }
         if let Some(range) = self.cloud_depth {
             let at = door.label(":cloud-depth-pct", "cloud_depth_pct", false);
@@ -749,7 +743,7 @@ mod tests {
     fn seeded_generator_is_reproducible() {
         let mk = |seed| {
             let mut w = Weather::new(WeatherConfig {
-                cloud_rate_per_h: Some(30.0),
+                cloud_mean_gap_s: Some(120.0),
                 seed,
                 ..Default::default()
             });
@@ -775,7 +769,7 @@ mod tests {
     #[test]
     fn generator_tolerates_clock_steps() {
         let mut w = Weather::new(WeatherConfig {
-            cloud_rate_per_h: Some(60.0),
+            cloud_mean_gap_s: Some(60.0),
             seed: Some(1),
             ..Default::default()
         });
@@ -789,18 +783,18 @@ mod tests {
         assert_eq!(gained, 0, "a >1 h leap re-anchors instead of backfilling");
     }
 
-    /// Turning `cloud_rate_per_h` off stops the arrival clock with
+    /// Turning `cloud_mean_gap_s` off stops the arrival clock with
     /// it. Without that, `next_arrival` stays pinned at the moment
-    /// the rate went off while the anchor keeps advancing, and the
+    /// the generator went off while the anchor keeps advancing, and the
     /// first `advance` after a re-enable walks the whole disabled gap
     /// one arrival at a time — a day off at 30/h is ~720 loop
     /// iterations, one cloud each, all started back in the gap (most
     /// then immediately pruned, so the only visible trace is a burst
     /// of retroactive attenuation).
     #[test]
-    fn disabling_the_cloud_rate_re_anchors_the_next_arrival() {
+    fn disabling_the_cloud_gap_re_anchors_the_next_arrival() {
         let mut w = Weather::new(WeatherConfig {
-            cloud_rate_per_h: Some(30.0),
+            cloud_mean_gap_s: Some(120.0),
             seed: Some(3),
             ..Default::default()
         });
@@ -808,10 +802,10 @@ mod tests {
         w.advance(start);
         w.advance(start + chrono::Duration::minutes(10));
 
-        // Rate off, then a simulated day of ordinary ticks — each one
+        // Generator off, then a simulated day of ordinary ticks — each one
         // well inside the re-anchor bound, so nothing else clears
         // `next_arrival` on the way through.
-        w.config_mut().cloud_rate_per_h = None;
+        w.config_mut().cloud_mean_gap_s = None;
         let gap_end = start + chrono::Duration::days(1);
         let mut t = start + chrono::Duration::minutes(15);
         while t <= gap_end {
@@ -820,11 +814,11 @@ mod tests {
         }
         assert!(
             w.events().is_empty(),
-            "a disabled rate produces no clouds at all"
+            "a disabled generator produces no clouds at all"
         );
 
         // Re-enabled: one advance re-anchors rather than backfilling.
-        w.config_mut().cloud_rate_per_h = Some(30.0);
+        w.config_mut().cloud_mean_gap_s = Some(120.0);
         let resume = gap_end + chrono::Duration::minutes(1);
         w.advance(resume);
         assert!(
@@ -915,16 +909,13 @@ mod tests {
     /// Direct construction bypasses the doors — nothing stops a test
     /// or a future embedder from handing `Weather::new` a config the
     /// validators would have rejected. `advance` must degrade rather
-    /// than panic even then: an absurd `cloud_duration` upper bound
-    /// and a vanishing `cloud_rate_per_h` (which blows up
-    /// `exp_sample`'s `-ln(u)/rate` the same way) must not kill the
-    /// physics tick that calls this.
+    /// than panic even then: an absurd `cloud_mean_gap_s` (which
+    /// blows up `exp_sample`'s `-ln(u) * gap`) must not kill the
+    /// physics tick that calls this. Such a gap gives no clouds.
     #[test]
-    fn advance_does_not_panic_on_absurd_config_bypassing_the_doors() {
+    fn advance_does_not_panic_on_an_absurd_gap_bypassing_the_doors() {
         let mut w = Weather::new(WeatherConfig {
-            cloud_rate_per_h: Some(1e-30),
-            cloud_duration: (1e30, 1e30),
-            cloud_ramp: (1e30, 1e30),
+            cloud_mean_gap_s: Some(1e30),
             seed: Some(1),
             ..Default::default()
         });
@@ -934,5 +925,75 @@ mod tests {
             w.advance(t); // must not panic
             t += chrono::Duration::minutes(30);
         }
+        assert!(w.events().is_empty());
+    }
+
+    /// An absurd `cloud_duration` / `cloud_ramp` upper bound, given by
+    /// direct construction, is capped at a day instead of panicking in
+    /// the `Duration` conversion. The duration and each ramp are capped
+    /// on their own, so each part of a cloud lasts at most a day.
+    #[test]
+    fn advance_caps_an_absurd_cloud_duration_and_ramp_at_a_day() {
+        let mut w = Weather::new(WeatherConfig {
+            cloud_mean_gap_s: Some(60.0),
+            cloud_duration: (1e30, 1e30),
+            cloud_ramp: (1e30, 1e30),
+            seed: Some(1),
+            ..Default::default()
+        });
+        let mut t = at(0, 0);
+        let end = at(1, 0);
+        while t <= end {
+            w.advance(t); // must not panic
+            t += chrono::Duration::minutes(5);
+        }
+        assert!(!w.events().is_empty(), "a 60 s gap adds clouds in an hour");
+        let day = Duration::from_secs_f32(validate::MAX_SECS);
+        for e in w.events() {
+            for part in [e.ramp_in, e.plateau, e.ramp_out] {
+                assert!(part <= day, "a cloud part lasts {part:?}, more than a day");
+            }
+        }
+    }
+
+    /// A gap under `validate::MIN_GAP_S`, given by direct construction,
+    /// is off: `advance` adds no clouds. A gap of exactly the minimum
+    /// runs the generator.
+    #[test]
+    fn advance_runs_from_the_minimum_gap_and_treats_a_shorter_one_as_off() {
+        let run = |gap| {
+            let mut w = Weather::new(WeatherConfig {
+                cloud_mean_gap_s: Some(gap),
+                seed: Some(1),
+                ..Default::default()
+            });
+            w.advance(at(12, 0));
+            w.advance(at(12, 10));
+            w
+        };
+        assert!(!run(validate::MIN_GAP_S).events().is_empty());
+        assert!(run(0.5).events().is_empty());
+    }
+
+    /// A gap of 1e14 s fits a `Duration` but its draws land past the
+    /// last `DateTime<Utc>`. `advance` parks the next arrival at
+    /// `MAX_UTC` instead of panicking, and adds no clouds.
+    #[test]
+    fn advance_parks_an_arrival_past_the_calendar_at_max_utc() {
+        let mut parked = 0;
+        for seed in 0..8 {
+            let mut w = Weather::new(WeatherConfig {
+                cloud_mean_gap_s: Some(1e14),
+                seed: Some(seed),
+                ..Default::default()
+            });
+            w.advance(at(12, 0)); // must not panic
+            w.advance(at(12, 10));
+            assert!(w.events().is_empty(), "seed {seed}");
+            if w.next_arrival == Some(DateTime::<Utc>::MAX_UTC) {
+                parked += 1;
+            }
+        }
+        assert!(parked > 0, "no seed drew past the calendar");
     }
 }

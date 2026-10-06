@@ -28,9 +28,9 @@ pub(in crate::ui) struct WeatherResponse {
     sunrise: String,
     sunset: String,
     peak_pct: f32,
-    /// Mean seconds between ambient clouds; `None` when the site has
-    /// no ambient clouds.
-    cloud_mean_gap_s: Option<f32>,
+    /// Mean seconds between ambient clouds, as last set; `None` when
+    /// the site has no ambient clouds.
+    cloud_mean_gap_s: Option<f64>,
     cloud_depth_pct: (f32, f32),
     cloud_duration_s: (f32, f32),
     cloud_ramp_s: (f32, f32),
@@ -74,7 +74,7 @@ fn snapshot(site: &crate::sim::MicrogridSite) -> Option<WeatherResponse> {
             sunrise: fmt_hhmm(cfg.sunrise),
             sunset: fmt_hhmm(cfg.sunset),
             peak_pct: cfg.peak_pct,
-            cloud_mean_gap_s: cfg.cloud_rate_per_h.map(|rate| 3600.0 / rate),
+            cloud_mean_gap_s: cfg.cloud_mean_gap_s,
             cloud_depth_pct: cfg.cloud_depth,
             cloud_duration_s: cfg.cloud_duration,
             cloud_ramp_s: cfg.cloud_ramp,
@@ -172,13 +172,7 @@ fn patch_of(req: &WeatherPostRequest) -> Result<WeatherPatch, String> {
             .map(|s| hhmm_field("sunset", s))
             .transpose()?,
         peak_pct: req.peak_pct.map(|v| v as f32),
-        cloud_rate_per_h: req
-            .cloud_mean_gap_s
-            .map(|gap_s| {
-                weather::validate::cloud_rate_for_gap(gap_s)
-                    .map_err(|e| format!("cloud_mean_gap_s: {e}"))
-            })
-            .transpose()?,
+        cloud_mean_gap_s: req.cloud_mean_gap_s,
         cloud_depth: req.cloud_depth_pct,
         cloud_duration: req.cloud_duration_s,
         cloud_ramp: req.cloud_ramp_s,

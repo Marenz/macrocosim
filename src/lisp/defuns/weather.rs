@@ -75,13 +75,6 @@ fn range_arg(kw: &str, v: &LispValue) -> Result<(f32, f32), Error> {
     )))
 }
 
-/// The ambient cloud rate, events per hour, for a mean gap in seconds.
-/// Zero is "no ambient clouds"; the weather model takes the rate.
-fn cloud_rate_per_h(form: &str, gap_s: f64) -> Result<f32, Error> {
-    crate::sim::weather::validate::cloud_rate_for_gap(gap_s)
-        .map_err(|e| Error::invalid_argument(format!("{form}: :cloud-mean-gap-s {e}")))
-}
-
 /// A time-of-day kwarg: an `"HH:MM"` string, or a bare number of
 /// seconds since midnight. The number spelling matches what
 /// `(parse-time-of-day)` already accepts, so a scenario can compute
@@ -108,7 +101,7 @@ fn time_of_day_arg(kw: &str, v: &LispValue) -> Result<Duration, Error> {
 /// seconds for a time, a number or a `(lo hi)` list for a range. The
 /// fold order, the numeric validation and the sunrise/sunset pair
 /// check all belong to the patch, shared with the HTTP weather route.
-fn patch_args(a: &WeatherArgs, form: &str) -> Result<WeatherPatch, Error> {
+fn patch_args(a: &WeatherArgs) -> Result<WeatherPatch, Error> {
     let range = |kw, v: &Option<LispValue>| v.as_ref().map(|v| range_arg(kw, v)).transpose();
     Ok(WeatherPatch {
         sunrise: a
@@ -122,10 +115,7 @@ fn patch_args(a: &WeatherArgs, form: &str) -> Result<WeatherPatch, Error> {
             .map(|v| time_of_day_arg(":sunset", v))
             .transpose()?,
         peak_pct: a.peak_pct.map(|v| v as f32),
-        cloud_rate_per_h: a
-            .cloud_mean_gap_s
-            .map(|g| cloud_rate_per_h(form, g))
-            .transpose()?,
+        cloud_mean_gap_s: a.cloud_mean_gap_s,
         cloud_depth: range(":cloud-depth-pct", &a.cloud_depth_pct)?,
         cloud_duration: range(":cloud-duration-s", &a.cloud_duration_s)?,
         cloud_ramp: range(":cloud-ramp-s", &a.cloud_ramp_s)?,
@@ -144,7 +134,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
         move |args: tulisp::Plist<Renamed<WeatherArgs>>| -> Result<bool, Error> {
             let a = args.into_inner().0;
             let mut cfg = WeatherConfig::default();
-            patch_args(&a, "make-weather")?
+            patch_args(&a)?
                 .apply_to(&mut cfg, WeatherDoor::Lisp("make-weather"))
                 .map_err(Error::invalid_argument)?;
             r.site().set_weather(Some(Weather::new(cfg)));
@@ -167,7 +157,7 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
         "set-weather",
         move |args: tulisp::Plist<Renamed<WeatherArgs>>| -> Result<bool, Error> {
             let a = args.into_inner().0;
-            patch_args(&a, "set-weather")?
+            patch_args(&a)?
                 .install(&r.site(), WeatherDoor::Lisp("set-weather"))
                 .map_err(Error::invalid_argument)?;
             Ok(true)
@@ -291,7 +281,7 @@ mod tests {
             .with_weather(|w| {
                 let c = w.config();
                 assert_eq!(c.peak_pct, 80.0);
-                assert_eq!(c.cloud_rate_per_h, Some(3.0));
+                assert_eq!(c.cloud_mean_gap_s, Some(1200.0));
                 assert_eq!(c.cloud_depth, (40.0, 40.0));
                 assert_eq!(c.cloud_duration, (120.0, 120.0));
                 assert_eq!(c.cloud_ramp, (30.0, 30.0));
@@ -315,13 +305,13 @@ mod tests {
             old.eval("(weather-status)").unwrap(),
             new.eval("(weather-status)").unwrap()
         );
-        let rate = |c: &crate::lisp::Config| {
+        let gap = |c: &crate::lisp::Config| {
             c.site()
-                .with_weather(|w| w.config().cloud_rate_per_h)
+                .with_weather(|w| w.config().cloud_mean_gap_s)
                 .unwrap()
         };
-        assert_eq!(rate(&old), rate(&new));
-        assert_eq!(rate(&old), Some(3.0));
+        assert_eq!(gap(&old), gap(&new));
+        assert_eq!(gap(&old), Some(1200.0));
     }
 
     /// A zero mean gap is "no ambient clouds", from either spelling.
@@ -329,17 +319,17 @@ mod tests {
     fn a_zero_cloud_mean_gap_means_no_ambient_clouds() {
         let (cfg, _dir) = config_with("");
         cfg.eval("(make-weather :cloud-mean-gap-s 1200)").unwrap();
-        let rate = || {
+        let gap = || {
             cfg.site()
-                .with_weather(|w| w.config().cloud_rate_per_h)
+                .with_weather(|w| w.config().cloud_mean_gap_s)
                 .unwrap()
         };
-        assert_eq!(rate(), Some(3.0));
+        assert_eq!(gap(), Some(1200.0));
         cfg.eval("(set-weather :cloud-mean-gap-s 0)").unwrap();
-        assert_eq!(rate(), None);
+        assert_eq!(gap(), None);
         cfg.eval("(set-weather :cloud-mean-gap-s 1200)").unwrap();
         cfg.eval("(set-weather :cloud-rate 0)").unwrap();
-        assert_eq!(rate(), None);
+        assert_eq!(gap(), None);
     }
 
     /// `(weather-status)` on a site with no weather is `nil`, not an
@@ -370,7 +360,7 @@ mod tests {
             let c = w.config();
             assert_eq!(c.sunrise, Duration::from_secs(5 * 3600), "kept :sunrise");
             assert_eq!(c.peak_pct, 80.0, "kept :peak-pct");
-            assert_eq!(c.cloud_rate_per_h, Some(6.0));
+            assert_eq!(c.cloud_mean_gap_s, Some(600.0));
             assert_eq!(c.cloud_depth, (20.0, 70.0), "(lo hi) list");
             assert_eq!(c.cloud_ramp, (15.0, 15.0), "a bare number is a fixed value");
         })
@@ -432,13 +422,13 @@ mod tests {
         cfg.site()
             .with_weather(|w| {
                 assert_eq!(w.config().peak_pct, 100.0);
-                assert_eq!(w.config().cloud_rate_per_h, None);
+                assert_eq!(w.config().cloud_mean_gap_s, None);
             })
             .unwrap();
         // 0 stays the "no ambient clouds" spelling.
         cfg.eval("(set-weather :cloud-mean-gap-s 0)").unwrap();
         cfg.site()
-            .with_weather(|w| assert_eq!(w.config().cloud_rate_per_h, None))
+            .with_weather(|w| assert_eq!(w.config().cloud_mean_gap_s, None))
             .unwrap();
     }
 
@@ -448,7 +438,8 @@ mod tests {
     /// panic `Duration::from_secs_f32` inside `Weather::advance` on the
     /// physics task. A `:cloud-mean-gap-s` under 1 s is refused too: it
     /// is a typo, and a vanishing one would make `advance` add clouds
-    /// without end.
+    /// without end. So is one over `MAX_GAP_S`, whose draws would land
+    /// past the last `DateTime<Utc>`.
     #[test]
     fn absurd_magnitude_cloud_config_is_rejected_at_the_door() {
         let (cfg, _dir) = config_with("");
@@ -465,10 +456,17 @@ mod tests {
             let err = cfg.eval(form).unwrap_err();
             assert!(err.contains(needle), "{form} → {err}");
         }
+        let err = cfg
+            .eval("(set-weather :cloud-mean-gap-s 1e14)")
+            .unwrap_err();
+        assert!(
+            err.contains(":cloud-mean-gap-s") && err.contains("no more than 1000000000 s"),
+            "{err}"
+        );
         // The live weather survived every rejection — no ambient
         // generator was ever armed with the absurd config.
         cfg.site()
-            .with_weather(|w| assert_eq!(w.config().cloud_rate_per_h, None))
+            .with_weather(|w| assert_eq!(w.config().cloud_mean_gap_s, None))
             .unwrap();
     }
 
