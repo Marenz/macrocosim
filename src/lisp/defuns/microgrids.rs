@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tulisp::{TulispContext, TulispObject};
 
+use crate::lisp::renames::Renamed;
 use crate::sim::MicrogridSite;
 
 tulisp::AsPlist! {
@@ -164,9 +165,9 @@ pub(in crate::lisp) fn register(
     ctx.defun(
         "make-microgrid",
         move |ctx: &mut TulispContext,
-              args: tulisp::Plist<MakeMicrogridArgs>|
+              args: tulisp::Plist<Renamed<MakeMicrogridArgs>>|
               -> Result<i64, tulisp::Error> {
-            let a = args.into_inner();
+            let a = args.into_inner().0;
             // `as u16` would silently wrap ports > 65535 onto a
             // different port — validate the range up front.
             if let Some(p) = a.grpc_port

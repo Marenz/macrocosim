@@ -24,6 +24,7 @@ pub mod handle;
 pub mod make;
 pub mod microgrid_file;
 mod overrides;
+pub(crate) mod renames;
 pub mod runtime_modes;
 mod snapshots;
 mod undo;

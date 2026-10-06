@@ -279,6 +279,7 @@ impl Config {
             now.clone(),
         );
         defuns::register_frequency(&mut ctx, grid_frequency.clone());
+        crate::lisp::renames::register(&mut ctx);
 
         // tulisp-async gives the config DSL access to run-with-timer,
         // cancel-timer, sleep-for and friends, used to drive

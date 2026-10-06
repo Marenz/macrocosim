@@ -309,6 +309,7 @@ impl Config {
             if value.null() {
                 continue;
             }
+            let value = crate::lisp::renames::rename_plist_value(ctx, &value).unwrap_or(value);
             let text = value.to_string();
             // format_with_width returns the source unchanged on
             // failure; either way the text re-reads as the same

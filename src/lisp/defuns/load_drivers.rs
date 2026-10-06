@@ -15,6 +15,7 @@
 use tulisp::{AsPlist, Error, Plist, TulispContext, TulispObject};
 
 use crate::lisp::make::preset_from_lisp;
+use crate::lisp::renames::Renamed;
 use crate::lisp::value::LispValue;
 use crate::sim::component::KnobKind;
 use crate::sim::ev_presets::{ConnectedEv, EvOverrides, PRESETS};
@@ -452,8 +453,8 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     let r = router.clone();
     ctx.defun(
         "%plug-ev",
-        move |args: Plist<PlugEvArgs>| -> Result<bool, Error> {
-            let a = args.into_inner();
+        move |args: Plist<Renamed<PlugEvArgs>>| -> Result<bool, Error> {
+            let a = args.into_inner().0;
             let w = r.site();
             let id = a
                 .id

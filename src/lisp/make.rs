@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use tulisp::{AsPlist, Error, Plist, TulispContext};
 
+use crate::lisp::renames::Renamed;
 use crate::lisp::value::LispValue;
 use crate::sim::{
     Battery, BatteryInverter, Category, ComponentHandle, EvCharger, Grid, Marker, Meter,
@@ -301,9 +302,9 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
     let r = router.clone();
     ctx.defun(
         "%make-grid-connection-point",
-        move |_ctx: &mut TulispContext, args: Plist<GridArgs>| {
+        move |_ctx: &mut TulispContext, args: Plist<Renamed<GridArgs>>| {
             let w = r.site();
-            let a = args.into_inner();
+            let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
             let rated_active_bounds = match (a.rated_lower, a.rated_upper) {
                 (Some(l), Some(u)) => Some((l as f32, u as f32)),
@@ -354,9 +355,9 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
     let r = router.clone();
     ctx.defun(
         "%make-meter",
-        move |_ctx: &mut TulispContext, args: Plist<MeterArgs>| {
+        move |_ctx: &mut TulispContext, args: Plist<Renamed<MeterArgs>>| {
             let w = r.site();
-            let a = args.into_inner();
+            let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
             let interval = ms_to_duration(a.interval, 1000);
             let hidden = a.hidden.unwrap_or(false);
@@ -397,9 +398,9 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
     let r = router.clone();
     ctx.defun(
         "%make-battery",
-        move |_ctx: &mut TulispContext, args: Plist<BatteryArgs>| {
+        move |_ctx: &mut TulispContext, args: Plist<Renamed<BatteryArgs>>| {
             let w = r.site();
-            let a = args.into_inner();
+            let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
             let interval = ms_to_duration(a.interval, 1000);
             let mut cfg = BatteryConfig::default();
@@ -446,9 +447,9 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
     let r = router.clone();
     ctx.defun(
         "%make-battery-inverter",
-        move |_ctx: &mut TulispContext, args: Plist<BatteryInverterArgs>| {
+        move |_ctx: &mut TulispContext, args: Plist<Renamed<BatteryInverterArgs>>| {
             let w = r.site();
-            let a = args.into_inner();
+            let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
             let interval = ms_to_duration(a.interval, 1000);
             let mut cfg = BatteryInverterConfig::default();
@@ -498,9 +499,9 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
     let r = router.clone();
     ctx.defun(
         "%make-solar-inverter",
-        move |_ctx: &mut TulispContext, args: Plist<SolarInverterArgs>| {
+        move |_ctx: &mut TulispContext, args: Plist<Renamed<SolarInverterArgs>>| {
             let w = r.site();
-            let a = args.into_inner();
+            let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
             let interval = ms_to_duration(a.interval, 1000);
             let mut cfg = SolarInverterConfig::default();
@@ -624,9 +625,9 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
     let r = router.clone();
     ctx.defun(
         "%make-ev-charger",
-        move |_ctx: &mut TulispContext, args: Plist<EvChargerArgs>| {
+        move |_ctx: &mut TulispContext, args: Plist<Renamed<EvChargerArgs>>| {
             let w = r.site();
-            let a = args.into_inner();
+            let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
             let interval = ms_to_duration(a.interval, 1000);
             let mut cfg = EvChargerConfig::default();
@@ -704,9 +705,9 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
     let r = router.clone();
     ctx.defun(
         "%make-steam-boiler",
-        move |_ctx: &mut TulispContext, args: Plist<SteamBoilerArgs>| {
+        move |_ctx: &mut TulispContext, args: Plist<Renamed<SteamBoilerArgs>>| {
             let w = r.site();
-            let a = args.into_inner();
+            let a = args.into_inner().0;
             let id = id_or_next(&r, &w, a.id)?;
             let interval = ms_to_duration(a.interval, 1000);
             let mut cfg = SteamBoilerConfig::default();
@@ -794,9 +795,9 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
         let r = router.clone();
         ctx.defun(
             form,
-            move |_ctx: &mut TulispContext, args: Plist<MarkerArgs>| {
+            move |_ctx: &mut TulispContext, args: Plist<Renamed<MarkerArgs>>| {
                 let w = r.site();
-                let a = args.into_inner();
+                let a = args.into_inner().0;
                 let id = id_or_next(&r, &w, a.id)?;
                 let jitter = a.stream_jitter_pct.unwrap_or(0.0) as f32;
                 let h = register_with_modes(

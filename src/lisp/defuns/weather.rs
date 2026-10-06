@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use tulisp::{Error, TulispContext, TulispObject};
 
+use crate::lisp::renames::Renamed;
 use crate::lisp::value::LispValue;
 use crate::sim::microgrids::SharedSiteRouter;
 use crate::sim::sim_clock::parse_time_of_day;
@@ -129,8 +130,8 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     let r = router.clone();
     ctx.defun(
         "make-weather",
-        move |args: tulisp::Plist<WeatherArgs>| -> Result<bool, Error> {
-            let a = args.into_inner();
+        move |args: tulisp::Plist<Renamed<WeatherArgs>>| -> Result<bool, Error> {
+            let a = args.into_inner().0;
             let mut cfg = WeatherConfig::default();
             patch_args(&a)?
                 .apply_to(&mut cfg, WeatherDoor::Lisp("make-weather"))
@@ -153,8 +154,8 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
     let r = router.clone();
     ctx.defun(
         "set-weather",
-        move |args: tulisp::Plist<WeatherArgs>| -> Result<bool, Error> {
-            let a = args.into_inner();
+        move |args: tulisp::Plist<Renamed<WeatherArgs>>| -> Result<bool, Error> {
+            let a = args.into_inner().0;
             patch_args(&a)?
                 .install(&r.site(), WeatherDoor::Lisp("set-weather"))
                 .map_err(Error::invalid_argument)?;

@@ -8,6 +8,7 @@
 
 use tulisp::{Error, TulispContext, TulispObject};
 
+use crate::lisp::renames::Renamed;
 use crate::sim::history::Metric;
 use crate::sim::microgrids::SharedSiteRouter;
 use crate::sim::scenario::ScenarioCheck;
@@ -100,9 +101,9 @@ pub(in crate::lisp) fn register_registry(
     ctx.defun(
         "define-scenario",
         move |_ctx: &mut TulispContext,
-              args: tulisp::Plist<DefineScenarioArgs>|
+              args: tulisp::Plist<Renamed<DefineScenarioArgs>>|
               -> Result<String, tulisp::Error> {
-            let a = args.into_inner();
+            let a = args.into_inner().0;
 
             let schedule = match opt_form(a.schedule) {
                 None => Schedule::Relative,
@@ -452,9 +453,9 @@ pub(super) fn register_lifecycle(
     ctx.defun(
         "scenario-expect",
         move |_ctx: &mut TulispContext,
-              args: tulisp::Plist<ScenarioExpectArgs>|
+              args: tulisp::Plist<Renamed<ScenarioExpectArgs>>|
               -> Result<bool, Error> {
-            let a = args.into_inner();
+            let a = args.into_inner().0;
             let metric_obj = a.metric.into_inner();
             let metric_name = sym_name(&metric_obj)?;
             let metric = parse_expect_metric(&metric_name).ok_or_else(|| {

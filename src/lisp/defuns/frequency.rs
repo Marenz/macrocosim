@@ -4,6 +4,8 @@
 
 use tulisp::{Error, TulispContext};
 
+use crate::lisp::renames::Renamed;
+
 tulisp::AsPlist! {
     /// Plist payload for `(set-frequency-model …)`. Every field
     /// optional — only the keys the caller passes are touched.
@@ -77,8 +79,8 @@ pub(in crate::lisp) fn register(
     let s = state.clone();
     ctx.defun(
         "set-frequency-model",
-        move |args: tulisp::Plist<FrequencyModelArgs>| -> Result<bool, Error> {
-            let a = args.into_inner();
+        move |args: tulisp::Plist<Renamed<FrequencyModelArgs>>| -> Result<bool, Error> {
+            let a = args.into_inner().0;
             apply_overrides(&mut s.write().base, &a);
             Ok(true)
         },
@@ -87,8 +89,8 @@ pub(in crate::lisp) fn register(
     let s = state.clone();
     ctx.defun(
         "override-frequency-model",
-        move |args: tulisp::Plist<FrequencyModelArgs>| -> Result<bool, Error> {
-            let a = args.into_inner();
+        move |args: tulisp::Plist<Renamed<FrequencyModelArgs>>| -> Result<bool, Error> {
+            let a = args.into_inner().0;
             let mut g = s.write();
             // Missing keys inherit from the currently-active model:
             // the existing override if there is one (so repeated
