@@ -66,10 +66,10 @@ exercises the simulator:
 | `(augment-reactive-bounds ID BOUNDS &key :lifetime-s)` | same for the reactive axis |
 | `(set-meter-reactive-power ID VAL)`    | drive a meter's `:reactive-power-var` (number / lambda / `'symbol`)  |
 | `(set-meter-power-factor ID PF &OPTIONAL LEADING)` | drive a meter's `:power-factor` (true cos φ in `(0, 1]`); non-nil LEADING negates the derived Q |
-| `(plug-ev ID PRESET &rest OVERRIDES)`  | plug a preset car (`'phev` `'city` `'sedan` `'van`) into a charger; overrides `:soc :target-soc :phases :max-current-a :capacity-kwh :taper-start :taper-floor` |
+| `(plug-ev ID PRESET &rest OVERRIDES)`  | plug a preset car (`'phev` `'city` `'sedan` `'van`) into a charger; overrides `:soc-pct :target-soc-pct :phases :max-current-a :capacity-wh :taper-start-pct :taper-floor-pct` |
 | `(unplug-ev ID)`                       | unplug the car                                            |
-| `(ev-info ID)`                         | the car as a plist (`:preset :soc :state …`), or nil      |
-| `(ev-presets)`                         | the catalog as a list of plists (`:name :phases :max-current-a :capacity-kwh`) |
+| `(ev-info ID)`                         | the car as a plist (`:preset :soc-pct :state …`), or nil      |
+| `(ev-presets)`                         | the catalog as a list of plists (`:name :phases :max-current-a :capacity-wh`) |
 
 Site weather is a singleton, not a per-component knob (see AGENTS.md),
 so it isn't in the table above — but `(pass-cloud …)` is the door a

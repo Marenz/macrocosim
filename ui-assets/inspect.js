@@ -472,7 +472,7 @@ async function refreshEvCard(id) {
     const preset = document.getElementById("ev-preset").value;
     const soc = document.getElementById("ev-soc").value.trim();
     const target = document.getElementById("ev-target").value.trim();
-    const args = `${soc ? ` :soc ${soc}` : ""}${target ? ` :target-soc ${target}` : ""}`;
+    const args = `${soc ? ` :soc-pct ${soc}` : ""}${target ? ` :target-soc-pct ${target}` : ""}`;
     const res = await evalQuoted(`(plug-ev ${id} '${preset}${args})`, "Plug in failed");
     if (res.ok) refreshEvCard(id);
   });

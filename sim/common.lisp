@@ -209,15 +209,15 @@ own file. Kept so an older config still loads."
 
 (defun plug-ev (id preset &rest overrides)
   "Plug a preset car into the EV charger ID:
-`(plug-ev 1004 'sedan :soc 30 :phases 2)'. PRESET is a catalog
+`(plug-ev 1004 'sedan :soc-pct 30 :phases 2)'. PRESET is a catalog
 symbol — `'phev' `'city' `'sedan' `'van', as listed by
 `(ev-presets)'. OVERRIDES are the `%plug-ev' plist keys, each
-replacing that preset's value: :soc :target-soc :phases
-:max-current-a :capacity-kwh :taper-start :taper-floor. Errors if
+replacing that preset's value: :soc-pct :target-soc-pct :phases
+:max-current-a :capacity-wh :taper-start-pct :taper-floor-pct. Errors if
 ID is not a charger, already has a car, or an override is out of
 range — nothing is half-applied. Inside a scenario the plug is
 transient: `(scenario-stop)' puts the charger back as it was."
-  (apply '%plug-ev (append (list :id id :preset preset) overrides)))
+  (apply '%plug-ev (append (list :component-id id :preset preset) overrides)))
 
 ;; -----------------------------------------------------------------------------
 ;; Scenario helpers

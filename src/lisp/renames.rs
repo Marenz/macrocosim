@@ -168,6 +168,31 @@ pub(crate) const RENAMES: &[Rename] = &[
         convert: Convert::None,
     },
     Rename {
+        old: ":soc",
+        new: ":soc-pct",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":target-soc",
+        new: ":target-soc-pct",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":capacity-kwh",
+        new: ":capacity-wh",
+        convert: Convert::KwhToWh,
+    },
+    Rename {
+        old: ":taper-start",
+        new: ":taper-start-pct",
+        convert: Convert::None,
+    },
+    Rename {
+        old: ":taper-floor",
+        new: ":taper-floor-pct",
+        convert: Convert::FractionToPct,
+    },
+    Rename {
         old: ":sunlight%",
         new: ":sunlight-pct",
         convert: Convert::None,

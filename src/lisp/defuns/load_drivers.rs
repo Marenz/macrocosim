@@ -26,15 +26,15 @@ use crate::sim::microgrids::SharedSiteRouter;
 // and the per-plug overrides on top of that car's preset values.
 AsPlist! {
     pub struct PlugEvArgs {
-        id: Option<i64> {= None},
+        component_id<":component-id">: Option<i64> {= None},
         preset: Option<LispValue> {= None},
-        soc: Option<f64> {= None},
-        target_soc<":target-soc">: Option<f64> {= None},
+        soc_pct<":soc-pct">: Option<f64> {= None},
+        target_soc_pct<":target-soc-pct">: Option<f64> {= None},
         phases: Option<i64> {= None},
         max_current_a<":max-current-a">: Option<f64> {= None},
-        capacity_kwh<":capacity-kwh">: Option<f64> {= None},
-        taper_start<":taper-start">: Option<f64> {= None},
-        taper_floor<":taper-floor">: Option<f64> {= None},
+        capacity_wh<":capacity-wh">: Option<f64> {= None},
+        taper_start_pct<":taper-start-pct">: Option<f64> {= None},
+        taper_floor_pct<":taper-floor-pct">: Option<f64> {= None},
     }
 }
 
@@ -456,10 +456,9 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
         move |args: Plist<Renamed<PlugEvArgs>>| -> Result<bool, Error> {
             let a = args.into_inner().0;
             let w = r.site();
-            let id = a
-                .id
-                .ok_or_else(|| Error::invalid_argument("plug-ev: :id is required".to_string()))?
-                as u64;
+            let id = a.component_id.ok_or_else(|| {
+                Error::invalid_argument("plug-ev: :component-id is required".to_string())
+            })? as u64;
             let Some(c) = w.get(id) else {
                 return Err(Error::invalid_argument(format!(
                     "plug-ev: component {id} not found"
@@ -498,14 +497,26 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                     )));
                 }
             };
+            for (key, value) in [
+                (":taper-start-pct", a.taper_start_pct),
+                (":taper-floor-pct", a.taper_floor_pct),
+            ] {
+                if let Some(v) = value
+                    && !(v.is_finite() && (0.0..=100.0).contains(&v))
+                {
+                    return Err(Error::invalid_argument(format!(
+                        "plug-ev: component {id}: {key} must be within 0..=100, got {v}"
+                    )));
+                }
+            }
             let o = EvOverrides {
-                soc_pct: a.soc.map(|v| v as f32),
-                target_soc_pct: a.target_soc.map(|v| v as f32),
+                soc_pct: a.soc_pct.map(|v| v as f32),
+                target_soc_pct: a.target_soc_pct.map(|v| v as f32),
                 phases,
                 max_current_a: a.max_current_a.map(|v| v as f32),
-                capacity_wh: a.capacity_kwh.map(|v| (v * 1000.0) as f32),
-                taper_start_pct: a.taper_start.map(|v| v as f32),
-                taper_floor: a.taper_floor.map(|v| v as f32),
+                capacity_wh: a.capacity_wh.map(|v| v as f32),
+                taper_start_pct: a.taper_start_pct.map(|v| v as f32),
+                taper_floor: a.taper_floor_pct.map(|v| (v / 100.0) as f32),
             };
             // The car is built and validated in full BEFORE the
             // snapshot and the write: a rejected override leaves the
@@ -571,16 +582,16 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
             Ok(vec![
                 ctx.intern(":preset"),
                 ctx.intern(ev.preset),
-                ctx.intern(":soc"),
+                ctx.intern(":soc-pct"),
                 (ev.soc_pct as f64).into(),
-                ctx.intern(":target-soc"),
+                ctx.intern(":target-soc-pct"),
                 (ev.target_soc_pct as f64).into(),
                 ctx.intern(":phases"),
                 (ev.phases as i64).into(),
                 ctx.intern(":max-current-a"),
                 (ev.max_current_a as f64).into(),
-                ctx.intern(":capacity-kwh"),
-                (ev.capacity_wh as f64 / 1000.0).into(),
+                ctx.intern(":capacity-wh"),
+                (ev.capacity_wh as f64).into(),
                 ctx.intern(":energy-wh"),
                 (ev.energy_wh as f64).into(),
                 ctx.intern(":plugged-at"),
@@ -608,8 +619,8 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
                         (p.phases as i64).into(),
                         ctx.intern(":max-current-a"),
                         (p.max_current_a as f64).into(),
-                        ctx.intern(":capacity-kwh"),
-                        (p.capacity_wh as f64 / 1000.0).into(),
+                        ctx.intern(":capacity-wh"),
+                        (p.capacity_wh as f64).into(),
                     ]
                     .into_iter()
                     .collect::<TulispObject>()
@@ -1731,7 +1742,7 @@ mod tests {
     fn plug_ev_plugs_a_preset_with_overrides_and_unplug_clears_it() {
         let (cfg, _dir) = config_with("(%make-ev-charger :id 7)");
         let ev = cfg.site().get(7).unwrap();
-        cfg.eval("(plug-ev 7 'sedan :soc 30 :phases 2 :target-soc 80)")
+        cfg.eval("(plug-ev 7 'sedan :soc-pct 30 :phases 2 :target-soc-pct 80)")
             .unwrap();
         let info = ev.ev_port().unwrap().ev_info().expect("plugged");
         assert_eq!(
@@ -1745,7 +1756,9 @@ mod tests {
         );
         let printed = cfg.eval("(ev-info 7)").unwrap();
         assert!(
-            printed.contains(":preset") && printed.contains("sedan") && printed.contains(":soc"),
+            printed.contains(":preset")
+                && printed.contains("sedan")
+                && printed.contains(":soc-pct"),
             "{printed}"
         );
         cfg.eval("(unplug-ev 7)").unwrap();
@@ -1766,12 +1779,12 @@ mod tests {
         );
         assert!(err("(plug-ev 7 'unicorn)").contains("unknown preset"));
         assert!(err("(plug-ev 7 'sedan :phases 5)").contains("phases"));
-        let soc_err = err("(plug-ev 7 'sedan :soc 120)");
+        let soc_err = err("(plug-ev 7 'sedan :soc-pct 120)");
         assert!(soc_err.contains("soc"), "{soc_err}");
         // Every reason names the component it was about, so a
         // scenario log says WHICH charger refused the plug.
         assert!(soc_err.contains("component 7"), "{soc_err}");
-        assert!(err("(plug-ev 7 'sedan :target-soc 120)").contains("target-soc"));
+        assert!(err("(plug-ev 7 'sedan :target-soc-pct 120)").contains("target-soc"));
         // `ev-info` is a query, not a write: "is there a car?" is
         // answered nil for a meter as much as for an empty charger.
         // Only a missing id is an error.
@@ -1888,7 +1901,7 @@ mod tests {
     fn scenario_stop_undoes_a_chargers_set_battery_soc() {
         let (cfg, _dir) = config_with("(%make-ev-charger :id 7)");
         let site = cfg.site();
-        cfg.eval("(plug-ev 7 'van :soc 40)").unwrap();
+        cfg.eval("(plug-ev 7 'van :soc-pct 40)").unwrap();
         cfg.eval("(scenario-start \"ev\")").unwrap();
         cfg.eval("(set-battery-soc 7 10)").unwrap();
         // The unplug's own snapshot comes second, so only the SoC
@@ -1980,6 +1993,76 @@ mod tests {
         assert_eq!(cfg.eval("(ev-info 4)").unwrap(), "nil");
     }
 
+    const CHARGER: &str = "(%make-ev-charger :id 10)";
+
+    /// `(ev-info ID)` without its `:plugged-at`, which differs between
+    /// two configs.
+    fn ev_info_without_time(cfg: &Config) -> String {
+        let info = cfg.eval("(ev-info 10)").unwrap();
+        let start = info.find(":plugged-at").expect("plugged-at");
+        let end = info.find(":state").expect("state");
+        format!("{}{}", &info[..start], &info[end..])
+    }
+
+    #[test]
+    fn plug_ev_takes_unit_keywords_and_ev_info_reports_them() {
+        let (cfg, _dir) = config_with(CHARGER);
+        cfg.eval(
+            "(plug-ev 10 'sedan :soc-pct 20.0 :target-soc-pct 80.0 :capacity-wh 40000.0
+                                 :taper-start-pct 70.0 :taper-floor-pct 30.0)",
+        )
+        .unwrap();
+        let info = cfg.eval("(ev-info 10)").unwrap();
+        assert!(info.contains(":soc-pct 20.0"), "{info}");
+        assert!(info.contains(":target-soc-pct 80.0"), "{info}");
+        assert!(info.contains(":capacity-wh 40000.0"), "{info}");
+        assert!(!info.contains("kwh"), "{info}");
+    }
+
+    #[test]
+    fn old_plug_ev_keywords_convert() {
+        let (old, _a) = config_with(CHARGER);
+        old.eval("(plug-ev 10 'sedan :soc 20.0 :capacity-kwh 40.0 :taper-floor 0.3)")
+            .unwrap();
+        let (new, _b) = config_with(CHARGER);
+        new.eval("(plug-ev 10 'sedan :soc-pct 20.0 :capacity-wh 40000.0 :taper-floor-pct 30.0)")
+            .unwrap();
+        assert_eq!(ev_info_without_time(&old), ev_info_without_time(&new));
+        let taper = |c: &Config| {
+            c.site()
+                .get(10)
+                .unwrap()
+                .ev_port()
+                .unwrap()
+                .ev_info()
+                .unwrap()
+                .ev
+                .taper_floor
+        };
+        assert!((taper(&old) - 0.3).abs() < 1e-6);
+        assert!((taper(&new) - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_taper_percent_out_of_range_names_its_keyword() {
+        let (cfg, _dir) = config_with(CHARGER);
+        let err = cfg
+            .eval("(plug-ev 10 'sedan :taper-floor-pct 150)")
+            .unwrap_err();
+        assert!(
+            err.contains(":taper-floor-pct must be within 0..=100, got 150"),
+            "{err}"
+        );
+        let err = cfg
+            .eval("(plug-ev 10 'sedan :taper-start-pct -5)")
+            .unwrap_err();
+        assert!(
+            err.contains(":taper-start-pct must be within 0..=100, got -5"),
+            "{err}"
+        );
+        assert_eq!(cfg.eval("(ev-info 10)").unwrap(), "nil");
+    }
+
     // ── lenient setters: on a component of the wrong kind each one
     // returns t, changes nothing, and still broadcasts its knob. ─────
 
@@ -2060,5 +2143,7 @@ mod tests {
         for name in ["phev", "city", "sedan", "van"] {
             assert!(printed.contains(name), "{printed}");
         }
+        assert!(printed.contains(":capacity-wh"), "{printed}");
+        assert!(!printed.contains("kwh"), "{printed}");
     }
 }

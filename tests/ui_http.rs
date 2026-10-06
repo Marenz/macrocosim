@@ -978,7 +978,7 @@ async fn ev_route_reports_plug_state() {
         "{empty}"
     );
 
-    eval_or_panic(&client, &s, "(plug-ev 6 'city :soc 25)").await;
+    eval_or_panic(&client, &s, "(plug-ev 6 'city :soc-pct 25)").await;
 
     let plugged = json(&client, format!("{base}/component/6/ev")).await;
     assert_eq!(plugged["plugged"], true, "{plugged}");
@@ -1040,7 +1040,7 @@ async fn drive_soc_on_an_empty_charger_names_the_missing_ev() {
     );
 
     // With a car plugged in the same request lands on the car.
-    eval_or_panic(&client, &s, "(plug-ev 6 'city :soc 25)").await;
+    eval_or_panic(&client, &s, "(plug-ev 6 'city :soc-pct 25)").await;
     client
         .post(s.mg_url("component/6/drive"))
         .json(&serde_json::json!({"soc_pct": 50.0}))
@@ -1067,7 +1067,7 @@ async fn drive_soc_on_a_charger_is_undone_by_scenario_teardown() {
     let client = reqwest::Client::new();
     let base = format!("{}/api/mg/2200", s.ui_url);
 
-    eval_or_panic(&client, &s, "(plug-ev 6 'city :soc 25)").await;
+    eval_or_panic(&client, &s, "(plug-ev 6 'city :soc-pct 25)").await;
     eval_or_panic(&client, &s, "(scenario-start \"ev\")").await;
     client
         .post(s.mg_url("component/6/drive"))

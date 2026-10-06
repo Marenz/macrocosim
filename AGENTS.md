@@ -537,8 +537,8 @@ and ignored, so older files still load, and the site import drops
 them from an export's charger.
 
 The car is runtime state, driven by `(plug-ev ID PRESET &rest
-overrides)` (`:soc`, `:target-soc`, `:phases`, `:max-current-a`,
-`:capacity-kwh`, `:taper-start`, `:taper-floor`), `(unplug-ev ID)`,
+overrides)` (`:soc-pct`, `:target-soc-pct`, `:phases`, `:max-current-a`,
+`:capacity-wh`, `:taper-start-pct`, `:taper-floor-pct`), `(unplug-ev ID)`,
 `(ev-info ID)` — a plist, or `nil` for an empty charger or any
 component that takes no EV — and `(ev-presets)`, the catalog.
 `(set-battery-soc ID PCT)` on a charger moves the plugged car's SoC

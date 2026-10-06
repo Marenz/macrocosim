@@ -4,9 +4,7 @@
 //! charger.
 //!
 //! The JSON keys are the snake_case twins of `ev-info`'s plist keys,
-//! plus `plugged`; three of the twins do not line up: `capacity_wh`
-//! for `:capacity-kwh` (in watt-hours), `soc_pct` for `:soc`,
-//! `target_soc_pct` for `:target-soc`.
+//! plus `plugged`.
 //!
 //! `presets` — the catalog — rides along whether or not a car is
 //! plugged in, so the inspector builds its dropdown from the server's

@@ -123,7 +123,7 @@
 ;; re-runs on every load, and the demo's charger always has a car to
 ;; show an SoC for. `:idle` is paused, so it draws nothing until
 ;; something commands the charger.
-(plug-ev 1004 'sedan :soc 35)
+(plug-ev 1004 'sedan :soc-pct 35)
 
 ;; -----------------------------------------------------------------------------
 ;; Scenarios — appear in the Scenarios mode dropdown; run one with
