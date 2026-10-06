@@ -273,6 +273,33 @@ mod tests {
         assert_eq!(active_bounds(&cfg), "[-1000, 1000]");
     }
 
+    /// An augmentation takes a short lifetime as given, in either
+    /// form: no setpoint floor.
+    #[test]
+    fn a_short_augment_lifetime_is_not_floored() {
+        for form in [
+            "(augment-active-bounds 2 '(-1000 1000) 100)",
+            "(augment-active-bounds 2 '(-1000 1000) :lifetime-s 0.1)",
+        ] {
+            let (cfg, _dir) = rig();
+            let site = cfg.site();
+            site.tick_n(10, std::time::Duration::from_millis(100));
+            cfg.eval(form).unwrap();
+            assert_eq!(active_bounds(&cfg), "[-1000, 1000]", "{form}");
+            site.tick_n(1, std::time::Duration::from_millis(100));
+            assert_eq!(active_bounds(&cfg), "[-10000, 10000]", "{form}");
+        }
+    }
+
+    /// A negative positional lifetime expires at once.
+    #[test]
+    fn a_negative_positional_augment_lifetime_expires_at_once() {
+        let (cfg, _dir) = rig();
+        cfg.eval("(augment-active-bounds 2 '(-1000 1000) -500)")
+            .unwrap();
+        assert_eq!(active_bounds(&cfg), "[-10000, 10000]");
+    }
+
     #[test]
     fn augment_refuses_clamp() {
         let (cfg, _dir) = rig();

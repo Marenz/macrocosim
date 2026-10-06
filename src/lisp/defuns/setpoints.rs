@@ -16,9 +16,10 @@ use crate::timeout_tracker::SetpointAxis;
 use super::super::Metadata;
 
 /// Lower bound on a non-zero request lifetime the setpoint defuns
-/// install. Expiry runs on the physics tick (100 ms by default), so a
-/// shorter lifetime can expire before the component ever acts on the
-/// command. `0` is kept as "expire at once" and bypasses the floor.
+/// install; augmentations take theirs as given. Expiry runs on the
+/// physics tick (100 ms by default), so a shorter lifetime can expire
+/// before the component ever acts on the command. `0` is kept as
+/// "expire at once" and bypasses the floor.
 const MIN_SETPOINT_LIFETIME: Duration = Duration::from_millis(150);
 
 /// A setpoint or augment tail: the lifetime (`None` = the default) and
@@ -29,8 +30,9 @@ pub(super) struct Tail {
 }
 
 /// Parses `:lifetime-s N :clamp B`, or the positional
-/// `LIFETIME-MS [CLAMP]` with a deprecation warning. `allow_clamp` is
-/// false for the augment defuns.
+/// `LIFETIME-MS [CLAMP]` with a deprecation warning; a negative
+/// `LIFETIME-MS` expires at once. The lifetime is returned as given.
+/// `allow_clamp` is false for the augment defuns.
 pub(super) fn parse_tail(
     name: &str,
     rest: Vec<TulispObject>,
@@ -51,7 +53,9 @@ pub(super) fn parse_tail(
             let key = pair[0].to_string();
             let value = pair.get(1).cloned().unwrap_or_else(TulispObject::nil);
             match key.as_str() {
-                ":lifetime-s" => tail.lifetime = Some(secs_lifetime(name, value.try_float()?)?),
+                ":lifetime-s" => {
+                    tail.lifetime = Some(secs_lifetime(name, ":lifetime-s", value.try_float()?)?)
+                }
                 ":clamp" if allow_clamp => tail.clamp = !value.null(),
                 _ => {
                     return Err(Error::invalid_argument(format!(
@@ -78,21 +82,19 @@ pub(super) fn parse_tail(
     let lifetime = if first.null() {
         None
     } else {
-        Some(secs_lifetime(name, first.try_float()? / 1000.0)?)
+        // A negative lifetime expires at once, like 0; NaN is refused.
+        let ms = first.try_float()?;
+        let ms = if ms < 0.0 { 0.0 } else { ms };
+        Some(secs_lifetime(name, "LIFETIME-MS / 1000", ms / 1000.0)?)
     };
     let clamp = allow_clamp && rest.get(1).is_some_and(|c| !c.null());
     Ok(Tail { lifetime, clamp })
 }
 
-/// Seconds to a request lifetime: `0` expires at once, anything else
-/// is floored at [`MIN_SETPOINT_LIFETIME`].
-fn secs_lifetime(name: &str, secs: f64) -> Result<Duration, Error> {
-    let d = crate::lisp::secs_duration(format_args!("{name}: :lifetime-s"), secs)?;
-    Ok(if d.is_zero() {
-        d
-    } else {
-        d.max(MIN_SETPOINT_LIFETIME)
-    })
+/// Seconds to a request lifetime; `0` expires at once. `label` names
+/// the argument in the error.
+fn secs_lifetime(name: &str, label: &str, secs: f64) -> Result<Duration, Error> {
+    crate::lisp::secs_duration(format_args!("{name}: {label}"), secs)
 }
 
 /// Shared body of the two defuns: one gateway command on `axis`.
@@ -112,9 +114,11 @@ fn set_power(
     } else {
         Mode::Reject
     };
-    let lifetime = tail
-        .lifetime
-        .unwrap_or_else(|| metadata.read().default_request_lifetime);
+    let lifetime = match tail.lifetime {
+        Some(d) if d.is_zero() => d,
+        Some(d) => d.max(MIN_SETPOINT_LIFETIME),
+        None => metadata.read().default_request_lifetime,
+    };
     w.gateway()
         .set_power(
             id as u64,
@@ -559,6 +563,29 @@ mod tests {
         );
         site.tick_n(3, DT);
         assert!(site.get(2).unwrap().aggregate_power_w(&site).abs() < 1.0);
+    }
+
+    /// A negative positional lifetime expires at once, like 0.
+    #[test]
+    fn a_negative_positional_lifetime_expires_at_once() {
+        let (cfg, _dir) = config_with(REACTIVE_SITE);
+        let site = cfg.site();
+        cfg.eval("(set-active-power 2 1500.0 -500)").unwrap();
+        assert_eq!(
+            site.gateway().remaining_lifetime(2, SetpointAxis::Active),
+            None
+        );
+    }
+
+    /// A NaN positional lifetime is refused, naming LIFETIME-MS.
+    #[test]
+    fn a_nan_positional_lifetime_is_refused() {
+        let (cfg, _dir) = config_with(REACTIVE_SITE);
+        let err = cfg
+            .eval("(set-active-power 2 1500.0 (/ 0.0 0.0))")
+            .unwrap_err();
+        assert!(err.contains("LIFETIME-MS"), "{err}");
+        assert!(!err.contains(":lifetime-s"), "{err}");
     }
 
     /// A 150 ms lifetime armed after `tick_n` is stamped on the same
