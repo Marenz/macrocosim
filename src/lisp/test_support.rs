@@ -4,12 +4,8 @@
 //! wraps the test body in a `(make-microgrid …)` form so callers
 //! don't have to repeat the boilerplate.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use super::Config;
 use crate::test_dir::TestDir;
-
-static UNIQ: AtomicU64 = AtomicU64::new(0);
 
 /// Build a Config from a tiny config.lisp body in a fresh temp dir;
 /// returns the Config + the dir so tests can mess with the
@@ -46,12 +42,6 @@ pub(super) fn wrap_test_body(body: &str) -> String {
         body.to_string()
     };
     format!("(make-microgrid :id 2200 :grpc-port 8800 :topology (lambda () {inner}))")
-}
-
-/// Counter for tests that need their own unique temp dir without
-/// going through `config_with`.
-pub(super) fn next_unique() -> u64 {
-    UNIQ.fetch_add(1, Ordering::Relaxed)
 }
 
 /// The message line of a Lisp error: tulisp appends the trace

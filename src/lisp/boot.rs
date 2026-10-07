@@ -1596,22 +1596,19 @@ mod tests {
     }
 
     use super::super::Config;
-    use super::super::test_support::{config_with, next_unique};
+    use super::super::test_support::config_with;
+    use crate::test_dir::TestDir;
 
     /// Boot a headless `Config` from `body`, written into a fresh temp
     /// dir with `sim/common.lisp` + `sim/scenarios.lisp` copied
     /// alongside so the config's own `(load …)` forms resolve. `tag`
     /// just names the directory, for readable strace/ls output when a
-    /// case is being debugged. The `ManualClock` the constructor also
-    /// returns is an `Arc` clone of the one `Config` keeps, so
-    /// dropping it here changes nothing.
-    fn stepped_config(tag: &str, body: &str) -> Config {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!(
-            "macrocosim-{tag}-{}-{}",
-            std::process::id(),
-            next_unique(),
-        ));
+    /// case is being debugged. Dropping the returned dir removes it.
+    /// The `ManualClock` the constructor also returns is an `Arc`
+    /// clone of the one `Config` keeps, so dropping it here changes
+    /// nothing.
+    fn stepped_config(tag: &str, body: &str) -> (Config, TestDir) {
+        let dir = TestDir::new(&format!("macrocosim-{tag}-"));
         let sim = dir.join("sim");
         std::fs::create_dir_all(&sim).unwrap();
         for f in ["common.lisp", "scenarios.lisp"] {
@@ -1624,7 +1621,7 @@ mod tests {
             .block_on(async { Config::new_headless(path.to_str().unwrap()) })
             .expect("headless config builds");
         std::mem::forget(rt);
-        cfg
+        (cfg, dir)
     }
 
     /// The id in a collision message survives being wrapped in
@@ -1647,16 +1644,10 @@ mod tests {
     /// registry, DSL live, topologies arrive on demand.
     #[test]
     fn bare_boot_has_empty_registry() {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!(
-            "macrocosim-bare-{}-{}",
-            std::process::id(),
-            next_unique(),
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("macrocosim-bare-");
         let rt = tokio::runtime::Runtime::new().unwrap();
         let cfg = rt
-            .block_on(async { Config::new_with(&[], Some(dir)) })
+            .block_on(async { Config::new_with(&[], Some(dir.to_path_buf())) })
             .expect("bare boot must succeed");
         std::mem::forget(rt);
         assert!(cfg.microgrids().lock().is_empty());
@@ -1695,13 +1686,7 @@ mod tests {
     /// half-built MicrogridSite.
     #[test]
     fn config_new_returns_err_on_bad_lisp() {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!(
-            "macrocosim-cfg-bad-{}-{}",
-            std::process::id(),
-            next_unique(),
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("macrocosim-cfg-bad-");
         let path = dir.join("config.lisp");
         std::fs::write(&path, "(this-is-not-a-defun-anywhere 42)").unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1736,13 +1721,7 @@ mod tests {
 (run-with-timer 30 nil (lambda () (setq fired 1)))
 (scenario-start \"sim\")
 (set-active-power 3 3600.0 600000)";
-        let mut dir = std::env::temp_dir();
-        dir.push(format!(
-            "macrocosim-headless-{}-{}",
-            std::process::id(),
-            next_unique(),
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("macrocosim-headless-");
         let path = dir.join("config.lisp");
         std::fs::write(&path, body).unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1795,7 +1774,7 @@ mod tests {
     fn headless_sites_read_the_sim_clock() {
         use std::time::Duration;
         let body = "(make-microgrid :id 9 :grpc-port 18911 :topology (lambda () nil))";
-        let cfg = stepped_config("headless-clock", body);
+        let (cfg, _dir) = stepped_config("headless-clock", body);
         let base = crate::sim::sim_clock::headless_base();
         assert_eq!(cfg.site().now(), base);
         cfg.sim_run(Duration::from_secs(5), Duration::from_secs(1));
@@ -1835,18 +1814,6 @@ mod tests {
     #[test]
     fn stepped_runner_runs_a_registered_scenario() {
         use std::time::Duration;
-        // Copy the scenario DSL the config (load …)s.
-        let mut dir = std::env::temp_dir();
-        dir.push(format!(
-            "macrocosim-stepped-{}-{}",
-            std::process::id(),
-            next_unique(),
-        ));
-        let sim = dir.join("sim");
-        std::fs::create_dir_all(&sim).unwrap();
-        for f in ["common.lisp", "scenarios.lisp"] {
-            std::fs::copy(format!("sim/{f}"), sim.join(f)).unwrap();
-        }
         let body = "(set-enterprise-id 1)
 (load \"sim/common.lisp\")
 (load \"sim/scenarios.lisp\")
@@ -1864,13 +1831,7 @@ mod tests {
                        :approx 5000.0 :tol 800.0)
                 (check \"60s\" :component-id 2 :metric 'active-power
                        :approx 5000.0 :tol 800.0)))";
-        let path = dir.join("config.lisp");
-        std::fs::write(&path, body).unwrap();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let (cfg, _clock) = rt
-            .block_on(async { Config::new_headless(path.to_str().unwrap()) })
-            .expect("headless config builds");
-        std::mem::forget(rt);
+        let (cfg, _dir) = stepped_config("stepped", body);
 
         let start = std::time::Instant::now();
         let steps = cfg
@@ -1907,17 +1868,6 @@ mod tests {
     #[test]
     fn stepped_runner_drives_reactive_and_power_factor() {
         use std::time::Duration;
-        let mut dir = std::env::temp_dir();
-        dir.push(format!(
-            "macrocosim-stepped-q-{}-{}",
-            std::process::id(),
-            next_unique(),
-        ));
-        let sim = dir.join("sim");
-        std::fs::create_dir_all(&sim).unwrap();
-        for f in ["common.lisp", "scenarios.lisp"] {
-            std::fs::copy(format!("sim/{f}"), sim.join(f)).unwrap();
-        }
         let body = "(set-enterprise-id 1)
 (load \"sim/common.lisp\")
 (load \"sim/scenarios.lisp\")
@@ -1937,13 +1887,7 @@ mod tests {
                        :approx 2000.0 :tol 400.0)
                 (check \"10s\" :component-id 3 :metric 'reactive-power
                        :approx 6000.0 :tol 100.0)))";
-        let path = dir.join("config.lisp");
-        std::fs::write(&path, body).unwrap();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let (cfg, _clock) = rt
-            .block_on(async { Config::new_headless(path.to_str().unwrap()) })
-            .expect("headless config builds");
-        std::mem::forget(rt);
+        let (cfg, _dir) = stepped_config("stepped-q", body);
 
         let steps = cfg
             .run_scenario_stepped("q-ramp", Duration::from_secs(1), None)
@@ -1964,7 +1908,7 @@ mod tests {
     #[test]
     fn stepped_runner_restores_a_driven_knob_after_it_stops_the_scenario() {
         use std::time::Duration;
-        let cfg = stepped_config(
+        let (cfg, _dir) = stepped_config(
             "stepped-restore",
             "(set-enterprise-id 1)
 (load \"sim/common.lisp\")
@@ -2006,7 +1950,7 @@ mod tests {
     #[test]
     fn scenario_stop_cancels_the_agent_timer_so_it_stops_firing() {
         use std::time::Duration;
-        let cfg = stepped_config(
+        let (cfg, _dir) = stepped_config(
             "stepped-cancel",
             "(set-enterprise-id 1)
 (load \"sim/common.lisp\")
@@ -2056,7 +2000,7 @@ mod tests {
     #[test]
     fn every_takes_seconds_and_still_reads_milliseconds() {
         use std::time::Duration;
-        let cfg = stepped_config(
+        let (cfg, _dir) = stepped_config(
             "every-s",
             "(set-enterprise-id 1)
 (load \"sim/common.lisp\")
@@ -2076,7 +2020,7 @@ mod tests {
     #[test]
     fn define_controller_takes_seconds_and_still_reads_milliseconds() {
         use std::time::Duration;
-        let cfg = stepped_config(
+        let (cfg, _dir) = stepped_config(
             "ctl-s",
             "(set-enterprise-id 1)
 (load \"sim/common.lisp\")
@@ -2101,7 +2045,7 @@ mod tests {
             ("end-s", "(scenario-end-after-s 90)"),
             ("end-min", "(scenario-end-after 1.5)"),
         ] {
-            let cfg = stepped_config(
+            let (cfg, _dir) = stepped_config(
                 tag,
                 &format!(
                     "(set-enterprise-id 1)
@@ -2144,7 +2088,7 @@ mod tests {
     #[test]
     fn scenario_stop_cancels_a_setup_armed_random_outage_chain() {
         use std::time::Duration;
-        let cfg = stepped_config(
+        let (cfg, _dir) = stepped_config(
             "stepped-outage",
             "(set-enterprise-id 1)
 (load \"sim/common.lisp\")
@@ -2224,7 +2168,7 @@ mod tests {
     fn stopping_mid_outage_puts_the_victims_health_back() {
         use crate::sim::runtime::Health;
         use std::time::Duration;
-        let cfg = stepped_config(
+        let (cfg, _dir) = stepped_config(
             "stepped-mid-outage",
             "(set-enterprise-id 1)
 (load \"sim/common.lisp\")
@@ -2293,7 +2237,7 @@ mod tests {
     fn a_chain_cancelled_mid_outage_leaves_no_victim_for_a_later_stop() {
         use crate::sim::runtime::Health;
         use std::time::Duration;
-        let cfg = stepped_config(
+        let (cfg, _dir) = stepped_config(
             "stepped-stale-victim",
             "(set-enterprise-id 1)
 (load \"sim/common.lisp\")
@@ -2378,7 +2322,7 @@ mod tests {
     #[test]
     fn an_ambient_outage_chain_survives_an_unrelated_scenarios_stop() {
         use std::time::Duration;
-        let cfg = stepped_config(
+        let (cfg, _dir) = stepped_config(
             "ambient-outage",
             "(set-enterprise-id 1)
 (load \"sim/common.lisp\")
@@ -2444,7 +2388,7 @@ mod tests {
     /// still be left alone by every scenario's teardown.
     #[test]
     fn track_timer_records_only_while_a_scenario_runs() {
-        let cfg = stepped_config(
+        let (cfg, _dir) = stepped_config(
             "track-timer",
             "(set-enterprise-id 1)
 (load \"sim/common.lisp\")
@@ -2485,7 +2429,7 @@ mod tests {
     #[test]
     fn starting_a_scenario_tears_down_the_one_still_running() {
         use std::time::Duration;
-        let cfg = stepped_config(
+        let (cfg, _dir) = stepped_config(
             "overlap",
             "(set-enterprise-id 1)
 (load \"sim/common.lisp\")
@@ -2549,7 +2493,7 @@ mod tests {
     #[test]
     fn scenario_stop_cancels_a_cue_that_has_not_fired_yet() {
         use std::time::Duration;
-        let cfg = stepped_config(
+        let (cfg, _dir) = stepped_config(
             "cue-cancel",
             "(set-enterprise-id 1)
 (load \"sim/common.lisp\")
@@ -2594,7 +2538,7 @@ mod tests {
     fn stepped_runner_restores_a_dynamic_source_at_its_current_value() {
         use crate::sim::events::SiteEvent;
         use std::time::Duration;
-        let cfg = stepped_config(
+        let (cfg, _dir) = stepped_config(
             "restore-refresh",
             "(set-enterprise-id 1)
 (load \"sim/common.lisp\")

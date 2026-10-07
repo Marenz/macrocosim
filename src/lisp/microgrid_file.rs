@@ -796,8 +796,7 @@ mod tests {
 
     #[test]
     fn write_atomic_replaces_content() {
-        let dir = std::env::temp_dir().join(format!("mc-mgfile-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_dir::TestDir::new("mc-mgfile-");
         let path = dir.join("t.lisp");
         write_atomic(&path, "one").unwrap();
         write_atomic(&path, "two").unwrap();

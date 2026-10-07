@@ -245,12 +245,15 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn write_tmp(name: &str, contents: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!("macrocosim-csv-{name}-{}.csv", std::process::id()));
-        let mut f = fs::File::create(&p).unwrap();
+    /// A temp CSV file holding `contents`, removed when it is dropped.
+    fn write_tmp(name: &str, contents: &str) -> tempfile::TempPath {
+        let mut f = tempfile::Builder::new()
+            .prefix(&format!("macrocosim-csv-{name}-"))
+            .suffix(".csv")
+            .tempfile()
+            .unwrap();
         f.write_all(contents.as_bytes()).unwrap();
-        p
+        f.into_temp_path()
     }
 
     #[test]
