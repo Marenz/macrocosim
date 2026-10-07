@@ -303,6 +303,125 @@ soc_upper), keeping =:voltage-v= as the nominal for backward
 compatibility. Telemetry-only change — power physics stays on W, so
 no setpoint / bounds behaviour shifts.
 
+** M. Modbus and CAN device interfaces
+
+Goal: a microgrid can expose its components as raw devices instead
+of through the Microgrid gRPC API — inverters, meters and EV
+chargers over Modbus TCP (SunSpec-style register maps), batteries
+over CAN (BMS-style frames). Only one of the two is available for a
+given microgrid: either the gRPC API or the device interfaces.
+
+The gRPC path adds the gateway's rules on top of the hardware:
+bounds intersection, setpoint validation, request lifetimes,
+augmentations, the gateway delay and ramp, the SoC window. None of
+that exists on the device path, so the devices must protect
+themselves the way real ones do (revert timeouts, their own limits).
+
+Done as preparation (the 2026-10 polish, sub-projects 1-5):
+- The UI reads a microgrid's data through an in-process copy of the
+  Microgrid service, so it does not need the public gRPC port.
+- One gateway per microgrid holds every API rule
+  (=src/sim/gateway.rs=); the components are plain hardware.
+- One startup path per microgrid (=MicrogridRuntimes=,
+  =src/runtime.rs=); the interface choice goes there.
+- The component trait is split into capability traits
+  (=src/sim/component/=), so a register map can ask a component
+  what it can do.
+- Names and units are the same everywhere
+  (=docs/names-and-units.md=), for the register maps to follow.
+
+Still ahead, in this order:
+1. The UI design pass (shared colour, type and spacing values; a
+   light theme; a button and form kit; layout; one way to show
+   server errors; the disagreeing component counts; the chart time
+   zone).
+2. The physics the device interfaces need (P1, P2 and M2-M6 below).
+3. The interfaces themselves (M1, M7).
+
+*** TODO M1. Choose the interface per microgrid               :design:api:
+
+Config: a =make-microgrid= keyword (name open, e.g.
+=:interface 'grpc= / ='devices=) read by =MicrogridRuntimes=, which
+starts either the gRPC server or the Modbus/CAN servers.
+
+Open questions:
+- How the UI keeps working on a device-interface microgrid: its
+  loopback runs the Microgrid service, which goes through the
+  gateway. Read the site directly, or run a gateway-free loopback?
+- What the Lisp setpoint and augment defuns do on such a microgrid
+  (they talk to the gateway today).
+- Whether macroctl and the Python client get a device-mode
+  equivalent, or test apps bring their own Modbus/CAN clients.
+- Address and port allocation for Modbus servers and CAN interfaces,
+  next to the existing gRPC port stepping.
+
+*** TODO M2. Device-level protections                       :fidelity:design:
+
+Without the gateway a raw setpoint never expires: the components
+have no watchdog or revert timer of their own. Real devices do —
+SunSpec controls carry a revert timeout and ramp time
+(=WMaxLimPct=, =RvrtTms=, =RmpTms=), BMSes drop to safe limits when
+the heartbeat stops, chargers fall back to a safe current. Model
+these in the components (or a per-device layer under the
+interface), not in the gateway.
+
+*** TODO M3. Battery over CAN                                   :fidelity:
+
+Typical BMS frames (e.g. SMA/Pylontech 0x351/0x355/0x356/0x359) need:
+- charge and discharge voltage limits, and charge and discharge
+  current limits in amps;
+- pack voltage that follows SoC and current (see P2);
+- signed current, temperature, state of health;
+- lowest and highest cell voltage and temperature, with cell ids;
+- alarm and warning bits, contactor state, charge/discharge request
+  flags, and a heartbeat with timeout behaviour.
+
+Today only SoC, power and a fixed voltage exist.
+
+*** TODO M4. Inverter over Modbus                               :fidelity:
+
+SunSpec models 1/120/121/122/123/124/160/70x/802 need:
+- an operating state (off, sleeping, starting, MPPT, throttled,
+  fault, standby) and event bit fields;
+- separate DC and AC sides: PV string voltage and current at the
+  maximum power point, the battery DC side;
+- heatsink temperature with derating;
+- monotonic lifetime energy counters, with scale factors;
+- apparent power and power factor, line-to-line voltages, signed
+  per-phase currents;
+- controls with their own revert timeout and ramp time,
+  connect/disconnect, and power-factor or volt-var modes (M2).
+
+*** TODO M5. Meter over Modbus                                  :fidelity:
+
+SunSpec 201-204 or vendor maps need:
+- genuinely unbalanced per-phase values: signed current, apparent
+  power, power factor;
+- line-to-line voltages;
+- separate import and export energy registers, per phase, plus
+  reactive energy by quadrant.
+
+Today the energy total is net only, and reaches history and the UI
+but not the telemetry stream.
+
+*** TODO M6. EV charger over Modbus                             :fidelity:
+
+Vendor maps (Alfen, ABB, Keba, Phoenix-style) need:
+- the IEC 61851 states A-F (only cable states are modelled today);
+- setpoints in amps per phase, and actual per-phase currents;
+- session energy and total energy, the hardware current limit,
+  error codes;
+- a fallback current when the controller goes quiet (M2).
+
+*** TODO M7. The Modbus and CAN servers                        :rust:api:
+
+Pick the transport crates (a Modbus TCP server, and SocketCAN with
+=vcan= for tests), define each register map once from the component
+capability traits, and test against a real Modbus client and a
+=vcan= interface in CI. Faults: map the existing health and
+telemetry modes onto device behaviour (exception codes, silent
+frames, alarm bits).
+
 ** D. Downstream-app end-to-end testing in CI
 
 Ship macrocosim as a standalone binary (and Docker image) so a downstream
