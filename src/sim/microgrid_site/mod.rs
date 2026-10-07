@@ -1154,6 +1154,21 @@ impl MicrogridSite {
         Ok(())
     }
 
+    /// Set (or clear, with `None`) the internal limit an `OverBound`
+    /// component enforces; errors unless the id is registered. Left
+    /// alone by the health / command-mode setters: the limit describes
+    /// the device, not which fault is currently armed, so flipping
+    /// `command-mode` to `over-bound` and back does not lose it.
+    pub fn set_over_bound_limit(&self, id: u64, limit: Option<f32>) -> Result<(), String> {
+        self.require_registered(id)?;
+        let mut runtime = self.inner.runtime.write();
+        runtime
+            .get_mut(&id)
+            .ok_or_else(|| format!("component {id} not found"))?
+            .over_bound_limit_w = limit;
+        Ok(())
+    }
+
     // ─── Per-component operational mode (config) ─────────────────────
 
     /// The component's declared operational mode. Defaults to

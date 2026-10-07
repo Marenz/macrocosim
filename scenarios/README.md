@@ -59,7 +59,8 @@ exercises the simulator:
 | `(set-solar-sunlight ID VAL)`          | drive a solar inverter's `:sunlight-pct` (same polymorphism)|
 | `(set-component-health ID K)`          | flip health to `'ok` / `'error` / `'standby`             |
 | `(set-component-telemetry-mode ID K)`  | `'normal` / `'silent` / `'closed`                        |
-| `(set-component-command-mode ID K)`    | `'normal` / `'timeout` / `'error`                        |
+| `(set-component-command-mode ID K)`    | `'normal` / `'timeout` / `'error` / `'over-bound`        |
+| `(set-component-over-bound-limit ID &OPTIONAL W)` | the internal limit an `'over-bound` component enforces, as a magnitude in W: it keeps advertising its rated bound but refuses anything above W, on every request. Omit W for the rotating fault window instead |
 | `(set-active-power ID W &key :lifetime-s :clamp)` | gRPC-style setpoint; `:lifetime-s` = lifetime in seconds (the old positional `LIFETIME-MS [CLAMP]` still works and warns), non-nil `:clamp` clamps into the live envelope instead of rejecting, and an empty envelope yields 0 |
 | `(set-reactive-power ID VAR &key :lifetime-s :clamp)` | same for the reactive axis; `:clamp` pulls into the gateway's setpoint envelope (own PF / kVA band at the live P ∩ live augmentations ∩ children's Q bands), falling back to the component's own band when no child reports one; an empty envelope yields 0 |
 | `(augment-active-bounds ID BOUNDS &key :lifetime-s)` | gRPC-style bounds augmentation: BOUNDS is `(LO HI)` or a list of bands, e.g. `'((-10000 -1000) (1000 10000))` for an exclusion zone; nil edge = unbounded; `:lifetime-s` = lifetime in seconds (default `default-augment-lifetime-s`; the old positional `LIFETIME-MS` still works and warns) |
@@ -111,6 +112,13 @@ scenario the knob setters are permanent too, as before. See
 physics keeps simulating, but the gRPC stream goes quiet and
 SetPower requests hang. Useful for exercising downstream apps
 that need to cope with stale or unresponsive sources.
+
+`(set-component-command-mode 200 'over-bound)` with an
+`:over-bound-limit-w` below the component's rated bound simulates a
+gateway that advertises its rated bound but enforces a tighter
+internal limit — a controller asking for exactly what it was offered
+is rejected every time, by exactly the margin between the two, and
+unlike the rotating fault window the failures never stop on their own.
 
 Two more defuns wrap the reactive setters above for a
 `define-scenario`'s `:drive` section. Unlike everything in the table

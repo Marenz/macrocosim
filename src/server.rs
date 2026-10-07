@@ -64,7 +64,7 @@ use crate::proto::microgrid::{
 };
 use crate::proto_conv::{make_component_proto, telemetry_to_proto};
 use crate::sim::gateway::{GatewayError, Mode};
-use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
+use crate::sim::runtime::{CommandMode, ComponentRuntime, Health, TelemetryMode};
 use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
 use crate::sim::{AugmentError, bounds::VecBounds};
 use crate::timeout_tracker::SetpointAxis;
@@ -120,10 +120,11 @@ impl MicrogridServer {
     /// `Timeout` command mode hangs the request, `Error` replies
     /// `Unavailable`, and any non-`Ok` health refuses with
     /// `FailedPrecondition` — so an errored or standby device rejects
-    /// both setpoint and bounds commands. Returns the command mode so
-    /// setpoint callers can further special-case `OverBound` (which is
-    /// setpoint-only — bounds commands carry no power value).
-    async fn gate_runtime_faults(&self, id: u64) -> Result<CommandMode, tonic::Status> {
+    /// both setpoint and bounds commands. Returns the runtime snapshot
+    /// so setpoint callers can further special-case `OverBound` (which
+    /// is setpoint-only — bounds commands carry no power value) and
+    /// read its limit.
+    async fn gate_runtime_faults(&self, id: u64) -> Result<ComponentRuntime, tonic::Status> {
         let runtime = self.site.runtime_of(id);
         match runtime.command {
             CommandMode::Timeout => {
@@ -143,7 +144,7 @@ impl MicrogridServer {
                 runtime.health
             )));
         }
-        Ok(runtime.command)
+        Ok(runtime)
     }
 
     /// The body of `set_electrical_component_power` minus the
@@ -185,7 +186,7 @@ impl MicrogridServer {
 
         // Runtime fault simulation: command mode + health are checked
         // before any physics (shared with AugmentBounds).
-        let command = self
+        let runtime = self
             .gate_runtime_faults(req.electrical_component_id)
             .await?;
         // `OverBound` is a setpoint-only fault: the gateway advertised
@@ -193,15 +194,27 @@ impl MicrogridServer {
         // internal limit just below the request, returning
         // INVALID_ARGUMENT. Applies to both power types — a device
         // lying about its envelope lies on the reactive axis too.
-        // Faulting is intermittent and rotating per component (see
-        // `over_bound_faulty_now`), so the set of currently rejecting
-        // components churns over time. Zero-power (fail-safe)
-        // setpoints are still accepted.
-        if matches!(command, CommandMode::OverBound)
+        // Zero-power (fail-safe) setpoints are still accepted.
+        //
+        // With an `:over-bound-limit-w` the rejection is structural: every
+        // request above that magnitude is refused, at every instant, so a
+        // controller asking for the advertised bound never gets it.
+        // Without one the faulting is intermittent and rotating per
+        // component (see `over_bound_faulty_now`), so the set of
+        // currently rejecting components churns over time.
+        let over_bound_limit = runtime.over_bound_limit_w;
+        let over_bound_rejects = match over_bound_limit {
+            Some(limit) => req.power.abs() > limit,
+            None => Self::over_bound_faulty_now(req.electrical_component_id),
+        };
+        if matches!(runtime.command, CommandMode::OverBound)
             && req.power != 0.0
-            && Self::over_bound_faulty_now(req.electrical_component_id)
+            && over_bound_rejects
         {
-            let allowed = (req.power.abs() * 0.97).round();
+            let allowed = match over_bound_limit {
+                Some(limit) => limit.round(),
+                None => (req.power.abs() * 0.97).round(),
+            };
             let label = match power_type {
                 PowerType::Active if req.power >= 0.0 => "charge power",
                 PowerType::Active => "discharge power",

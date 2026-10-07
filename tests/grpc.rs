@@ -1205,3 +1205,132 @@ async fn battery_telemetry_carries_the_throttled_bounds() {
     assert_eq!(bounds[0].lower, Some(lo));
     assert_eq!(bounds[0].upper, Some(hi));
 }
+
+/// An inverter rated ±5 kW that advertises those bounds but enforces a
+/// tighter 3.9 kW internal limit — the self-consumption-unaware gateway
+/// `:over-bound-limit-w` models.
+const OVER_BOUND_LIMIT_TOPOLOGY: &str = r#"
+(%make-grid-connection-point :id 1
+            :successors
+            (list (%make-meter :id 2
+                               :successors
+                               (list (%make-battery-inverter
+                                      :id 4
+                                      :command-mode 'over-bound
+                                      :over-bound-limit-w 3900.0
+                                      :rated-lower-w -5000.0
+                                      :rated-upper-w  5000.0
+                                      :successors
+                                      (list (%make-battery
+                                             :id 3
+                                             :rated-lower-w -5000.0
+                                             :rated-upper-w  5000.0)))))))
+"#;
+
+/// With a limit the `over-bound` rejection is structural, not a
+/// rotating window: anything above the limit is refused on every
+/// request, anything at or below it goes through, and 0 W still parks.
+#[tokio::test(flavor = "multi_thread")]
+async fn over_bound_limit_rejects_above_and_accepts_at_the_limit() {
+    let s = TestServer::start(OVER_BOUND_LIMIT_TOPOLOGY).await;
+    let mut c = connect(&s).await;
+
+    // Above the limit, and still inside the advertised ±5 kW envelope:
+    // rejected every time, naming the limit rather than a fraction of
+    // the request.
+    for _ in 0..3 {
+        let err = c
+            .set_electrical_component_power(SetElectricalComponentPowerRequest {
+                electrical_component_id: 4,
+                power: -5000.0,
+                power_type: PowerType::Active as i32,
+                request_lifetime: Some(30),
+            })
+            .await
+            .expect_err("above the internal limit");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(
+            err.message().contains("maximum allowed 3900"),
+            "expected the limit in the message, got {:?}",
+            err.message()
+        );
+    }
+
+    // Exactly at the limit is accepted: the gate is on magnitude >
+    // limit, so the boundary itself is allowed.
+    let resp = c
+        .set_electrical_component_power(SetElectricalComponentPowerRequest {
+            electrical_component_id: 4,
+            power: -3900.0,
+            power_type: PowerType::Active as i32,
+            request_lifetime: Some(30),
+        })
+        .await
+        .expect("at the internal limit");
+    expect_accepted_then_success(resp.into_inner()).await;
+
+    // The fail-safe park is never gated by the limit.
+    let resp = c
+        .set_electrical_component_power(SetElectricalComponentPowerRequest {
+            electrical_component_id: 4,
+            power: 0.0,
+            power_type: PowerType::Active as i32,
+            request_lifetime: Some(30),
+        })
+        .await
+        .expect("0 W parks");
+    expect_accepted_then_success(resp.into_inner()).await;
+}
+
+/// The limit is a parameter of the `over-bound` mode, not a gate of its
+/// own: a component left on the default command mode is unaffected, and
+/// a component left without a limit keeps the rotating fault window.
+#[tokio::test(flavor = "multi_thread")]
+async fn over_bound_limit_only_bites_in_over_bound_mode() {
+    let s = TestServer::start(TINY_TOPOLOGY).await;
+    let mut c = connect(&s).await;
+
+    // Nothing in TINY_TOPOLOGY sets a limit, so the runtime row has
+    // none and `over-bound` would fall back to the rotating window.
+    assert_eq!(s.config.site().runtime_of(4).over_bound_limit_w, None);
+
+    // Give it a limit while leaving the command mode alone: a setpoint
+    // well above the limit is still accepted.
+    s.config
+        .eval("(set-component-over-bound-limit 4 1000.0)")
+        .expect("set the limit");
+    assert_eq!(
+        s.config.site().runtime_of(4).over_bound_limit_w,
+        Some(1000.0)
+    );
+    let resp = c
+        .set_electrical_component_power(SetElectricalComponentPowerRequest {
+            electrical_component_id: 4,
+            power: 4000.0,
+            power_type: PowerType::Active as i32,
+            request_lifetime: Some(30),
+        })
+        .await
+        .expect("a normal component ignores the limit");
+    expect_accepted_then_success(resp.into_inner()).await;
+
+    // Arming the mode makes the same setpoint fail, and clearing the
+    // limit puts the component back on the rotating window.
+    s.config
+        .eval("(set-component-command-mode 4 'over-bound)")
+        .expect("arm over-bound");
+    let err = c
+        .set_electrical_component_power(SetElectricalComponentPowerRequest {
+            electrical_component_id: 4,
+            power: 4000.0,
+            power_type: PowerType::Active as i32,
+            request_lifetime: Some(30),
+        })
+        .await
+        .expect_err("above the internal limit");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    s.config
+        .eval("(set-component-over-bound-limit 4)")
+        .expect("clear the limit");
+    assert_eq!(s.config.site().runtime_of(4).over_bound_limit_w, None);
+}

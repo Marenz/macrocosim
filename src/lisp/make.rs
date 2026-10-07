@@ -45,6 +45,10 @@ AsList! {
         health<":health">: Option<Health>,
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
         command_mode<":command-mode">: Option<CommandMode>,
+        /// Internal limit an `over-bound` component enforces, as a
+        /// magnitude in W (VAr on the reactive axis). Left out,
+        /// `over-bound` keeps its rotating fault window.
+        over_bound_limit_w<":over-bound-limit-w">: Option<f64>,
     }
 }
 
@@ -78,6 +82,10 @@ AsList! {
         health<":health">: Option<Health>,
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
         command_mode<":command-mode">: Option<CommandMode>,
+        /// Internal limit an `over-bound` component enforces, as a
+        /// magnitude in W (VAr on the reactive axis). Left out,
+        /// `over-bound` keeps its rotating fault window.
+        over_bound_limit_w<":over-bound-limit-w">: Option<f64>,
     }
 }
 
@@ -103,6 +111,10 @@ AsList! {
         health<":health">: Option<Health>,
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
         command_mode<":command-mode">: Option<CommandMode>,
+        /// Internal limit an `over-bound` component enforces, as a
+        /// magnitude in W (VAr on the reactive axis). Left out,
+        /// `over-bound` keeps its rotating fault window.
+        over_bound_limit_w<":over-bound-limit-w">: Option<f64>,
     }
 }
 
@@ -128,6 +140,10 @@ AsList! {
         health<":health">: Option<Health>,
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
         command_mode<":command-mode">: Option<CommandMode>,
+        /// Internal limit an `over-bound` component enforces, as a
+        /// magnitude in W (VAr on the reactive axis). Left out,
+        /// `over-bound` keeps its rotating fault window.
+        over_bound_limit_w<":over-bound-limit-w">: Option<f64>,
         /// PF-style Q cap: |Q| ≤ k × |P|. Pass 0 to disable (nil inherits the default).
         reactive_pf_limit<":reactive-pf-limit">: Option<f64>,
         /// kVA-style Q cap: P² + Q² ≤ apparent². Pass 0 to disable (nil inherits the default).
@@ -183,6 +199,10 @@ AsList! {
         health<":health">: Option<Health>,
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
         command_mode<":command-mode">: Option<CommandMode>,
+        /// Internal limit an `over-bound` component enforces, as a
+        /// magnitude in W (VAr on the reactive axis). Left out,
+        /// `over-bound` keeps its rotating fault window.
+        over_bound_limit_w<":over-bound-limit-w">: Option<f64>,
         /// PF-style Q cap: |Q| ≤ k × |P|. Pass 0 to disable.
         reactive_pf_limit<":reactive-pf-limit">: Option<f64>,
         /// kVA-style Q cap: P² + Q² ≤ apparent². Pass 0 to disable.
@@ -240,6 +260,10 @@ AsList! {
         health<":health">: Option<Health>,
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
         command_mode<":command-mode">: Option<CommandMode>,
+        /// Internal limit an `over-bound` component enforces, as a
+        /// magnitude in W (VAr on the reactive axis). Left out,
+        /// `over-bound` keeps its rotating fault window.
+        over_bound_limit_w<":over-bound-limit-w">: Option<f64>,
     }
 }
 
@@ -272,6 +296,10 @@ AsList! {
         health<":health">: Option<Health>,
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
         command_mode<":command-mode">: Option<CommandMode>,
+        /// Internal limit an `over-bound` component enforces, as a
+        /// magnitude in W (VAr on the reactive axis). Left out,
+        /// `over-bound` keeps its rotating fault window.
+        over_bound_limit_w<":over-bound-limit-w">: Option<f64>,
     }
 }
 
@@ -289,6 +317,10 @@ AsList! {
         health<":health">: Option<Health>,
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
         command_mode<":command-mode">: Option<CommandMode>,
+        /// Internal limit an `over-bound` component enforces, as a
+        /// magnitude in W (VAr on the reactive axis). Left out,
+        /// `over-bound` keeps its rotating fault window.
+        over_bound_limit_w<":over-bound-limit-w">: Option<f64>,
     }
 }
 
@@ -343,6 +375,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                 a.health,
                 a.telemetry_mode,
                 a.command_mode,
+                a.over_bound_limit_w,
             )?;
             apply_initial_name(&w, id, a.name);
             connect_successors(&w, id, &a.successors);
@@ -386,6 +419,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                 a.health,
                 a.telemetry_mode,
                 a.command_mode,
+                a.over_bound_limit_w,
             )?;
             apply_initial_name(&w, id, a.name);
             connect_successors(&w, id, &a.successors);
@@ -436,6 +470,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                 a.health,
                 a.telemetry_mode,
                 a.command_mode,
+                a.over_bound_limit_w,
             )?;
             apply_initial_name(&w, id, a.name);
             Ok::<_, Error>(h)
@@ -485,6 +520,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                 a.health,
                 a.telemetry_mode,
                 a.command_mode,
+                a.over_bound_limit_w,
             )?;
             apply_initial_name(&w, id, a.name);
             connect_successors(&w, id, &a.successors);
@@ -609,6 +645,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                 a.health,
                 a.telemetry_mode,
                 a.command_mode,
+                a.over_bound_limit_w,
             )?;
             apply_initial_name(&w, id, a.name);
             Ok::<_, Error>(h)
@@ -687,6 +724,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                 a.health,
                 a.telemetry_mode,
                 a.command_mode,
+                a.over_bound_limit_w,
             )?;
             apply_initial_name(&w, id, a.name);
             Ok::<_, Error>(h)
@@ -765,6 +803,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                 a.health,
                 a.telemetry_mode,
                 a.command_mode,
+                a.over_bound_limit_w,
             )?;
             apply_initial_name(&w, id, a.name);
             Ok::<_, Error>(h)
@@ -796,6 +835,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                     a.health,
                     a.telemetry_mode,
                     a.command_mode,
+                    a.over_bound_limit_w,
                 )?;
                 apply_initial_name(&w, id, a.name);
                 Ok::<_, Error>(h)
@@ -1009,6 +1049,7 @@ fn register_with_modes<C: crate::sim::SimulatedComponent + 'static>(
     health: Option<Health>,
     telemetry: Option<TelemetryMode>,
     command: Option<CommandMode>,
+    over_bound_limit_w: Option<f64>,
 ) -> Result<ComponentHandle, Error> {
     let id = component.id();
     let h = site.register(component);
@@ -1025,7 +1066,7 @@ fn register_with_modes<C: crate::sim::SimulatedComponent + 'static>(
             site.set_operational_mode(id, m)
                 .map_err(Error::invalid_argument)?;
         }
-        apply_initial_modes(site, id, health, telemetry, command)
+        apply_initial_modes(site, id, health, telemetry, command, over_bound_limit_w)
     })();
     if let Err(e) = modes {
         site.remove_component(id);
@@ -1056,6 +1097,7 @@ fn apply_initial_modes(
     health: Option<Health>,
     telemetry: Option<TelemetryMode>,
     command: Option<CommandMode>,
+    over_bound_limit_w: Option<f64>,
 ) -> Result<(), Error> {
     if let Some(h) = health {
         site.set_health(id, h).map_err(Error::invalid_argument)?;
@@ -1077,6 +1119,15 @@ fn apply_initial_modes(
         && health != Some(Health::Error)
     {
         site.set_command_mode(id, c)
+            .map_err(Error::invalid_argument)?;
+    }
+    // Not a mode of its own: the limit only says *how* an `over-bound`
+    // component rejects, so it is stored whether or not that mode is
+    // armed here — a scenario arming it later finds the limit waiting.
+    if let Some(limit) = over_bound_limit_w {
+        let limit = crate::sim::runtime::validate_over_bound_limit_w(limit)
+            .map_err(|e| Error::invalid_argument(format!(":over-bound-limit-w: {e}")))?;
+        site.set_over_bound_limit(id, Some(limit))
             .map_err(Error::invalid_argument)?;
     }
     Ok(())
@@ -1240,6 +1291,36 @@ mod tests {
         let ok = site.runtime_of(301);
         assert_eq!(ok.health, Health::Ok);
         assert_eq!(ok.command, CommandMode::Timeout);
+    }
+
+    /// `:over-bound-limit-w` lands on the runtime row and is independent
+    /// of which command mode is armed; unset leaves it `None`, so
+    /// `over-bound` keeps its rotating fault window. A limit is a
+    /// magnitude, so a negative or non-finite one is a config error and
+    /// rolls the registration back.
+    #[test]
+    fn over_bound_limit_lands_on_the_runtime_row() {
+        let (site, mut ctx) = run_with_ctx(
+            r#"(%make-battery-inverter :id 400 :command-mode 'over-bound
+                                       :over-bound-limit-w 99000.0)
+               (%make-battery-inverter :id 401 :over-bound-limit-w 1000.0)
+               (%make-battery-inverter :id 402 :command-mode 'over-bound)"#,
+        );
+        assert_eq!(site.runtime_of(400).over_bound_limit_w, Some(99_000.0));
+        // Stored without the mode armed: a scenario arming it later
+        // finds the limit waiting.
+        assert_eq!(site.runtime_of(401).over_bound_limit_w, Some(1000.0));
+        assert_eq!(site.runtime_of(402).over_bound_limit_w, None);
+
+        for bad in [
+            "(%make-battery-inverter :id 403 :over-bound-limit-w -1.0)",
+            "(%make-battery-inverter :id 404 :over-bound-limit-w 1.0e40)",
+        ] {
+            let res = ctx.eval_string(bad);
+            assert!(res.is_err(), "expected error from {bad}, got {res:?}");
+        }
+        assert!(site.get(403).is_none(), "the failed make must roll back");
+        assert!(site.get(404).is_none(), "the failed make must roll back");
     }
 
     /// `:power-w N` lands as a constant DynamicScalar — aggregate_power_w

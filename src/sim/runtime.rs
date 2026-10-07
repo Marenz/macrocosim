@@ -70,9 +70,15 @@ tulisp::AsSymbol! {
         /// `INVALID_ARGUMENT`, even though the advertised bounds said the
         /// setpoint was within range. Models a device that advertises one
         /// set of bounds but then rejects a command of that size against a
-        /// tighter internal limit. Faulting is intermittent and rotates
-        /// per component (see `over_bound_faulty_now`). Zero-power
-        /// (fail-safe) setpoints are still accepted.
+        /// tighter internal limit. Zero-power (fail-safe) setpoints are
+        /// still accepted.
+        ///
+        /// Two triggers, picked by [`ComponentRuntime::over_bound_limit_w`]:
+        /// without a limit the faulting is intermittent and rotates per
+        /// component (see `over_bound_faulty_now`), modelling a few flaky
+        /// devices flapping in and out; with a limit it is structural —
+        /// every request whose magnitude exceeds the limit is rejected, at
+        /// every instant.
         OverBound<"over-bound">,
     }
 }
@@ -82,6 +88,33 @@ pub struct ComponentRuntime {
     pub health: Health,
     pub telemetry: TelemetryMode,
     pub command: CommandMode,
+    /// The internal limit an `OverBound` component enforces, in W (or
+    /// VAr on the reactive axis), as a magnitude. `None` — the default
+    /// — leaves `OverBound` on its rotating fault window.
+    ///
+    /// Set it below the component's rated bound and the device keeps
+    /// advertising that bound while refusing anything above the limit:
+    /// a controller asking for exactly what it was offered is then
+    /// rejected every single time, by exactly the margin between the
+    /// two. That is the shape of a gateway that subtracts inverter
+    /// self-consumption from the setpoint but not from the bound it
+    /// advertises, and unlike the rotating window it never resolves
+    /// itself.
+    pub over_bound_limit_w: Option<f32>,
+}
+
+/// Narrow a lisp-supplied `:over-bound-limit-w` to the stored `f32`. A
+/// limit is a magnitude, so it must be non-negative, and it must still
+/// be finite *after* the narrowing — an `f64` beyond `f32::MAX` would
+/// otherwise saturate to infinity and silently disable the gate.
+pub fn validate_over_bound_limit_w(watts: f64) -> Result<f32, String> {
+    let limit = watts as f32;
+    if !limit.is_finite() || limit < 0.0 {
+        return Err(format!(
+            "over-bound limit must be a finite, non-negative magnitude, got {watts}"
+        ));
+    }
+    Ok(limit)
 }
 
 impl Health {

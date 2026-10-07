@@ -51,6 +51,29 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
         },
     );
 
+    // Not a mode but a parameter of one: how an `over-bound`
+    // component rejects. With a limit it rejects every request above
+    // that magnitude, constantly; without one it keeps the rotating
+    // fault window. Omit WATTS to clear it again.
+    let r = router.clone();
+    ctx.defun(
+        "set-component-over-bound-limit",
+        move |id: i64, watts: Option<f64>| -> Result<bool, tulisp::Error> {
+            let limit = watts
+                .map(crate::sim::runtime::validate_over_bound_limit_w)
+                .transpose()
+                .map_err(|e| {
+                    tulisp::Error::invalid_argument(format!("set-component-over-bound-limit: {e}"))
+                })?;
+            r.site()
+                .set_over_bound_limit(id as u64, limit)
+                .map_err(|e| {
+                    tulisp::Error::invalid_argument(format!("set-component-over-bound-limit: {e}"))
+                })?;
+            Ok(true)
+        },
+    );
+
     // Unlike the runtime knobs above, the operational mode is a
     // CONFIG parameter — the declared capability of the component.
     // Setting it re-derives the runtime knobs (no telemetry means a
