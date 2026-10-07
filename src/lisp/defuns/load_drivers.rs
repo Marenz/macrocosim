@@ -12,11 +12,10 @@
 //! scenario knob, so a run that plugs or unplugs a car is undone by
 //! `(scenario-stop)`.
 
-use tulisp::{AsPlist, Error, Plist, TulispContext, TulispObject};
+use tulisp::{AsList, Error, Plist, TulispContext, TulispObject};
 
 use crate::lisp::make::preset_from_lisp;
 use crate::lisp::renames::{Convert, Renamed, warn_renamed};
-use crate::lisp::value::LispValue;
 use crate::sim::component::KnobKind;
 use crate::sim::ev_presets::{ConnectedEv, EvOverrides, PRESETS};
 use crate::sim::microgrid_site::SocRefusal;
@@ -24,17 +23,17 @@ use crate::sim::microgrids::SharedSiteRouter;
 
 // `%plug-ev`'s kwargs: the charger to plug into, the catalog car,
 // and the per-plug overrides on top of that car's preset values.
-AsPlist! {
+AsList! {
     pub struct PlugEvArgs {
-        component_id<":component-id">: Option<i64> {= None},
-        preset: Option<LispValue> {= None},
-        soc_pct<":soc-pct">: Option<f64> {= None},
-        target_soc_pct<":target-soc-pct">: Option<f64> {= None},
-        phases: Option<i64> {= None},
-        max_current_a<":max-current-a">: Option<f64> {= None},
-        capacity_wh<":capacity-wh">: Option<f64> {= None},
-        taper_start_pct<":taper-start-pct">: Option<f64> {= None},
-        taper_floor_pct<":taper-floor-pct">: Option<f64> {= None},
+        component_id<":component-id">: Option<i64>,
+        preset: Option<TulispObject>,
+        soc_pct<":soc-pct">: Option<f64>,
+        target_soc_pct<":target-soc-pct">: Option<f64>,
+        phases: Option<i64>,
+        max_current_a<":max-current-a">: Option<f64>,
+        capacity_wh<":capacity-wh">: Option<f64>,
+        taper_start_pct<":taper-start-pct">: Option<f64>,
+        taper_floor_pct<":taper-floor-pct">: Option<f64>,
     }
 }
 

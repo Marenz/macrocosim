@@ -321,10 +321,7 @@ impl Config {
             include_str!("../../sim/scenarios.lisp"),
         ] {
             if let Err(e) = ctx.eval_string(src) {
-                return Err(format!(
-                    "embedded prelude failed to load: {}",
-                    e.format(&ctx)
-                ));
+                return Err(format!("embedded prelude failed to load: {e}"));
             }
         }
 
@@ -484,7 +481,7 @@ impl Config {
         match ctx.eval_file(&path.to_string_lossy()) {
             Ok(_) => Ok(()),
             Err(e) => {
-                let formatted = e.format(ctx);
+                let formatted = e.to_string();
                 log::error!("Tulisp error in {}:\n{formatted}", path.display());
                 Err(formatted)
             }
@@ -618,7 +615,7 @@ impl Config {
             None => ctx.eval_file(&resolved.to_string_lossy()),
         });
         if let Err(e) = result {
-            let formatted = e.format(ctx);
+            let formatted = e.to_string();
             log::error!("Tulisp error in {}:\n{formatted}", resolved.display());
             // Evaluation STARTED, so the file is part of the world
             // whatever went wrong — whether the failure was in a
@@ -1047,7 +1044,7 @@ impl Config {
             log::warn!(
                 "reload {}: cancel-file-timers failed: {}",
                 canonical.display(),
-                e.format(ctx)
+                e
             );
         }
         // Reset the sites this file owns, so a component the edited
@@ -1145,11 +1142,8 @@ impl Config {
         // `(cancel-timers)` call could not be: replayed after another
         // script, it would cancel that script's just-re-registered
         // timers, permanently freezing the earlier world's animation.
-        // Top-level eval_string here is fine — no caller of reload
-        // sits inside an eval frame (the 0.29.0 hazard is re-entrant
-        // eval_string only).
         if let Err(e) = ctx.eval_string("(cancel-timers)") {
-            log::warn!("reload: cancel-timers failed: {}", e.format(ctx));
+            log::warn!("reload: cancel-timers failed: {e}");
         }
         // Replay every file that backs a registered microgrid, in the
         // order those files first arrived. The registry is the list:
@@ -1470,7 +1464,9 @@ fn refresh_pass(
             c.refresh_inputs(&mut guard);
         }
     }
-    timer_handle.tick(&mut guard);
+    if let Err(e) = timer_handle.tick(&mut guard) {
+        log::warn!("refresh: a timer was stopped: {e}");
+    }
 }
 
 /// The script's directory, for the single-script constructors that

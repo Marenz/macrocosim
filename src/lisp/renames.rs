@@ -62,7 +62,7 @@ impl Convert {
                 "{old} expects a number, got {value}"
             )));
         }
-        let x = value.try_float()?;
+        let x = f64::try_from(value)?;
         let y = match self {
             Convert::None => x,
             Convert::MsToS => x / 1000.0,
@@ -301,7 +301,7 @@ fn warn_renamed_with(warned: &WarnOnce, old: &str, new: &str, note: &str) -> boo
 }
 
 /// `kvs` with every old keyword in `table` replaced by its new name
-/// and value. Order is kept, so last-one-wins still holds; an odd
+/// and value. Order is kept, so the first one still wins; an odd
 /// tail is copied as is for the parser to reject.
 fn rename_kvs_with(
     ctx: &mut TulispContext,

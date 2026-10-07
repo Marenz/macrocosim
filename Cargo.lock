@@ -2448,15 +2448,15 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tulisp"
-version = "0.29.0"
+version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd99c416fddebdd21fefdee789eca2b57e934327f7722ffbf454e16fde7305ee"
+checksum = "32be7920d882b8d0ad6df3fb53575eac1a98b2c632a24bc116266abf8bd34e56"
 
 [[package]]
 name = "tulisp-async"
-version = "0.1.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11c4b12388bec8cb611fdda90d60de88bed08e6efec659c107abd47eea5f9ccb"
+checksum = "2f415f14815a73d3a5c01191d099c1f81357a18ce86572174495d2c68316943f"
 dependencies = [
  "tokio",
  "tulisp",

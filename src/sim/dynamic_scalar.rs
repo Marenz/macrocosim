@@ -167,7 +167,7 @@ impl DynamicScalar {
         let Some(src) = &self.source else { return };
         let (label, result) = match src {
             Source::Eval(e) => (e, ctx.eval(e)),
-            Source::Funcall(f) => (f, ctx.funcall(f, &TulispObject::nil())),
+            Source::Funcall(f) => (f, ctx.funcall(f, ())),
         };
         match result {
             Ok(obj) => match f64::try_from(&obj) {
@@ -180,14 +180,10 @@ impl DynamicScalar {
                 Err(e) => log::warn!(
                     "DynamicScalar refresh: non-numeric result from {}: {}",
                     label,
-                    e.format(ctx)
+                    e.with_file_names(ctx)
                 ),
             },
-            Err(e) => log::warn!(
-                "DynamicScalar refresh error in {}: {}",
-                label,
-                e.format(ctx)
-            ),
+            Err(e) => log::warn!("DynamicScalar refresh error in {label}: {e}"),
         }
     }
 }

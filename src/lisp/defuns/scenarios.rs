@@ -13,69 +13,48 @@ use crate::sim::history::Metric;
 use crate::sim::microgrids::SharedSiteRouter;
 use crate::sim::scenario::ScenarioCheck;
 
-/// Newtype around `TulispObject` so `Vec<RawForm>` satisfies the
-/// AsPlist field bound (which needs `TryFrom<TulispObject, Error =
-/// tulisp::Error>`; the blanket impl on `TulispObject` is `Error =
-/// Infallible`). Used for the list-valued scenario sections, whose
-/// elements are forms produced by the section wrappers (`drive-solar`,
-/// `at`, `check`, …) and kept raw for the runner.
-pub struct RawForm(tulisp::TulispObject);
-
-impl TryFrom<tulisp::TulispObject> for RawForm {
-    type Error = tulisp::Error;
-    fn try_from(v: tulisp::TulispObject) -> Result<Self, tulisp::Error> {
-        Ok(RawForm(v))
-    }
-}
-
-impl From<RawForm> for tulisp::TulispObject {
-    fn from(v: RawForm) -> tulisp::TulispObject {
-        v.0
-    }
-}
-
-tulisp::AsPlist! {
+tulisp::AsList! {
     pub struct DefineScenarioArgs {
         name: String,
-        description: Option<String> {= None},
+        description: Option<String>,
         /// `relative` (default) or `absolute` — symbol or string.
-        schedule: Option<crate::lisp::value::LispValue> {= None},
+        schedule: Option<TulispObject>,
         /// Default clock driver: `real` (default) or `stepped`.
-        clock: Option<crate::lisp::value::LispValue> {= None},
+        clock: Option<TulispObject>,
         /// Run length — a human offset string (`"4min"`) or a number
         /// of seconds. `None` runs until stopped.
-        length: Option<crate::lisp::value::LispValue> {= None},
+        length: Option<TulispObject>,
         /// Calendar date anchoring an `absolute` schedule, ISO
         /// `YYYY-MM-DD`. `None` falls back to wallclock-today.
-        date: Option<String> {= None},
+        date: Option<String>,
         /// Optional RNG seed (deterministic with a `stepped` clock).
-        seed: Option<i64> {= None},
+        seed: Option<i64>,
         /// Runs once at start.
-        setup: Option<crate::lisp::value::LispValue> {= None},
+        setup: Option<TulispObject>,
         /// Continuous environment sources.
-        drive: Option<Vec<RawForm>> {= None},
+        drive: Option<Vec<TulispObject>>,
         /// In-sim controllers.
-        agents: Option<Vec<RawForm>> {= None},
+        agents: Option<Vec<TulispObject>>,
         /// Discrete timed actions.
-        cues: Option<Vec<RawForm>> {= None},
+        cues: Option<Vec<TulispObject>>,
         /// Timed assertions.
-        expect: Option<Vec<RawForm>> {= None},
+        expect: Option<Vec<TulispObject>>,
         /// Recording directive (`'csv` or a directory).
-        record: Option<crate::lisp::value::LispValue> {= None},
+        record: Option<TulispObject>,
     }
 }
 
-/// A single non-nil form from a `LispValue` section arg, or `None`.
-fn opt_form(v: Option<crate::lisp::value::LispValue>) -> Option<tulisp::TulispObject> {
-    v.map(crate::lisp::value::LispValue::into_inner)
-        .filter(|o| !o.null())
+/// A single non-nil form from a raw section arg, or `None`.
+fn opt_form(v: Option<TulispObject>) -> Option<TulispObject> {
+    v.filter(|o| !o.null())
 }
 
-/// A list-valued section's non-nil forms.
-fn form_list(v: Option<Vec<RawForm>>) -> Vec<tulisp::TulispObject> {
+/// A list-valued section's non-nil forms. The elements are forms
+/// produced by the section wrappers (`drive-solar`, `at`, `check`, …)
+/// and kept raw for the runner.
+fn form_list(v: Option<Vec<TulispObject>>) -> Vec<TulispObject> {
     v.unwrap_or_default()
         .into_iter()
-        .map(|r| r.0)
         .filter(|o| !o.null())
         .collect()
 }
@@ -175,7 +154,7 @@ pub(in crate::lisp) fn register_registry(
     );
 }
 
-tulisp::AsPlist! {
+tulisp::AsList! {
     pub struct ScenarioExpectArgs {
         component_id<":component-id">: i64,
         /// Metric to read — symbol or string. Dashes normalize to
@@ -183,11 +162,11 @@ tulisp::AsPlist! {
         /// and lisp-style spellings work; see `parse_expect_metric`
         /// for the shorthand aliases (`soc`, `active-power`,
         /// `active-power-bounds-lower`, …).
-        metric: crate::lisp::value::LispValue,
-        approx: Option<f64> {= None},
-        tol: Option<f64> {= None},
-        min: Option<f64> {= None},
-        max: Option<f64> {= None},
+        metric: TulispObject,
+        approx: Option<f64>,
+        tol: Option<f64>,
+        min: Option<f64>,
+        max: Option<f64>,
     }
 }
 
@@ -351,7 +330,7 @@ pub(super) fn register_lifecycle(
                 if let Err(e) = ctx.eval(&stop_call) {
                     log::warn!(
                         "scenario-start: tearing down the running scenario failed: {}",
-                        e.format(ctx)
+                        e
                     );
                 }
             }
@@ -399,10 +378,7 @@ pub(super) fn register_lifecycle(
                 .into_iter()
                 .collect();
             if let Err(e) = ctx.eval(&cancel_call) {
-                log::warn!(
-                    "scenario-stop: scenario--cancel-timers failed: {}",
-                    e.format(ctx)
-                );
+                log::warn!("scenario-stop: scenario--cancel-timers failed: {e}");
             }
             let now = nowsrc.now();
             let sites: Vec<_> = reg.lock().values().map(|e| e.site.clone()).collect();
@@ -456,7 +432,7 @@ pub(super) fn register_lifecycle(
               args: tulisp::Plist<Renamed<ScenarioExpectArgs>>|
               -> Result<bool, Error> {
             let a = args.into_inner().0;
-            let metric_obj = a.metric.into_inner();
+            let metric_obj = a.metric;
             let metric_name = sym_name(&metric_obj)?;
             let metric = parse_expect_metric(&metric_name).ok_or_else(|| {
                 Error::os_error(format!("scenario-expect: unknown metric {metric_name:?}"))

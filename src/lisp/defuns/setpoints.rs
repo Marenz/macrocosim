@@ -54,7 +54,8 @@ pub(super) fn parse_tail(
             let value = pair.get(1).cloned().unwrap_or_else(TulispObject::nil);
             match key.as_str() {
                 ":lifetime-s" => {
-                    tail.lifetime = Some(secs_lifetime(name, ":lifetime-s", value.try_float()?)?)
+                    tail.lifetime =
+                        Some(secs_lifetime(name, ":lifetime-s", f64::try_from(&value)?)?)
                 }
                 ":clamp" if allow_clamp => tail.clamp = !value.null(),
                 _ => {
@@ -83,7 +84,7 @@ pub(super) fn parse_tail(
         None
     } else {
         // A negative lifetime expires at once, like 0; NaN is refused.
-        let ms = first.try_float()?;
+        let ms = f64::try_from(first)?;
         let ms = if ms < 0.0 { 0.0 } else { ms };
         Some(secs_lifetime(name, "LIFETIME-MS / 1000", ms / 1000.0)?)
     };

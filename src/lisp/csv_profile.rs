@@ -14,17 +14,17 @@
 //! beyond the last return the last value — wrap-around is the
 //! caller's job (a `(mod t period)` from Lisp does it cleanly).
 //!
-//! Stored in tulisp as `Shared<dyn TulispAny>` so the lisp side
-//! treats the load handle as opaque; the only operations are the
-//! `csv-*` defuns registered alongside.
+//! Stored in tulisp as an opaque `Shared<CsvLoadProfile>`; the only
+//! operations are the `csv-*` defuns registered alongside.
 
 use std::{
+    borrow::Cow,
     collections::HashMap,
     fmt, fs,
     path::{Path, PathBuf},
 };
 
-use tulisp::{Error, Shared, TulispContext, TulispObject};
+use tulisp::{Error, Shared, TulispAny, TulispContext};
 
 #[derive(Clone, Debug)]
 pub struct CsvLoadProfile {
@@ -45,6 +45,12 @@ impl fmt::Display for CsvLoadProfile {
             self.times.len(),
             self.fields.keys().cloned().collect::<Vec<_>>().join(", ")
         )
+    }
+}
+
+impl TulispAny for CsvLoadProfile {
+    fn lisp_type_name() -> Cow<'static, str> {
+        Cow::Borrowed("csv-profile")
     }
 }
 
@@ -207,7 +213,7 @@ impl CsvLoadProfile {
 pub fn register(ctx: &mut TulispContext, load_dir: std::path::PathBuf) {
     ctx.defun(
         "csv-load",
-        move |path: String| -> Result<Shared<dyn tulisp::TulispAny>, Error> {
+        move |path: String| -> Result<Shared<CsvLoadProfile>, Error> {
             // Resolve relative paths against the config's load dir,
             // like (load ...) and (file-exists-p ...) do — resolving
             // against the process CWD made the three disagree
@@ -224,26 +230,13 @@ pub fn register(ctx: &mut TulispContext, load_dir: std::path::PathBuf) {
         },
     );
 
-    ctx.defun(
-        "csv-fields",
-        |obj: TulispObject| -> Result<Vec<String>, Error> {
-            let any = obj.as_any().map_err(|e| e.with_trace(obj.clone()))?;
-            let profile = any
-                .downcast_ref::<CsvLoadProfile>()
-                .ok_or_else(|| Error::type_mismatch("csv-fields: expected csv-profile"))?;
-            Ok(profile.fields())
-        },
-    );
+    ctx.defun("csv-fields", |profile: Shared<CsvLoadProfile>| {
+        profile.fields()
+    });
 
     ctx.defun(
         "csv-lookup",
-        |obj: TulispObject, field: String, t: f64| -> Result<f64, Error> {
-            let any = obj.as_any().map_err(|e| e.with_trace(obj.clone()))?;
-            let profile = any
-                .downcast_ref::<CsvLoadProfile>()
-                .ok_or_else(|| Error::type_mismatch("csv-lookup: expected csv-profile"))?;
-            profile.lookup(&field, t)
-        },
+        |profile: Shared<CsvLoadProfile>, field: String, t: f64| profile.lookup(&field, t),
     );
 }
 

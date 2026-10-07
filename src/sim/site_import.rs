@@ -225,8 +225,7 @@ fn mode_kwargs(c: &ApiComponent, out: &mut Vec<(&'static str, String)>) -> Resul
             "COMPONENT_OPERATIONAL_MODE_",
         ],
     );
-    // The token list lives in OperationalMode's FromStr — the API
-    // token is the same word in SCREAMING_SNAKE_CASE.
+    // The API token is the mode's Lisp symbol in SCREAMING_SNAKE_CASE.
     let mode: crate::sim::OperationalMode = suffix
         .to_lowercase()
         .replace('_', "-")

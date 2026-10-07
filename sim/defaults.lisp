@@ -13,11 +13,11 @@
 ;;
 ;;   2. `make-*` wrappers (`make-grid-connection-point`,
 ;;      `make-meter`, `make-battery`, …) are thin `defuns` that call
-;;      the matching `%make-*` Rust
-;;      primitive with the defaults plist appended *before* the
-;;      caller's args. AsPlist's last-wins resolution makes the
-;;      per-component plist override category defaults; the `%make-*`
-;;      primitives stay available for callers that want zero defaults.
+;;      the matching `%make-*` Rust primitive with the defaults plist
+;;      appended *after* the caller's args. The first occurrence of a
+;;      key wins, as with `plist-get`, so the per-component plist
+;;      overrides category defaults; the `%make-*` primitives stay
+;;      available for callers that want zero defaults.
 
 ;; -----------------------------------------------------------------------------
 ;; Per-category defaults
@@ -72,22 +72,22 @@
 ;; make-* shorthand wrappers
 ;; -----------------------------------------------------------------------------
 ;;
-;; Each wrapper prepends its `<cat>-defaults` plist to the caller's
-;; args. AsPlist's last-occurrence-wins key resolution makes the
-;; per-component plist override the defaults. To bypass defaults
+;; Each wrapper appends its `<cat>-defaults` plist after the caller's
+;; args. The first occurrence of a key wins, as with `plist-get`, so
+;; the per-component plist overrides the defaults. To bypass defaults
 ;; entirely for one call, call the `%make-*` primitive directly:
 ;;
 ;;   (%make-battery :id 100)                       ; no defaults
 
 (defun make-grid-connection-point
-                             (&rest p) (apply '%make-grid-connection-point (append grid-defaults             p)))
-(defun make-meter            (&rest p) (apply '%make-meter            (append meter-defaults            p)))
-(defun make-battery          (&rest p) (apply '%make-battery          (append battery-defaults          p)))
-(defun make-battery-inverter (&rest p) (apply '%make-battery-inverter (append battery-inverter-defaults p)))
-(defun make-solar-inverter   (&rest p) (apply '%make-solar-inverter   (append solar-inverter-defaults   p)))
-(defun make-ev-charger       (&rest p) (apply '%make-ev-charger       (append ev-charger-defaults       p)))
-(defun make-chp              (&rest p) (apply '%make-chp              (append marker-defaults           p)))
-(defun make-wind-turbine     (&rest p) (apply '%make-wind-turbine     (append marker-defaults           p)))
-(defun make-steam-boiler (&rest p) (apply '%make-steam-boiler (append steam-boiler-defaults p)))
-(defun make-power-transformer (&rest p) (apply '%make-power-transformer (append marker-defaults         p)))
-(defun make-breaker          (&rest p) (apply '%make-breaker          (append marker-defaults           p)))
+                             (&rest p) (apply '%make-grid-connection-point (append p grid-defaults)))
+(defun make-meter            (&rest p) (apply '%make-meter            (append p meter-defaults)))
+(defun make-battery          (&rest p) (apply '%make-battery          (append p battery-defaults)))
+(defun make-battery-inverter (&rest p) (apply '%make-battery-inverter (append p battery-inverter-defaults)))
+(defun make-solar-inverter   (&rest p) (apply '%make-solar-inverter   (append p solar-inverter-defaults)))
+(defun make-ev-charger       (&rest p) (apply '%make-ev-charger       (append p ev-charger-defaults)))
+(defun make-chp              (&rest p) (apply '%make-chp              (append p marker-defaults)))
+(defun make-wind-turbine     (&rest p) (apply '%make-wind-turbine     (append p marker-defaults)))
+(defun make-steam-boiler (&rest p) (apply '%make-steam-boiler (append p steam-boiler-defaults)))
+(defun make-power-transformer (&rest p) (apply '%make-power-transformer (append p marker-defaults)))
+(defun make-breaker          (&rest p) (apply '%make-breaker          (append p marker-defaults)))

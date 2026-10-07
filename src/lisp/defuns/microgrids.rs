@@ -14,14 +14,14 @@ use tulisp::{TulispContext, TulispObject};
 use crate::lisp::renames::Renamed;
 use crate::sim::MicrogridSite;
 
-tulisp::AsPlist! {
+tulisp::AsList! {
     pub struct MakeMicrogridArgs {
-        name: Option<String> {= None},
-        id: Option<i64> {= None},
-        grpc_port<":grpc-port">: Option<i64> {= None},
+        name: Option<String>,
+        id: Option<i64>,
+        grpc_port<":grpc-port">: Option<i64>,
         /// Optional TSO zone label (informational; see
         /// `crate::sim::microgrids::MicrogridDef::tso`).
-        tso: Option<String> {= None},
+        tso: Option<String>,
         /// Zero-arg lambda whose body builds the microgrid's
         /// topology — typically a single nested
         /// `(make-grid-connection-point …)` call. The lambda
@@ -31,7 +31,7 @@ tulisp::AsPlist! {
         /// register into the new site instead of the previously-
         /// active one. Optional so a config can register an empty
         /// microgrid that the UI fills in component-by-component.
-        topology: Option<crate::lisp::value::LispValue> {= None},
+        topology: Option<TulispObject>,
     }
 }
 
@@ -335,17 +335,14 @@ pub(in crate::lisp) fn register(
             // subscribers — a fresh entry is removed again on error
             // (a reused one stays; its reset site is the same state a
             // failed reload leaves).
-            if let Some(topology) = a.topology {
-                let lambda = topology.into_inner();
-                if !lambda.null() {
-                    let nil = TulispObject::nil();
-                    if let Err(e) = with_microgrid(&current, id, || ctx.funcall(&lambda, &nil)) {
-                        if !reused {
-                            registry.lock().remove(&id);
-                        }
-                        return Err(e);
-                    }
+            if let Some(lambda) = a.topology
+                && !lambda.null()
+                && let Err(e) = with_microgrid(&current, id, || ctx.funcall(&lambda, ()))
+            {
+                if !reused {
+                    registry.lock().remove(&id);
                 }
+                return Err(e);
             }
             // Notify enterprise-wide subscribers (the WS event pump
             // and the runtime listener). A reused registration is

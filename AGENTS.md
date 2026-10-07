@@ -64,8 +64,8 @@ is wiring the topology + animating the environment.
     state
   - `undo.rs` — per-microgrid undo stack over the managed-file rewrites
   - `snapshots.rs` — per-mg snapshot save/load under `snapshots/{id}/`
-  - `make.rs` — `(make-*)` constructors via `AsPlist!`
-  - `handle.rs` — `ComponentHandle` ↔ `Shared<dyn TulispAny>` round trip
+  - `make.rs` — `(make-*)` constructors via `AsList!`
+  - `handle.rs` — `ComponentHandle` as an opaque lisp value
 - `src/ui/` — embedded web UI server
   - `mod.rs` — axum router + serve entry points
   - `api.rs` — `ApiError`, the extractor wrappers (`Json`, `Query`,
@@ -402,18 +402,15 @@ so construction + validation stay identical.
 
 ## Dependencies
 
-- `tulisp = { version = "0.29", features = ["sync", "etags"] }` — the
-  crates.io release (the git main-branch pin ended when 0.29.0
-  shipped). Known 0.29.0 gap: a re-entrant `eval_string` underflows
-  the eval-depth counter (fixed upstream) — `src/lisp/defuns/fs.rs`
-  works around it with `eval_file`; drop the workaround on the next
-  release bump.
-- `tulisp-async = "0.1"` — same-ctx timer primitives (`run-with-timer`, `cancel-timer`,
+- `tulisp = { version = "0.31", features = ["sync", "etags"] }` — the
+  crates.io release.
+- `tulisp-async = "0.3"` — same-ctx timer primitives (`run-with-timer`, `cancel-timer`,
   `sleep-for`). `TokioExecutor::new` calls `Handle::current()`, so
   `Config::new` must be invoked inside a running tokio runtime.
-  `register` returns a `Handle`; the pre-tick hook owns one clone
-  and ticks it each physics step — without that, no timer body
-  ever runs (the same-ctx model has no background firing thread).
+  `register` returns a `Handle`; the Lisp refresh loop owns one
+  clone and ticks it every pass — without that, no timer body ever
+  runs (the same-ctx model has no background firing thread). In a
+  headless `Config`, `refresh_once` and `sim_step` tick it.
 - Proto roots are vendored under `submodules/`:
   - `submodules/frequenz-api-microgrid` (pinned at v0.18.1) — override
     with `MACROCOSIM_PROTO_ROOT` for a private mirror.
@@ -435,13 +432,13 @@ so construction + validation stay identical.
    lifetimes, augmentations and the ramp. Add the component to the
    capability table test in `src/sim/component.rs`.
 2. Add to `src/sim/mod.rs` re-exports.
-3. Add a `%make-foo` defun in `src/lisp/make.rs` with `AsPlist!`-derived
+3. Add a `%make-foo` defun in `src/lisp/make.rs` with `AsList!`-derived
    args, calling `site.register(...)`. Note the leading `%` —
    user-facing topology code calls `make-foo`, which dispatches here.
 4. Add a `foo-defaults` plist + `(defun make-foo …)` wrapper to
    `sim/defaults.lisp`. The wrapper `apply`s `%make-foo` to the
-   defaults plist `append`-ed in front of the caller's args; AsPlist's
-   last-occurrence-wins resolution lets per-component plist values
+   caller's args with the defaults plist `append`-ed after them; the
+   first occurrence of a key wins, so per-component plist values
    override the defaults.
 5. (Optional) Override `subtype()` if proto needs `InverterType::Foo` / etc.
 6. Add the category to `COMPONENT_MAKE_FNS` in
@@ -460,14 +457,14 @@ so construction + validation stay identical.
 Two-layer split:
 - `%make-*` — Rust primitives in `src/lisp/make.rs`. Pure plist
   parsing; every field arrives as a plist key, no defaults.
-- `make-*` — Lisp wrappers in `sim/defaults.lisp` that prepend a
+- `make-*` — Lisp wrappers in `sim/defaults.lisp` that append a
   `<cat>-defaults` plist and dispatch to `%make-*`.
 
 Topology code uses `make-*` (defaults applied). To opt out of
 defaults entirely for one call, invoke `%make-*` directly.
-Per-component plist args win without any special handling — AsPlist!
-takes the last occurrence of each key and the wrapper's defaults
-appear first in the merged plist.
+Per-component plist args win without any special handling — AsList!
+takes the first occurrence of each key, as `plist-get` does, and the
+wrapper's defaults appear last in the merged plist.
 
 Keyword names follow [`docs/names-and-units.md`](docs/names-and-units.md):
 the unit is the suffix (`:power-w`, `:soc-lower-pct`,
@@ -486,20 +483,20 @@ rebuild; a script that wants live defaults-editing can still
 
 ## Lisp value adapters
 
-- Runtime mode enums (`Health`, `TelemetryMode`, `CommandMode`) and
-  the config-level `OperationalMode` take their lisp-side
-  `TryFrom<TulispObject>` + `TulispConvertible` impls in
-  `src/lisp/runtime_modes.rs`. **Symbols only** — `:health 'error`
-  works, `:health "error"` errors with a type mismatch. Note the
+- Runtime mode enums (`Health`, `TelemetryMode`, `CommandMode`), the
+  config-level `OperationalMode` and `EvIdle` are declared with
+  tulisp's `AsSymbol!` next to their sim code, which gives them the
+  lisp conversion, `symbol_name()`, `Display` and `FromStr`.
+  **Symbols only** — `:health 'error` works, `:health "error"` errors
+  with a type mismatch. Note the
   split: `OperationalMode` is microgrid CONFIG (persists via the
   structural-eval rewrite of the microgrid's managed file, drives the
   formula engine); the other three are runtime fault knobs that
   depend on it.
-- `LispValue` (`src/lisp/value.rs`) — passthrough wrapper that lets a
-  raw `TulispObject` ride through `AsPlist!` (works around the
-  blanket-`From<T> for T` `Infallible` mismatch). Used for `:power-w`
-  and `:sunlight-pct`, where the make-* dispatcher inspects the raw
-  shape to pick between a constant and a `DynamicScalar`.
+- A raw `TulispObject` is an `AsList!` field like any other.
+  `:power-w` and `:sunlight-pct` use one so the make-* dispatcher can
+  inspect the raw shape to pick between a constant and a
+  `DynamicScalar`.
 
 ## Lisp gotchas (current tulisp-vm)
 

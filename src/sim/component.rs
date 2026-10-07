@@ -70,31 +70,32 @@ pub(crate) fn power_state(p: f32) -> &'static str {
     }
 }
 
-/// A component's declared capability — a microgrid CONFIG parameter,
-/// not a runtime state. The runtime fault knobs (telemetry mode,
-/// command mode, health) depend on it: an `Inactive` component can
-/// never stream telemetry, whatever the knobs say. The formula
-/// engine reads this mode to decide whether a component can be a
-/// measurement source.
-///
-/// A deliberate twin of the graph crate's `OperationalMode`
-/// (lifted 1:1 in `graph_adapter::lift_mode`): the local type
-/// carries the Lisp `FromStr`/`Display`/plist impls the foreign
-/// type can't. Keep `provides_telemetry` in sync with the graph
-/// crate's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum OperationalMode {
-    /// Not explicitly set; treated as full capability.
-    #[default]
-    Unspecified,
-    /// Not operational: no telemetry, no control.
-    Inactive,
-    /// Streams telemetry, rejects control commands.
-    TelemetryOnly,
-    /// Accepts control commands, streams no telemetry.
-    ControlOnly,
-    /// Full capability, explicitly declared.
-    ControlAndTelemetry,
+tulisp::AsSymbol! {
+    /// A component's declared capability — a microgrid CONFIG parameter,
+    /// not a runtime state. The runtime fault knobs (telemetry mode,
+    /// command mode, health) depend on it: an `Inactive` component can
+    /// never stream telemetry, whatever the knobs say. The formula
+    /// engine reads this mode to decide whether a component can be a
+    /// measurement source.
+    ///
+    /// A deliberate twin of the graph crate's `OperationalMode`
+    /// (lifted 1:1 in `graph_adapter::lift_mode`): the local type
+    /// carries the Lisp symbol conversion the foreign type can't.
+    /// Keep `provides_telemetry` in sync with the graph crate's.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum OperationalMode {
+        /// Not explicitly set; treated as full capability.
+        #[default]
+        Unspecified<"unspecified">,
+        /// Not operational: no telemetry, no control.
+        Inactive<"inactive">,
+        /// Streams telemetry, rejects control commands.
+        TelemetryOnly<"telemetry-only">,
+        /// Accepts control commands, streams no telemetry.
+        ControlOnly<"control-only">,
+        /// Full capability, explicitly declared.
+        ControlAndTelemetry<"control-and-telemetry">,
+    }
 }
 
 impl OperationalMode {
@@ -112,32 +113,6 @@ impl OperationalMode {
             self,
             Self::Unspecified | Self::ControlOnly | Self::ControlAndTelemetry
         )
-    }
-}
-
-impl std::str::FromStr for OperationalMode {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, ()> {
-        match s {
-            "unspecified" => Ok(Self::Unspecified),
-            "inactive" => Ok(Self::Inactive),
-            "telemetry-only" => Ok(Self::TelemetryOnly),
-            "control-only" => Ok(Self::ControlOnly),
-            "control-and-telemetry" => Ok(Self::ControlAndTelemetry),
-            _ => Err(()),
-        }
-    }
-}
-
-impl fmt::Display for OperationalMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Unspecified => "unspecified",
-            Self::Inactive => "inactive",
-            Self::TelemetryOnly => "telemetry-only",
-            Self::ControlOnly => "control-only",
-            Self::ControlAndTelemetry => "control-and-telemetry",
-        })
     }
 }
 
@@ -592,9 +567,9 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     fn constructor_kwargs(&self) -> Vec<(&'static str, String)>;
 }
 
-/// Cloneable handle that we hand to Lisp via `Shared<dyn TulispAny>`.
-/// Wrapping in a newtype lets us hang `Display`, `Clone`, conversion
-/// trait impls, and a stable `TypeId` off it.
+/// Cloneable handle that we hand to Lisp as an opaque host value.
+/// Wrapping in a newtype lets us hang `Display`, `Clone`, the
+/// `TulispAny` opt-in, and a stable `TypeId` off it.
 #[derive(Clone)]
 pub struct ComponentHandle(pub Arc<dyn SimulatedComponent>);
 

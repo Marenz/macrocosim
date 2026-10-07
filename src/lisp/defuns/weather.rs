@@ -8,12 +8,11 @@ use std::time::Duration;
 use tulisp::{Error, TulispContext, TulispObject};
 
 use crate::lisp::renames::Renamed;
-use crate::lisp::value::LispValue;
 use crate::sim::microgrids::SharedSiteRouter;
 use crate::sim::sim_clock::parse_time_of_day;
 use crate::sim::weather::{self as weather, Weather, WeatherConfig, WeatherDoor, WeatherPatch};
 
-tulisp::AsPlist! {
+tulisp::AsList! {
     /// Plist payload shared by `(make-weather …)` and
     /// `(set-weather …)`. Every key is optional: `make-weather`
     /// applies them over [`WeatherConfig::default`], `set-weather`
@@ -22,36 +21,35 @@ tulisp::AsPlist! {
         /// Time of day (UTC) the clear-sky curve turns on — either
         /// an `"HH:MM"` string or a bare number of seconds since
         /// midnight, matching `(parse-time-of-day)`.
-        sunrise: Option<LispValue> {= None},
+        sunrise: Option<TulispObject>,
         /// Time of day (UTC) the clear-sky curve turns off. Same
         /// two spellings as `:sunrise`.
-        sunset: Option<LispValue> {= None},
+        sunset: Option<TulispObject>,
         /// Clear-sky output at solar noon, percent.
-        peak_pct<":peak-pct">: Option<f64> {= None},
+        peak_pct<":peak-pct">: Option<f64>,
         /// Mean gap between ambient clouds, seconds. Zero disables
         /// the ambient generator, leaving only scripted
         /// `(pass-cloud)` events; a negative gap, or a positive one
         /// under a second, is an error.
-        cloud_mean_gap_s<":cloud-mean-gap-s">: Option<f64> {= None},
+        cloud_mean_gap_s<":cloud-mean-gap-s">: Option<f64>,
         /// Ambient cloud depth, percent — a number (fixed) or a
         /// two-element `(lo hi)` list drawn from uniformly.
-        cloud_depth_pct<":cloud-depth-pct">: Option<LispValue> {= None},
+        cloud_depth_pct<":cloud-depth-pct">: Option<TulispObject>,
         /// Ambient cloud total duration, seconds. Number or `(lo hi)`.
-        cloud_duration_s<":cloud-duration-s">: Option<LispValue> {= None},
+        cloud_duration_s<":cloud-duration-s">: Option<TulispObject>,
         /// Ambient cloud ramp-in/ramp-out time, seconds. Number or
         /// `(lo hi)`.
-        cloud_ramp_s<":cloud-ramp-s">: Option<LispValue> {= None},
+        cloud_ramp_s<":cloud-ramp-s">: Option<TulispObject>,
         /// Ambient generator seed. Passing it to `(set-weather)`
         /// re-seeds the generator (see the defun's docs).
-        seed: Option<i64> {= None},
+        seed: Option<i64>,
     }
 }
 
 /// A `(lo hi)` range kwarg: a plain number means a fixed value
 /// (`(v, v)`), a two-element list means the uniform range. Mirrors
 /// `:sunlight-pct`'s raw-value dispatch in `make.rs`.
-fn range_arg(kw: &str, v: &LispValue) -> Result<(f32, f32), Error> {
-    let raw = v.as_inner();
+fn range_arg(kw: &str, raw: &TulispObject) -> Result<(f32, f32), Error> {
     if raw.numberp() {
         let x = f64::try_from(raw)? as f32;
         return Ok((x, x));
@@ -79,8 +77,7 @@ fn range_arg(kw: &str, v: &LispValue) -> Result<(f32, f32), Error> {
 /// seconds since midnight. The number spelling matches what
 /// `(parse-time-of-day)` already accepts, so a scenario can compute
 /// one instead of formatting a string.
-fn time_of_day_arg(kw: &str, v: &LispValue) -> Result<Duration, Error> {
-    let raw = v.as_inner();
+fn time_of_day_arg(kw: &str, raw: &TulispObject) -> Result<Duration, Error> {
     if raw.numberp() {
         let secs = f64::try_from(raw)?;
         if !(0.0..86_400.0).contains(&secs) {
@@ -102,7 +99,7 @@ fn time_of_day_arg(kw: &str, v: &LispValue) -> Result<Duration, Error> {
 /// fold order, the numeric validation and the sunrise/sunset pair
 /// check all belong to the patch, shared with the HTTP weather route.
 fn patch_args(a: &WeatherArgs) -> Result<WeatherPatch, Error> {
-    let range = |kw, v: &Option<LispValue>| v.as_ref().map(|v| range_arg(kw, v)).transpose();
+    let range = |kw, v: &Option<TulispObject>| v.as_ref().map(|v| range_arg(kw, v)).transpose();
     Ok(WeatherPatch {
         sunrise: a
             .sunrise

@@ -4,7 +4,7 @@
 //! draws within that limit. See `ev_presets` for the car and the draw
 //! law.
 
-use std::{fmt, str::FromStr, time::Duration};
+use std::{fmt, time::Duration};
 
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
@@ -20,33 +20,15 @@ use crate::sim::{
 };
 use crate::timeout_tracker::SetpointAxis;
 
-/// What the charger offers when no command stands (or a TTL expired).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum EvIdle {
-    /// Offer nothing: the safe state the API's expiry semantics mean.
-    #[default]
-    Paused,
-    /// Offer the full rating, as a charger with no EMS does.
-    Full,
-}
-
-impl FromStr for EvIdle {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, ()> {
-        match s {
-            "paused" => Ok(EvIdle::Paused),
-            "full" => Ok(EvIdle::Full),
-            _ => Err(()),
-        }
-    }
-}
-
-impl fmt::Display for EvIdle {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            EvIdle::Paused => "paused",
-            EvIdle::Full => "full",
-        })
+tulisp::AsSymbol! {
+    /// What the charger offers when no command stands (or a TTL expired).
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub enum EvIdle {
+        /// Offer nothing: the safe state the API's expiry semantics mean.
+        #[default]
+        Paused<"paused">,
+        /// Offer the full rating, as a charger with no EMS does.
+        Full<"full">,
     }
 }
 

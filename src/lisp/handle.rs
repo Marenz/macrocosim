@@ -1,52 +1,13 @@
-//! Bridge `ComponentHandle` ↔ `Shared<dyn TulispAny>` so handles round-
-//! trip through Lisp without losing their concrete type.
-//!
-//! `AsPlist!` requires both directions of conversion via the standard
-//! `TryFrom<TulispObject>` / `From<T> for TulispObject` traits, so we
-//! implement those in addition to `TulispConvertible` (the latter is
-//! used by direct `defun` parameters).
+//! `ComponentHandle` as a lisp value: an opaque host value that
+//! round-trips through Lisp without losing its concrete type. The
+//! `TulispAny` opt-in gives it the conversion for defun parameters,
+//! return values and `AsList!` fields alike.
 
-use tulisp::{Error, Shared, TulispContext, TulispConvertible, TulispObject};
+use tulisp::{TulispAny, TulispContext};
 
 use crate::sim::ComponentHandle;
 
-impl TulispConvertible for ComponentHandle {
-    fn from_tulisp(value: &TulispObject) -> Result<Self, Error> {
-        let any = value.as_any().map_err(|e| e.with_trace(value.clone()))?;
-        any.downcast_ref::<ComponentHandle>()
-            .cloned()
-            .ok_or_else(|| Error::type_mismatch(format!("Expected ComponentHandle, got {value}")))
-    }
-    fn into_tulisp(self) -> TulispObject {
-        Shared::new(self).into()
-    }
-}
-
-impl TryFrom<TulispObject> for ComponentHandle {
-    type Error = Error;
-    fn try_from(value: TulispObject) -> Result<Self, Self::Error> {
-        let any = value.as_any().map_err(|e| e.with_trace(value.clone()))?;
-        any.downcast_ref::<ComponentHandle>()
-            .cloned()
-            .ok_or_else(|| Error::type_mismatch(format!("Expected ComponentHandle, got {value}")))
-    }
-}
-
-impl TryFrom<&TulispObject> for ComponentHandle {
-    type Error = Error;
-    fn try_from(value: &TulispObject) -> Result<Self, Self::Error> {
-        let any = value.as_any().map_err(|e| e.with_trace(value.clone()))?;
-        any.downcast_ref::<ComponentHandle>()
-            .cloned()
-            .ok_or_else(|| Error::type_mismatch(format!("Expected ComponentHandle, got {value}")))
-    }
-}
-
-impl From<ComponentHandle> for TulispObject {
-    fn from(h: ComponentHandle) -> Self {
-        Shared::new(h).into()
-    }
-}
+impl TulispAny for ComponentHandle {}
 
 /// Helpers some of the make-* fns expose so config code can introspect a
 /// handle (e.g. extract `id`).

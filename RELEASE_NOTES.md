@@ -57,6 +57,8 @@ an unknown field answers 400.
   seconds between clouds. In a request, `cloud_mean_gap_s: 0` turns
   ambient clouds off. The response has `null` when there are none.
   `pct` is `sunlight_pct`.
+- Status (`POST .../component/{id}/status`): `health` no longer takes
+  `ready`. Use `ok`.
 - Import (`POST /api/microgrids/import`): `mid` is `id`.
 - Snapshot load: `as_id` is `id`.
 - Formula query: `ids` is `component_ids`.
@@ -186,6 +188,20 @@ What to change in your own scripts:
 - `%plug-ev` takes the charger as `:component-id`. It was `:id`, which
   is not in the rename table, so an old direct call to `%plug-ev`
   fails. `plug-ev` is unchanged.
+- When one call gives the same keyword twice, the first one now counts,
+  as with `plist-get`. It was the last one. A `make-*` call's own
+  keywords still win over its `*-defaults` list, which now comes after
+  them.
+- `:health 'ready` is no longer accepted. Use `'ok`.
+- A wrong value for `:health`, `:telemetry-mode`, `:command-mode`,
+  `:operational-mode` or `:idle` gets a new error text, and so does
+  one passed to `set-component-health`,
+  `set-component-telemetry-mode`, `set-component-command-mode` or
+  `set-component-operational-mode`. The text names the type and lists
+  the accepted symbols, for example `unknown Health 'bogus'; expected
+  one of ok, error, standby`. A string in place of a symbol gets
+  `Expected a symbol for Health (one of ok, error, standby), got:
+  "error"`. Update code that matches the old text.
 - `(ev-info ID)`, `(ev-presets)` and `(weather-status)` read back the new
   names with no old names: `:soc-pct`, `:target-soc-pct`,
   `:capacity-wh` (Wh, not kWh), `clear-sky-pct` and `sunlight-pct`.

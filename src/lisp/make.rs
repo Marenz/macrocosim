@@ -1,21 +1,19 @@
 //! `(%make-grid-connection-point)`, `(%make-meter)`, `(%make-battery)`,
 //! … — the Rust-side constructor primitives the lisp DSL dispatches
 //! to. Each takes its arguments as a typed plist via tulisp's
-//! `AsPlist!` macro and returns a `ComponentHandle` (an opaque
-//! `Shared<dyn TulispAny>` on the lisp side). The user-facing names
+//! `AsList!` macro and returns a `ComponentHandle` (an opaque host
+//! value on the lisp side). The user-facing names
 //! (`(make-grid-connection-point)`, `(make-meter)`, …) are `defun`
-//! wrappers in `sim/defaults.lisp`
-//! that prepend a category-default plist to the caller's args
-//! before invoking these primitives; AsPlist's last-occurrence-wins
-//! key resolution lets per-component values override defaults
-//! without any extra plumbing on the Rust side.
+//! wrappers in `sim/defaults.lisp` that append a category-default
+//! plist after the caller's args before invoking these primitives;
+//! the first occurrence of a key wins, so per-component values
+//! override defaults without any extra plumbing on the Rust side.
 
 use std::time::Duration;
 
-use tulisp::{AsPlist, Error, Plist, TulispContext};
+use tulisp::{AsList, Error, Plist, TulispContext, TulispObject};
 
 use crate::lisp::renames::Renamed;
-use crate::lisp::value::LispValue;
 use crate::sim::{
     Battery, BatteryInverter, Category, ComponentHandle, EvCharger, Grid, Marker, Meter,
     MicrogridSite, OperationalMode, ReactiveSource, SolarInverter, SteamBoiler, SteamDrive,
@@ -34,19 +32,19 @@ use crate::sim::{
 // make-grid-connection-point
 // -----------------------------------------------------------------------------
 
-AsPlist! {
+AsList! {
     pub struct GridArgs {
-        id: Option<i64> {= None},
-        name: Option<String> {= None},
-        rated_fuse_current<":rated-fuse-current-a">: Option<i64> {= None},
-        rated_lower<":rated-lower-w">: Option<f64> {= None},
-        rated_upper<":rated-upper-w">: Option<f64> {= None},
-        successors: Option<Vec<ComponentHandle>> {= None},
-        stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
-        operational_mode<":operational-mode">: Option<OperationalMode> {= None},
-        health<":health">: Option<Health> {= None},
-        telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
-        command_mode<":command-mode">: Option<CommandMode> {= None},
+        id: Option<i64>,
+        name: Option<String>,
+        rated_fuse_current<":rated-fuse-current-a">: Option<i64>,
+        rated_lower<":rated-lower-w">: Option<f64>,
+        rated_upper<":rated-upper-w">: Option<f64>,
+        successors: Option<Vec<ComponentHandle>>,
+        stream_jitter_pct<":stream-jitter-pct">: Option<f64>,
+        operational_mode<":operational-mode">: Option<OperationalMode>,
+        health<":health">: Option<Health>,
+        telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
+        command_mode<":command-mode">: Option<CommandMode>,
     }
 }
 
@@ -54,32 +52,32 @@ AsPlist! {
 // make-meter
 // -----------------------------------------------------------------------------
 
-AsPlist! {
+AsList! {
     pub struct MeterArgs {
-        id: Option<i64> {= None},
-        name: Option<String> {= None},
-        interval_s<":interval-s">: Option<f64> {= None},
+        id: Option<i64>,
+        name: Option<String>,
+        interval_s<":interval-s">: Option<f64>,
         /// Constant, lambda, or symbol. Resolved into a
         /// [`DynamicScalar`] in the constructor — see
         /// [`crate::sim::dynamic_scalar::DynamicScalar::from_lisp`].
-        power<":power-w">: Option<LispValue> {= None},
+        power<":power-w">: Option<TulispObject>,
         /// Direct VAr source: constant, lambda, or symbol. Mutually
         /// exclusive with `:power-factor`.
-        reactive_power<":reactive-power-var">: Option<LispValue> {= None},
+        reactive_power<":reactive-power-var">: Option<TulispObject>,
         /// Derive Q from this meter's own live P via a power factor
         /// (true cos φ) in `(0.0, 1.0]`. Mutually exclusive with
         /// `:reactive-power-var`.
-        power_factor<":power-factor">: Option<f64> {= None},
+        power_factor<":power-factor">: Option<f64>,
         /// Whether the power-factor-derived Q is leading (negative)
         /// rather than lagging. Requires `:power-factor`.
-        leading: Option<bool> {= None},
-        successors: Option<Vec<ComponentHandle>> {= None},
-        hidden: Option<bool> {= None},
-        stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
-        operational_mode<":operational-mode">: Option<OperationalMode> {= None},
-        health<":health">: Option<Health> {= None},
-        telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
-        command_mode<":command-mode">: Option<CommandMode> {= None},
+        leading: Option<bool>,
+        successors: Option<Vec<ComponentHandle>>,
+        hidden: Option<bool>,
+        stream_jitter_pct<":stream-jitter-pct">: Option<f64>,
+        operational_mode<":operational-mode">: Option<OperationalMode>,
+        health<":health">: Option<Health>,
+        telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
+        command_mode<":command-mode">: Option<CommandMode>,
     }
 }
 
@@ -87,24 +85,24 @@ AsPlist! {
 // make-battery
 // -----------------------------------------------------------------------------
 
-AsPlist! {
+AsList! {
     pub struct BatteryArgs {
-        id: Option<i64> {= None},
-        name: Option<String> {= None},
-        interval_s<":interval-s">: Option<f64> {= None},
-        capacity_wh<":capacity-wh">: Option<f64> {= None},
-        initial_soc<":initial-soc-pct">: Option<f64> {= None},
-        soc_lower<":soc-lower-pct">: Option<f64> {= None},
-        soc_upper<":soc-upper-pct">: Option<f64> {= None},
-        voltage<":voltage-v">: Option<f64> {= None},
-        rated_lower<":rated-lower-w">: Option<f64> {= None},
-        rated_upper<":rated-upper-w">: Option<f64> {= None},
-        soc_protect_margin<":soc-protect-margin-pct">: Option<f64> {= None},
-        stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
-        operational_mode<":operational-mode">: Option<OperationalMode> {= None},
-        health<":health">: Option<Health> {= None},
-        telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
-        command_mode<":command-mode">: Option<CommandMode> {= None},
+        id: Option<i64>,
+        name: Option<String>,
+        interval_s<":interval-s">: Option<f64>,
+        capacity_wh<":capacity-wh">: Option<f64>,
+        initial_soc<":initial-soc-pct">: Option<f64>,
+        soc_lower<":soc-lower-pct">: Option<f64>,
+        soc_upper<":soc-upper-pct">: Option<f64>,
+        voltage<":voltage-v">: Option<f64>,
+        rated_lower<":rated-lower-w">: Option<f64>,
+        rated_upper<":rated-upper-w">: Option<f64>,
+        soc_protect_margin<":soc-protect-margin-pct">: Option<f64>,
+        stream_jitter_pct<":stream-jitter-pct">: Option<f64>,
+        operational_mode<":operational-mode">: Option<OperationalMode>,
+        health<":health">: Option<Health>,
+        telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
+        command_mode<":command-mode">: Option<CommandMode>,
     }
 }
 
@@ -112,34 +110,34 @@ AsPlist! {
 // make-battery-inverter
 // -----------------------------------------------------------------------------
 
-AsPlist! {
+AsList! {
     pub struct BatteryInverterArgs {
-        id: Option<i64> {= None},
-        name: Option<String> {= None},
-        interval_s<":interval-s">: Option<f64> {= None},
-        successors: Option<Vec<ComponentHandle>> {= None},
-        rated_lower<":rated-lower-w">: Option<f64> {= None},
-        rated_upper<":rated-upper-w">: Option<f64> {= None},
-        command_delay_s<":command-delay-s">: Option<f64> {= None},
-        ramp_rate<":ramp-rate-w-per-s">: Option<f64> {= None},
+        id: Option<i64>,
+        name: Option<String>,
+        interval_s<":interval-s">: Option<f64>,
+        successors: Option<Vec<ComponentHandle>>,
+        rated_lower<":rated-lower-w">: Option<f64>,
+        rated_upper<":rated-upper-w">: Option<f64>,
+        command_delay_s<":command-delay-s">: Option<f64>,
+        ramp_rate<":ramp-rate-w-per-s">: Option<f64>,
         /// Time a command takes to reach the output once the
         /// component has it, in seconds, on both axes. 0.1 unless set.
-        device_delay_s<":device-delay-s">: Option<f64> {= None},
-        stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
-        operational_mode<":operational-mode">: Option<OperationalMode> {= None},
-        health<":health">: Option<Health> {= None},
-        telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
-        command_mode<":command-mode">: Option<CommandMode> {= None},
+        device_delay_s<":device-delay-s">: Option<f64>,
+        stream_jitter_pct<":stream-jitter-pct">: Option<f64>,
+        operational_mode<":operational-mode">: Option<OperationalMode>,
+        health<":health">: Option<Health>,
+        telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
+        command_mode<":command-mode">: Option<CommandMode>,
         /// PF-style Q cap: |Q| ≤ k × |P|. Pass 0 to disable (nil inherits the default).
-        reactive_pf_limit<":reactive-pf-limit">: Option<f64> {= None},
+        reactive_pf_limit<":reactive-pf-limit">: Option<f64>,
         /// kVA-style Q cap: P² + Q² ≤ apparent². Pass 0 to disable (nil inherits the default).
-        reactive_apparent_va<":reactive-apparent-va">: Option<f64> {= None},
+        reactive_apparent_va<":reactive-apparent-va">: Option<f64>,
         /// Inverter-internal latency before a Q setpoint starts
         /// being tracked, in seconds. Defaults to 0.1.
-        reactive_command_delay_s<":reactive-command-delay-s">: Option<f64> {= None},
+        reactive_command_delay_s<":reactive-command-delay-s">: Option<f64>,
         /// Reactive slew rate (VAR/s). Default 2000 ≈ IEEE 1547-2018
         /// Cat B 5 s OLRT for a 10 kVAR window.
-        reactive_ramp_rate<":reactive-ramp-rate-var-per-s">: Option<f64> {= None},
+        reactive_ramp_rate<":reactive-ramp-rate-var-per-s">: Option<f64>,
     }
 }
 
@@ -147,53 +145,53 @@ AsPlist! {
 // make-solar-inverter
 // -----------------------------------------------------------------------------
 
-AsPlist! {
+AsList! {
     pub struct SolarInverterArgs {
-        id: Option<i64> {= None},
-        name: Option<String> {= None},
-        interval_s<":interval-s">: Option<f64> {= None},
+        id: Option<i64>,
+        name: Option<String>,
+        interval_s<":interval-s">: Option<f64>,
         /// Cloud-cover percentage. May be a number, a lambda, or a
         /// symbol — see [`crate::sim::dynamic_scalar::DynamicScalar::from_lisp`].
         /// Resolved each tick via the scheduler's pre-tick hook.
         /// Leaving it out is the opt-in to the site's weather: the
         /// inverter tracks the sky instead of a driven number, shaped
         /// by `:weather-lag-s` / `:weather-jitter-pct`.
-        sunlight_pct<":sunlight-pct">: Option<LispValue> {= None},
-        rated_lower<":rated-lower-w">: Option<f64> {= None},
-        rated_upper<":rated-upper-w">: Option<f64> {= None},
+        sunlight_pct<":sunlight-pct">: Option<TulispObject>,
+        rated_lower<":rated-lower-w">: Option<f64>,
+        rated_upper<":rated-upper-w">: Option<f64>,
         /// The array's peak DC output (Wp), positive — not an
         /// instantaneous power. Defaults to |:rated-lower-w|: a matched
         /// array. Oversizing produces midday clipping.
-        array_peak_w<":array-peak-w">: Option<f64> {= None},
+        array_peak_w<":array-peak-w">: Option<f64>,
         /// How far behind the sky a weather-following array samples,
         /// in seconds. Left out, each inverter gets a small stable
         /// offset derived from its id (0–60 s) so a cloud sweeps
         /// across a multi-PV site; `0` opts out of that. Only
         /// meaningful without `:sunlight-pct`.
-        weather_lag_s<":weather-lag-s">: Option<f64> {= None},
+        weather_lag_s<":weather-lag-s">: Option<f64>,
         /// Per-tick uniform ±roughening of a weather-following
         /// sample, in percent of the value. Only meaningful without
         /// `:sunlight-pct`.
-        weather_jitter_pct<":weather-jitter-pct">: Option<f64> {= None},
-        command_delay_s<":command-delay-s">: Option<f64> {= None},
-        ramp_rate<":ramp-rate-w-per-s">: Option<f64> {= None},
+        weather_jitter_pct<":weather-jitter-pct">: Option<f64>,
+        command_delay_s<":command-delay-s">: Option<f64>,
+        ramp_rate<":ramp-rate-w-per-s">: Option<f64>,
         /// Time a command takes to reach the output once the
         /// component has it, in seconds, on both axes. 0.1 unless set.
-        device_delay_s<":device-delay-s">: Option<f64> {= None},
-        stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
-        operational_mode<":operational-mode">: Option<OperationalMode> {= None},
-        health<":health">: Option<Health> {= None},
-        telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
-        command_mode<":command-mode">: Option<CommandMode> {= None},
+        device_delay_s<":device-delay-s">: Option<f64>,
+        stream_jitter_pct<":stream-jitter-pct">: Option<f64>,
+        operational_mode<":operational-mode">: Option<OperationalMode>,
+        health<":health">: Option<Health>,
+        telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
+        command_mode<":command-mode">: Option<CommandMode>,
         /// PF-style Q cap: |Q| ≤ k × |P|. Pass 0 to disable.
-        reactive_pf_limit<":reactive-pf-limit">: Option<f64> {= None},
+        reactive_pf_limit<":reactive-pf-limit">: Option<f64>,
         /// kVA-style Q cap: P² + Q² ≤ apparent². Pass 0 to disable.
-        reactive_apparent_va<":reactive-apparent-va">: Option<f64> {= None},
+        reactive_apparent_va<":reactive-apparent-va">: Option<f64>,
         /// Inverter-internal latency before a Q setpoint starts being
         /// tracked, in seconds. Defaults to 0.1.
-        reactive_command_delay_s<":reactive-command-delay-s">: Option<f64> {= None},
+        reactive_command_delay_s<":reactive-command-delay-s">: Option<f64>,
         /// Reactive slew rate (VAR/s). Default 2000.
-        reactive_ramp_rate<":reactive-ramp-rate-var-per-s">: Option<f64> {= None},
+        reactive_ramp_rate<":reactive-ramp-rate-var-per-s">: Option<f64>,
     }
 }
 
@@ -201,19 +199,19 @@ AsPlist! {
 // make-ev-charger
 // -----------------------------------------------------------------------------
 
-AsPlist! {
+AsList! {
     pub struct EvChargerArgs {
-        id: Option<i64> {= None},
-        name: Option<String> {= None},
-        interval_s<":interval-s">: Option<f64> {= None},
-        rated_lower<":rated-lower-w">: Option<f64> {= None},
-        rated_upper<":rated-upper-w">: Option<f64> {= None},
-        command_delay_s<":command-delay-s">: Option<f64> {= None},
-        ramp_rate<":ramp-rate-w-per-s">: Option<f64> {= None},
+        id: Option<i64>,
+        name: Option<String>,
+        interval_s<":interval-s">: Option<f64>,
+        rated_lower<":rated-lower-w">: Option<f64>,
+        rated_upper<":rated-upper-w">: Option<f64>,
+        command_delay_s<":command-delay-s">: Option<f64>,
+        ramp_rate<":ramp-rate-w-per-s">: Option<f64>,
         /// Time a command takes to reach the output once the
         /// component has it, in seconds, on both axes. 0.1 unless set.
-        device_delay_s<":device-delay-s">: Option<f64> {= None},
-        stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
+        device_delay_s<":device-delay-s">: Option<f64>,
+        stream_jitter_pct<":stream-jitter-pct">: Option<f64>,
         // The pack kwargs a charger used to own. The pack is the car's
         // now, so these are taken and ignored (with a warning) rather
         // than rejected: a managed file, a snapshot, or an
@@ -224,24 +222,24 @@ AsPlist! {
         // whole microgrid, and in the enterprise case every charger in
         // the process. The old spellings arrive here under these new
         // names, renamed by the table in `renames.rs`.
-        capacity_wh<":capacity-wh">: Option<f64> {= None},
-        initial_soc<":initial-soc-pct">: Option<f64> {= None},
-        soc_lower<":soc-lower-pct">: Option<f64> {= None},
-        soc_upper<":soc-upper-pct">: Option<f64> {= None},
-        soc_protect_margin<":soc-protect-margin-pct">: Option<f64> {= None},
+        capacity_wh<":capacity-wh">: Option<f64>,
+        initial_soc<":initial-soc-pct">: Option<f64>,
+        soc_lower<":soc-lower-pct">: Option<f64>,
+        soc_upper<":soc-upper-pct">: Option<f64>,
+        soc_protect_margin<":soc-protect-margin-pct">: Option<f64>,
         /// 1 or 3: the phases the charger is wired on.
-        phases<":phases">: Option<i64> {= None},
+        phases<":phases">: Option<i64>,
         /// What the charger offers with no command standing: `'paused`
         /// (nothing, the default) or `'full` (its whole rating).
-        idle<":idle">: Option<EvIdle> {= None},
+        idle<":idle">: Option<EvIdle>,
         /// Keep the armed command through a health fault and ramp back
         /// on recovery; off (the default), the fault clears the command
         /// and recovery waits for a new one.
-        resume_on_recovery<":resume-on-recovery">: Option<bool> {= None},
-        operational_mode<":operational-mode">: Option<OperationalMode> {= None},
-        health<":health">: Option<Health> {= None},
-        telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
-        command_mode<":command-mode">: Option<CommandMode> {= None},
+        resume_on_recovery<":resume-on-recovery">: Option<bool>,
+        operational_mode<":operational-mode">: Option<OperationalMode>,
+        health<":health">: Option<Health>,
+        telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
+        command_mode<":command-mode">: Option<CommandMode>,
     }
 }
 
@@ -249,31 +247,31 @@ AsPlist! {
 // make-steam-boiler
 // -----------------------------------------------------------------------------
 
-AsPlist! {
+AsList! {
     pub struct SteamBoilerArgs {
-        id: Option<i64> {= None},
-        name: Option<String> {= None},
-        interval_s<":interval-s">: Option<f64> {= None},
+        id: Option<i64>,
+        name: Option<String>,
+        interval_s<":interval-s">: Option<f64>,
         /// kg/s; number seeds a constant, lambda/symbol installs a
         /// dynamic source resolved each tick.
-        demand_kg_per_s<":demand-kg-per-s">: Option<LispValue> {= None},
-        rated_lower<":rated-lower-w">: Option<f64> {= None},
-        rated_upper<":rated-upper-w">: Option<f64> {= None},
-        target_bar<":target-bar">: Option<f64> {= None},
-        max_bar<":max-bar">: Option<f64> {= None},
-        initial_bar<":initial-bar">: Option<f64> {= None},
-        capacity_wh_per_bar<":capacity-wh-per-bar">: Option<f64> {= None},
-        wh_per_kg<":wh-per-kg">: Option<f64> {= None},
-        command_delay_s<":command-delay-s">: Option<f64> {= None},
-        ramp_rate<":ramp-rate-w-per-s">: Option<f64> {= None},
+        demand_kg_per_s<":demand-kg-per-s">: Option<TulispObject>,
+        rated_lower<":rated-lower-w">: Option<f64>,
+        rated_upper<":rated-upper-w">: Option<f64>,
+        target_bar<":target-bar">: Option<f64>,
+        max_bar<":max-bar">: Option<f64>,
+        initial_bar<":initial-bar">: Option<f64>,
+        capacity_wh_per_bar<":capacity-wh-per-bar">: Option<f64>,
+        wh_per_kg<":wh-per-kg">: Option<f64>,
+        command_delay_s<":command-delay-s">: Option<f64>,
+        ramp_rate<":ramp-rate-w-per-s">: Option<f64>,
         /// Time a command takes to reach the output once the
         /// component has it, in seconds, on both axes. 0.1 unless set.
-        device_delay_s<":device-delay-s">: Option<f64> {= None},
-        stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
-        operational_mode<":operational-mode">: Option<OperationalMode> {= None},
-        health<":health">: Option<Health> {= None},
-        telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
-        command_mode<":command-mode">: Option<CommandMode> {= None},
+        device_delay_s<":device-delay-s">: Option<f64>,
+        stream_jitter_pct<":stream-jitter-pct">: Option<f64>,
+        operational_mode<":operational-mode">: Option<OperationalMode>,
+        health<":health">: Option<Health>,
+        telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
+        command_mode<":command-mode">: Option<CommandMode>,
     }
 }
 
@@ -282,15 +280,15 @@ AsPlist! {
 // breaker)
 // -----------------------------------------------------------------------------
 
-AsPlist! {
+AsList! {
     pub struct MarkerArgs {
-        id: Option<i64> {= None},
-        name: Option<String> {= None},
-        stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
-        operational_mode<":operational-mode">: Option<OperationalMode> {= None},
-        health<":health">: Option<Health> {= None},
-        telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
-        command_mode<":command-mode">: Option<CommandMode> {= None},
+        id: Option<i64>,
+        name: Option<String>,
+        stream_jitter_pct<":stream-jitter-pct">: Option<f64>,
+        operational_mode<":operational-mode">: Option<OperationalMode>,
+        health<":health">: Option<Health>,
+        telemetry_mode<":telemetry-mode">: Option<TelemetryMode>,
+        command_mode<":command-mode">: Option<CommandMode>,
     }
 }
 
@@ -362,15 +360,15 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             let interval = secs_to_duration(":interval-s", a.interval_s, Duration::from_secs(1))?;
             let hidden = a.hidden.unwrap_or(false);
             // :power-w may be a number, a lambda, or a symbol. The
-            // wrapper-expanded category default lands in `a.power`
+            // wrapper-appended category default lands in `a.power`
             // when no per-component value was passed; otherwise the
-            // per-component value overrides via AsPlist's last-wins.
+            // per-component value comes first and wins.
             // `DynamicScalar::from_lisp` dispatches on shape — constant
             // for numbers, eval/funcall for the rest.
             let power_source = a
                 .power
                 .as_ref()
-                .and_then(|v| DynamicScalar::from_lisp(v.as_inner(), 0.0));
+                .and_then(|v| DynamicScalar::from_lisp(v, 0.0));
             let reactive_source =
                 meter_reactive_source(a.reactive_power.as_ref(), a.power_factor, a.leading)?;
             let meter = Meter::new(
@@ -508,8 +506,8 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             // lambda / symbol installs a dynamic source that takes
             // effect on the first `refresh_inputs`, over a constant
             // slot still holding the default fallback. The wrapper-
-            // expanded category default lands in `a.sunlight_pct`
-            // already; per-component plist overrides via last-wins.
+            // appended category default lands in `a.sunlight_pct`
+            // already; a per-component value comes first and wins.
             let mut dynamic_sunlight: Option<DynamicScalar> = None;
             match a.sunlight_pct.as_ref() {
                 // No `:sunlight-pct` at all is the opt-in to weather —
@@ -520,8 +518,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                 // back following the weather instead of frozen at a
                 // Manual 100%.
                 None => cfg.sunlight_pct = None,
-                Some(v) => {
-                    let raw = v.as_inner();
+                Some(raw) => {
                     if raw.numberp() {
                         if let Ok(pct) = f64::try_from(raw) {
                             cfg.sunlight_pct = Some(pct as f32);
@@ -742,13 +739,12 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                 ));
             }
             // :demand-kg-per-s may be a number, a lambda, or a symbol.
-            // The wrapper-expanded category default lands in
+            // The wrapper-appended category default lands in
             // `a.demand_kg_per_s` when no per-component value was
-            // passed; otherwise the per-component value overrides via
-            // AsPlist's last-wins.
+            // passed; otherwise the per-component value comes first
+            // and wins.
             let mut dynamic_demand: Option<DynamicScalar> = None;
-            if let Some(v) = a.demand_kg_per_s.as_ref() {
-                let raw = v.as_inner();
+            if let Some(raw) = a.demand_kg_per_s.as_ref() {
                 if raw.numberp() {
                     if let Ok(kg_per_s) = f64::try_from(raw) {
                         cfg.demand_kg_per_s = kg_per_s as f32;
@@ -895,12 +891,12 @@ fn checked_ramp_rate(kw: &str, v: f64) -> Result<f32, Error> {
 /// Resolve a car off the EV catalog from a `'symbol` kwarg — the shape
 /// `(plug-ev …)` takes. `label` names the caller so the error says
 /// which one complained.
-pub(crate) fn preset_from_lisp(raw: &LispValue, label: &str) -> Result<&'static EvPreset, Error> {
-    let name = raw.as_inner().as_symbol().map_err(|_| {
-        Error::type_mismatch(format!(
-            "{label}: expected a preset symbol, got {}",
-            raw.as_inner()
-        ))
+pub(crate) fn preset_from_lisp(
+    raw: &TulispObject,
+    label: &str,
+) -> Result<&'static EvPreset, Error> {
+    let name = raw.symbol_name().map_err(|_| {
+        Error::type_mismatch(format!("{label}: expected a preset symbol, got {raw}"))
     })?;
     preset(&name)
         .ok_or_else(|| Error::invalid_argument(format!("{label}: unknown preset '{name}'")))
@@ -914,7 +910,7 @@ pub(crate) fn preset_from_lisp(raw: &LispValue, label: &str) -> Result<&'static 
 /// valid power factor) are rejected here rather than left to produce
 /// nonsense Q downstream.
 fn meter_reactive_source(
-    reactive_power: Option<&LispValue>,
+    reactive_power: Option<&TulispObject>,
     power_factor: Option<f64>,
     leading: Option<bool>,
 ) -> Result<Option<ReactiveSource>, Error> {
@@ -940,7 +936,7 @@ fn meter_reactive_source(
         }));
     }
     Ok(reactive_power
-        .and_then(|v| DynamicScalar::from_lisp(v.as_inner(), 0.0))
+        .and_then(|v| DynamicScalar::from_lisp(v, 0.0))
         .map(ReactiveSource::Var))
 }
 
@@ -1049,9 +1045,9 @@ fn apply_initial_name(site: &MicrogridSite, id: u64, name: Option<String>) {
 /// Apply initial runtime mode args from a plist constructor. Each
 /// `make-*` calls this immediately after `site.register(...)` so a
 /// component declared with `:health 'error` is broken from the very
-/// first tick. Symbol → enum parsing happens in the `TryFrom` impls
-/// (`src/lisp/runtime_modes.rs`); by the time we get here the values
-/// are typed.
+/// first tick. Symbol → enum parsing happens in the enums'
+/// `AsSymbol!` conversions; by the time we get here the values are
+/// typed.
 fn apply_initial_modes(
     site: &MicrogridSite,
     id: u64,
@@ -1164,10 +1160,11 @@ mod tests {
 
     #[test]
     fn wrapper_merges_category_defaults() {
-        // `make-battery` (wrapper) prepends `battery-defaults` (plist
-        // literal in sim/defaults.lisp) to the caller's args. AsPlist's
-        // last-occurrence-wins resolution lets the per-component plist
-        // override individual default fields while inheriting the rest.
+        // `make-battery` (wrapper) appends `battery-defaults` (plist
+        // literal in sim/defaults.lisp) after the caller's args. The
+        // first occurrence of a key wins, so the per-component plist
+        // overrides individual default fields while inheriting the
+        // rest.
         let site = run(r#"(make-battery :id 200 :capacity-wh 50000.0)"#);
         let t = site.get(200).unwrap().telemetry(&site);
         // From per-component plist:
@@ -1176,10 +1173,39 @@ mod tests {
         assert_eq!(site.runtime_of(200).health, crate::sim::runtime::Health::Ok);
     }
 
+    /// Every `make-*` wrapper lets a per-component key beat the same
+    /// key in its `<cat>-defaults` plist. Every defaults plist sets
+    /// `:stream-jitter-pct`, so a different value passed through each
+    /// wrapper catches one that puts its defaults first.
+    #[test]
+    fn every_wrapper_lets_component_args_override_defaults() {
+        let wrappers = [
+            "make-grid-connection-point",
+            "make-meter",
+            "make-battery",
+            "make-battery-inverter",
+            "make-solar-inverter",
+            "make-ev-charger",
+            "make-chp",
+            "make-wind-turbine",
+            "make-steam-boiler",
+            "make-power-transformer",
+            "make-breaker",
+        ];
+        for wrapper in wrappers {
+            let site = run(&format!("({wrapper} :id 1 :stream-jitter-pct 42.0)"));
+            assert_eq!(
+                site.get(1).unwrap().stream_jitter_pct(),
+                42.0,
+                "{wrapper}: the component's :stream-jitter-pct must win"
+            );
+        }
+    }
+
     #[test]
     fn primitive_skips_wrapper_defaults() {
         // Calling %make-battery directly bypasses the wrapper's
-        // default-prepending, so the BatteryConfig::default values
+        // defaults, so the BatteryConfig::default values
         // stand for every unset field.
         let site = run("(%make-battery :id 103)");
         let t = site.get(103).unwrap().telemetry(&site);
@@ -1621,7 +1647,7 @@ mod tests {
         let (site, mut ctx) = run_with_ctx("");
         for form in &forms {
             ctx.eval_string(&format!("({form})"))
-                .unwrap_or_else(|e| panic!("{form}: {}", e.format(&ctx)));
+                .unwrap_or_else(|e| panic!("{form}: {e}"));
         }
         for name in crate::lisp::microgrid_file::COMPONENT_MAKE_FNS {
             let head = format!("make-{name}");
@@ -1765,8 +1791,11 @@ mod tests {
     }
 
     #[test]
-    fn a_new_keyword_after_an_old_one_wins() {
+    fn the_first_of_an_old_and_a_new_keyword_wins() {
         let site = run("(%make-meter :id 1 :interval 500 :interval-s 2.0)");
+        let kw = site.get(1).unwrap().constructor_kwargs();
+        assert!(kw.contains(&(":interval-s", "0.5".to_string())), "{kw:?}");
+        let site = run("(%make-meter :id 1 :interval-s 2.0 :interval 500)");
         let kw = site.get(1).unwrap().constructor_kwargs();
         assert!(kw.contains(&(":interval-s", "2.0".to_string())), "{kw:?}");
     }

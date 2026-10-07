@@ -78,10 +78,10 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
 /// wrap each binding in `(component-id …)`).
 fn arg_to_component_id(v: &TulispObject) -> Result<u64, Error> {
     use crate::sim::ComponentHandle;
-    if let Ok(h) = ComponentHandle::try_from(v) {
+    if let Some(h) = v.downcast::<ComponentHandle>() {
         return Ok(h.id());
     }
-    if let Ok(n) = v.as_int() {
+    if let Ok(n) = i64::try_from(v) {
         // A negative id would wrap via `as u64` into a huge bogus
         // id that some permissive paths then accept.
         return u64::try_from(n).map_err(|_| {

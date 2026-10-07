@@ -102,7 +102,7 @@ impl Config {
         let before = self.structural_versions();
         let result = match ctx.eval_string(src) {
             Ok(v) => Ok(v.to_string()),
-            Err(e) => Err(e.format(ctx)),
+            Err(e) => Err(e.to_string()),
         };
         if result.is_ok() {
             self.persist_changed(ctx, src, &before);
@@ -125,7 +125,7 @@ impl Config {
         let mut ctx = self.ctx.borrow_mut();
         match ctx.eval_string(src) {
             Ok(v) => Ok(v.to_string()),
-            Err(e) => Err(e.format(&ctx)),
+            Err(e) => Err(e.to_string()),
         }
     }
 
@@ -136,7 +136,7 @@ impl Config {
         let mut ctx = self.ctx.borrow_mut();
         match ctx.eval_string(var) {
             Ok(v) => Ok(renamed_defaults(&mut ctx, v).to_string()),
-            Err(e) => Err(e.format(&ctx)),
+            Err(e) => Err(e.to_string()),
         }
     }
 
@@ -392,7 +392,10 @@ fn renamed_defaults(
     match super::renames::rename_plist_value(ctx, &value) {
         Ok(renamed) => renamed,
         Err(e) => {
-            log::warn!("a defaults list was kept as written: {}", e.format(ctx));
+            log::warn!(
+                "a defaults list was kept as written: {}",
+                e.with_file_names(ctx)
+            );
             value
         }
     }

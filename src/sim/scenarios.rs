@@ -336,7 +336,7 @@ pub fn start(
         call.push(quoted(&mut c, a));
     }
     let call: TulispObject = call.into_iter().collect();
-    c.eval(&call).map(|_| ()).map_err(|e| e.format(&c))
+    c.eval(&call).map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

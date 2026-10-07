@@ -239,17 +239,17 @@ replaces the body inside the matching =(make-microgrid …)= form in
 =microgrids/config.<id>.lisp= in place, deletes
 =microgrids/config.<id>.overrides.lisp=. Needs the per-component
 =OriginalArgs= snapshot stored at registration time (each
-=AsPlist!=-derived args struct re-serialized via =tulisp-fmt=).
+=AsList!=-derived args struct re-serialized via =tulisp-fmt=).
 
 Why deferred: real value depends on having heavy override files to
 flatten; until users accumulate one, hard to validate the output
 shape.
 
-*** TODO E2. Form auto-generation from =AsPlist!=                        :ui:
+*** TODO E2. Form auto-generation from =AsList!=                         :ui:
 
 Right-pane edit form is currently hardcoded per category in JS.
 Long-term: a =/api/component-schema= endpoint returns each
-=%make-*='s argument list and types from the =AsPlist!= macro
+=%make-*='s argument list and types from the =AsList!= macro
 output, and the UI builds the form from that. Removes the
 JS-vs-Rust schema drift.
 
@@ -802,12 +802,6 @@ change. The client-side poll covers it until then.
 
 ** Low / minor (new)
 
-- =runtime_modes.rs= =From<Health/…> for TulispObject= emits a *string*,
-  not a symbol, so an enum round-tripped through a plist would type-mismatch
-  (=:health 'error= needs a symbol). Latent — no defun returns enum plists;
-  blocked on a tulisp API for interning without a ctx (=From= can't reach
-  one).
-
 * Review backlog — 2026-06-06
 
 Follow-up review after the dispatch series + module splits merged.
@@ -1265,7 +1259,7 @@ Verified-lite findings, none user-visible on their own:
   of dispatch::parse_target's numeric branch, with different
   dedup/order behavior; share one helper.
 - make.rs threads the same four mode kwargs through all seven
-  AsPlist arg structs positionally; a shared ModeKwargs fragment
+  AsList arg structs positionally; a shared ModeKwargs fragment
   would centralize the field list.
 - site_import.rs lift() hand-rolls category/inverter token decoding
   that proto.rs impl_enum_from_str + proto_conv already centralize;

@@ -6,18 +6,18 @@ use tulisp::{Error, TulispContext};
 
 use crate::lisp::renames::Renamed;
 
-tulisp::AsPlist! {
+tulisp::AsList! {
     /// Plist payload for `(set-frequency-model …)`. Every field
     /// optional — only the keys the caller passes are touched.
     pub struct FrequencyModelArgs {
         /// Mean the OU process pulls toward (Hz).
-        nominal_hz<":nominal-hz">: Option<f64> {= None},
+        nominal_hz<":nominal-hz">: Option<f64>,
         /// Mean reversion rate (1/s). Correlation time of the
         /// noisy fluctuations is roughly `1 / mean-rev-rate`.
-        mean_rev_rate<":mean-rev-rate">: Option<f64> {= None},
+        mean_rev_rate<":mean-rev-rate">: Option<f64>,
         /// Noise intensity (Hz/sqrt(s)). Equilibrium standard
         /// deviation is `sigma / sqrt(2 * mean-rev-rate)`.
-        sigma: Option<f64> {= None},
+        sigma: Option<f64>,
     }
 }
 
