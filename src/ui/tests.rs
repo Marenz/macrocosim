@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::Config;
+use crate::test_dir::TestDir;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use chrono::Utc;
@@ -11,28 +12,16 @@ use tower::ServiceExt;
 /// same way the binary wires them. Returns the Config; caller
 /// composes a router with it.
 ///
-/// Each call gets its own unique subdirectory under `temp_dir()`
-/// so concurrent test runs don't stomp each other's config.lisp
-/// (cargo runs the lib test suite multi-threaded by default).
-async fn config_with(body: &str) -> Config {
-    config_with_dir(body).await.0
-}
-
-/// [`config_with`] plus the state directory it booted in — for tests
-/// that read the files macrocosim writes (managed microgrid files,
-/// `enterprise.lisp`) or boot a second `Config` on the same dir.
-async fn config_with_dir(body: &str) -> (Config, std::path::PathBuf) {
+/// Each call gets its own temp directory, so concurrent test runs
+/// don't stomp each other's config.lisp (cargo runs the lib test
+/// suite multi-threaded by default). The dir is returned for tests
+/// that read the files macrocosim writes there (managed microgrid
+/// files, `enterprise.lisp`) or boot a second `Config` on it.
+/// Dropping it removes it, so keep it as long as the `Config`.
+async fn config_with(body: &str) -> (Config, TestDir) {
     // tulisp-async's executor needs a tokio runtime in scope; we
     // already have one via #[tokio::test], so Config::new works.
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "macrocosim-ui-{}-{}",
-        std::process::id(),
-        // Counter — even if SystemTime resolves the same nanos for
-        // two near-simultaneous tests, the AtomicU64 disambiguates.
-        UNIQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-    ));
-    std::fs::create_dir_all(&p).unwrap();
+    let p = TestDir::new("macrocosim-ui-");
     let path = p.join("config.lisp");
     let wrapped = wrap_test_body(body);
     write!(std::fs::File::create(&path).unwrap(), "{wrapped}").unwrap();
@@ -55,8 +44,6 @@ fn wrap_test_body(body: &str) -> String {
     };
     format!("(make-microgrid :id 2200 :grpc-port 8800 :topology (lambda () {inner}))")
 }
-
-static UNIQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// One-shot a request and return (status, body). axum's `oneshot`
 /// avoids binding a real port. The runtimes are inert, so nothing is
@@ -133,7 +120,7 @@ fn error_of(body: &[u8]) -> String {
 
 #[tokio::test]
 async fn index_serves_embedded_shell() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call(cfg, get("/")).await;
     assert_eq!(status, StatusCode::OK);
     let s = String::from_utf8_lossy(&body);
@@ -143,7 +130,7 @@ async fn index_serves_embedded_shell() {
 
 #[tokio::test]
 async fn scripts_listing_walks_the_state_dir_and_rejects_escapes() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let root = cfg.state_dir().to_path_buf();
     std::fs::create_dir_all(root.join("examples")).unwrap();
     std::fs::write(root.join("examples/demo.lisp"), "nil").unwrap();
@@ -185,7 +172,7 @@ async fn scripts_listing_walks_the_state_dir_and_rejects_escapes() {
 
 #[tokio::test]
 async fn asset_route_serves_embedded_files() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call(cfg, get("/assets/app.js")).await;
     assert_eq!(status, StatusCode::OK);
     // Phrase from app.js — anchors the test against actually
@@ -195,7 +182,7 @@ async fn asset_route_serves_embedded_files() {
 
 #[tokio::test]
 async fn asset_route_serves_vendored_lib() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call(cfg, get("/assets/vendor/vis-network.min.js")).await;
     assert_eq!(status, StatusCode::OK);
     // The bundle names itself throughout; "vis" alone would match
@@ -205,14 +192,14 @@ async fn asset_route_serves_vendored_lib() {
 
 #[tokio::test]
 async fn asset_route_404s_unknown_path() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, _) = call(cfg, get("/assets/does-not-exist.js")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
 async fn topology_endpoint_emits_components_and_connections() {
-    let cfg = config_with(
+    let (cfg, _dir) = config_with(
         r#"(%make-grid-connection-point :id 1
              :successors
              (list (%make-meter :id 2
@@ -233,7 +220,7 @@ async fn topology_endpoint_emits_components_and_connections() {
 /// an evaluation error; neither body carries `ok`.
 #[tokio::test]
 async fn eval_answers_with_status_codes() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     for path in ["/api/eval", "/api/mg/2200/eval"] {
         let (status, body) = call(cfg.clone(), post(path, "(+ 1 2)")).await;
         assert_eq!(status, StatusCode::OK, "{path}");
@@ -249,7 +236,7 @@ async fn eval_answers_with_status_codes() {
 /// A scoped eval for an unregistered microgrid is the shared 404.
 #[tokio::test]
 async fn scoped_eval_for_an_unregistered_microgrid_is_404() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call(cfg, post("/api/mg/9999/eval", "(+ 1 2)")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(error_of(&body), "microgrid 9999 not registered");
@@ -259,7 +246,7 @@ async fn scoped_eval_for_an_unregistered_microgrid_is_404() {
 /// unregistered microgrid, and 400 for a non-numeric one.
 #[tokio::test]
 async fn every_microgrid_route_shares_the_unregistered_404() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let gets = [
         "topology",
         "formula?metric=grid",
@@ -333,7 +320,7 @@ async fn every_microgrid_route_shares_the_unregistered_404() {
 /// Per-microgrid routes outside `/api/mg/{mg}` answer 404 `no route`.
 #[tokio::test]
 async fn unscoped_microgrid_routes_are_gone() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     for path in [
         "/api/topology",
         "/api/weather",
@@ -367,7 +354,7 @@ async fn unscoped_microgrid_routes_are_gone() {
 /// "not connected", not "not registered".
 #[tokio::test]
 async fn metrics_for_a_microgrid_without_a_loopback_are_not_connected() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call(cfg, get("/api/mg/2200/metrics/status")).await;
     assert_ne!(
         status,
@@ -383,7 +370,7 @@ async fn metrics_for_a_microgrid_without_a_loopback_are_not_connected() {
 /// 204; metrics without a client report "not connected".
 #[tokio::test]
 async fn success_bodies_are_plain() {
-    let cfg = config_with("(%make-grid-connection-point :id 1)").await;
+    let (cfg, _dir) = config_with("(%make-grid-connection-point :id 1)").await;
 
     let req = Request::builder()
         .method(Method::POST)
@@ -429,7 +416,7 @@ async fn success_bodies_are_plain() {
 /// Creating a microgrid is a POST to the collection, answering 201.
 #[tokio::test]
 async fn creating_a_microgrid_answers_201() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call(
         cfg,
         post_json("/api/microgrids", r#"{"name":"b","id":2301}"#),
@@ -448,7 +435,7 @@ async fn creating_a_microgrid_answers_201() {
 /// The whole-site eval can create a microgrid.
 #[tokio::test]
 async fn site_eval_creates_a_microgrid() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, _) = call(
         cfg.clone(),
         post(
@@ -465,13 +452,13 @@ async fn site_eval_creates_a_microgrid() {
 /// `error`.
 #[tokio::test]
 async fn a_formula_error_is_400_with_its_kind() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call_json(cfg, get("/api/mg/2200/formula?metric=grid")).await;
     // The default test microgrid has no components.
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(error_of(&body), "The microgrid has no components yet.");
 
-    let cfg = config_with(FORMULA_TOPOLOGY).await;
+    let (cfg, _dir) = config_with(FORMULA_TOPOLOGY).await;
     let (status, body) = call_json(
         cfg,
         get("/api/mg/2200/formula?metric=battery&component_ids=99"),
@@ -485,7 +472,7 @@ async fn a_formula_error_is_400_with_its_kind() {
 
 #[tokio::test]
 async fn format_endpoint_pretty_prints_lisp() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call(
         cfg,
         post("/api/format?width=20", "(when (< x 5)(inc x)(princ x))"),
@@ -503,7 +490,7 @@ async fn format_endpoint_pretty_prints_lisp() {
 /// The Defaults panel shows old keywords under their new names.
 #[tokio::test]
 async fn defaults_endpoint_shows_new_keyword_names() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     cfg.eval("(setq meter-defaults '(:interval 500))").unwrap();
     let (status, body) = call(cfg, get("/api/defaults")).await;
     assert_eq!(status, StatusCode::OK);
@@ -521,7 +508,7 @@ async fn defaults_endpoint_shows_new_keyword_names() {
 
 #[tokio::test]
 async fn format_endpoint_returns_400_on_parse_error() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call(cfg, post("/api/format", "(unbalanced")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(!error_of(&body).is_empty());
@@ -532,7 +519,7 @@ async fn history_endpoint_returns_recent_samples() {
     // Build a site with a battery, then drive the sampler twice
     // synchronously so the rings have content to query. Battery
     // publishes soc_pct in its telemetry; that's what we query.
-    let cfg = config_with("(%make-battery :id 1000)").await;
+    let (cfg, _dir) = config_with("(%make-battery :id 1000)").await;
     let site = cfg.site();
     let now = chrono::Utc::now();
     site.record_history_snapshot(now - chrono::Duration::seconds(2));
@@ -558,7 +545,7 @@ async fn history_endpoint_returns_recent_samples() {
 
 #[tokio::test]
 async fn history_endpoint_rejects_unknown_metric() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call(cfg, get("/api/mg/2200/component/1/history?metric=foo")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(error_of(&body).contains("unknown metric"));
@@ -566,7 +553,7 @@ async fn history_endpoint_rejects_unknown_metric() {
 
 #[tokio::test]
 async fn history_endpoint_returns_empty_for_unknown_component() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call(
         cfg,
         get("/api/mg/2200/component/999/history?metric=active_power_w"),
@@ -583,7 +570,7 @@ async fn eval_endpoint_mutates_world() {
     // up in the topology endpoint immediately afterwards. This is
     // the load-bearing claim of the "Lisp eval as the unifying
     // mutation API" design.
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, _) = call(
         cfg.clone(),
         post("/api/eval", "(%make-grid-connection-point :id 42)"),
@@ -599,7 +586,7 @@ async fn eval_endpoint_mutates_world() {
 
 #[tokio::test]
 async fn scenario_endpoints_round_trip_lifecycle_and_events() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
 
     // Pre-start: name is null, count is 0.
     let (_, body) = call(cfg.clone(), get("/api/mg/2200/scenario")).await;
@@ -653,7 +640,7 @@ async fn scenario_endpoints_round_trip_lifecycle_and_events() {
 /// body; an unknown name is a JSON 400.
 #[tokio::test]
 async fn scenario_start_and_stop_answer_204() {
-    let cfg = config_with(
+    let (cfg, _dir) = config_with(
         "(make-microgrid :id 2200 :grpc-port 8800 :topology (lambda () nil))
          (define-scenario :name \"tiny\" :schedule 'relative :length \"60s\")",
     )
@@ -681,7 +668,7 @@ async fn scenario_start_and_stop_answer_204() {
 
 #[tokio::test]
 async fn scenario_report_endpoint_returns_grid_peak() {
-    let cfg = config_with(
+    let (cfg, _dir) = config_with(
         "(%make-grid-connection-point
            :id 1
            :successors (list (%make-meter :id 2)))
@@ -707,14 +694,14 @@ async fn scenario_report_endpoint_returns_grid_peak() {
 /// microgrid, but its events land on the first one only.
 #[tokio::test]
 async fn scenario_readouts_read_each_microgrids_own_journal() {
-    let cfg = config_with(
+    let (cfg, _dir) = config_with(
         "(make-microgrid :id 2200 :grpc-port 8800 :topology (lambda () \
            (%make-meter :id 1)))\n\
          (make-microgrid :id 2201 :grpc-port 8802 :topology (lambda () nil))",
     )
     .await;
     call(cfg.clone(), post("/api/eval", "(scenario-start \"two\")")).await;
-    let csv_dir = std::env::temp_dir().join(format!("mc-readouts-csv-{}", std::process::id()));
+    let csv_dir = TestDir::new("mc-readouts-csv-");
     call(
         cfg.clone(),
         post(
@@ -829,7 +816,7 @@ fn seed_dispatch(
 
 #[tokio::test]
 async fn dispatches_endpoint_lists_microgrid_dispatches_newest_first() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let store = cfg.dispatches();
     seed_dispatch(&store, 2200, 1, "ALPHA", true);
     seed_dispatch(&store, 2200, 2, "PEAK_SHAVE", false);
@@ -852,7 +839,7 @@ async fn dispatches_endpoint_lists_microgrid_dispatches_newest_first() {
 
 #[tokio::test]
 async fn dispatches_endpoint_empty_for_microgrid_without_dispatches() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call(cfg, get("/api/mg/2200/dispatches")).await;
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -886,7 +873,7 @@ fn active_dispatch(type_: &str) -> crate::proto::dispatch::DispatchData {
 
 #[tokio::test]
 async fn dispatch_create_endpoint_stores_and_returns_view() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call(
         cfg.clone(),
         post_json(
@@ -919,7 +906,7 @@ async fn dispatch_create_endpoint_stores_and_returns_view() {
 
 #[tokio::test]
 async fn dispatch_start_is_an_rfc3339_instant() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call(
         cfg.clone(),
         post_json(
@@ -945,7 +932,7 @@ async fn dispatch_start_is_an_rfc3339_instant() {
 
 #[tokio::test]
 async fn dispatch_start_that_is_not_rfc3339_is_400_naming_the_field() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call(
         cfg.clone(),
         post_json(
@@ -963,7 +950,7 @@ async fn dispatch_start_that_is_not_rfc3339_is_400_naming_the_field() {
 /// naming it.
 #[tokio::test]
 async fn dispatch_create_refuses_start_ms() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call_json(
         cfg.clone(),
         post_json(
@@ -979,7 +966,7 @@ async fn dispatch_create_refuses_start_ms() {
 
 #[tokio::test]
 async fn dispatch_create_endpoint_accepts_recurrence() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call(
         cfg.clone(),
         post_json(
@@ -1023,7 +1010,7 @@ async fn dispatch_create_endpoint_accepts_recurrence() {
 
 #[tokio::test]
 async fn dispatch_create_endpoint_rejects_bad_target() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, _) = call(
         cfg,
         post_json(
@@ -1037,7 +1024,7 @@ async fn dispatch_create_endpoint_rejects_bad_target() {
 
 #[tokio::test]
 async fn dispatch_active_endpoint_pauses_and_resumes() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let id = cfg
         .dispatches()
         .create(2200, active_dispatch("X"), true)
@@ -1088,7 +1075,7 @@ async fn dispatch_active_endpoint_pauses_and_resumes() {
 
 #[tokio::test]
 async fn dispatch_delete_endpoint_removes_then_404s() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let id = cfg
         .dispatches()
         .create(2200, active_dispatch("X"), true)
@@ -1115,7 +1102,7 @@ async fn dispatch_delete_endpoint_removes_then_404s() {
 /// structured HTTP error (400/404 + JSON), not an `ok: false` payload.
 #[tokio::test]
 async fn control_drive_sets_meter_power() {
-    let cfg = config_with("(%make-meter :id 7)").await;
+    let (cfg, _dir) = config_with("(%make-meter :id 7)").await;
     let (status, _) = call(
         cfg.clone(),
         post_json("/api/mg/2200/component/7/drive", r#"{"power_w": 1234.5}"#),
@@ -1143,7 +1130,7 @@ async fn control_drive_sets_meter_power() {
 /// power_factor are both 400s.
 #[tokio::test]
 async fn drive_op_accepts_reactive_var_and_power_factor() {
-    let cfg = config_with(
+    let (cfg, _dir) = config_with(
         "(%make-meter :id 7 :power-w 8000.0)
                             (%make-solar-inverter :id 8)",
     )
@@ -1227,7 +1214,7 @@ async fn drive_op_accepts_reactive_var_and_power_factor() {
 /// first. Validate-first: the meter's existing Q override is untouched.
 #[tokio::test]
 async fn drive_op_rejects_reactive_var_with_power_factor() {
-    let cfg = config_with("(%make-meter :id 7 :power-w 8000.0)").await;
+    let (cfg, _dir) = config_with("(%make-meter :id 7 :power-w 8000.0)").await;
 
     // Land a Q override first, so a silent overwrite would be visible.
     let (status, _) = call(
@@ -1263,7 +1250,7 @@ async fn drive_op_rejects_reactive_var_with_power_factor() {
 /// component's runtime, a bad value is a 400 and changes nothing.
 #[tokio::test]
 async fn control_status_flips_health_and_rejects_bad_values() {
-    let cfg = config_with("(%make-meter :id 7)").await;
+    let (cfg, _dir) = config_with("(%make-meter :id 7)").await;
     let (status, _) = call(
         cfg.clone(),
         post_json("/api/mg/2200/component/7/status", r#"{"health": "error"}"#),
@@ -1309,7 +1296,7 @@ async fn control_status_flips_health_and_rejects_bad_values() {
 /// `command_mode=normal` in the same request must not re-open it.
 #[tokio::test]
 async fn control_status_health_error_forbids_command_normal() {
-    let cfg = config_with("(%make-meter :id 7)").await;
+    let (cfg, _dir) = config_with("(%make-meter :id 7)").await;
     let (status, body) = call(
         cfg.clone(),
         post_json(
@@ -1332,7 +1319,7 @@ async fn control_status_health_error_forbids_command_normal() {
 /// microgrid is a 404 before the component is even looked at.
 #[tokio::test]
 async fn control_for_mg_requires_a_registered_microgrid() {
-    let cfg = config_with("(%make-meter :id 7)").await;
+    let (cfg, _dir) = config_with("(%make-meter :id 7)").await;
     let (status, body) = call(
         cfg,
         post_json("/api/mg/33/component/7/drive", r#"{"power_w": 1.0}"#),
@@ -1347,7 +1334,7 @@ async fn control_for_mg_requires_a_registered_microgrid() {
 /// nearly-empty or nearly-full pool without simulating the charge.
 #[tokio::test]
 async fn control_drive_sets_battery_soc() {
-    let cfg = config_with("(%make-battery :id 4 :initial-soc-pct 60.0)").await;
+    let (cfg, _dir) = config_with("(%make-battery :id 4 :initial-soc-pct 60.0)").await;
     let (status, _) = call(
         cfg.clone(),
         post_json("/api/mg/2200/component/4/drive", r#"{"soc_pct": 11.5}"#),
@@ -1374,7 +1361,7 @@ async fn control_drive_sets_battery_soc() {
 /// stimulus on the right category still lands (sunlight covered here).
 #[tokio::test]
 async fn control_drive_rejects_wrong_category() {
-    let cfg = config_with(
+    let (cfg, _dir) = config_with(
         "(%make-meter :id 7)
          (%make-solar-inverter :id 8)",
     )
@@ -1436,7 +1423,7 @@ const FORMULA_TOPOLOGY: &str = r#"(%make-grid-connection-point :id 1
 
 #[tokio::test]
 async fn formula_endpoint_returns_formula() {
-    let cfg = config_with(FORMULA_TOPOLOGY).await;
+    let (cfg, _dir) = config_with(FORMULA_TOPOLOGY).await;
     let (status, body) = call(cfg, get("/api/mg/2200/formula?metric=battery")).await;
     assert_eq!(status, StatusCode::OK);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -1453,7 +1440,7 @@ async fn formula_endpoint_returns_formula() {
 
 #[tokio::test]
 async fn formula_endpoint_rejects_unknown_metric_and_bad_ids() {
-    let cfg = config_with(FORMULA_TOPOLOGY).await;
+    let (cfg, _dir) = config_with(FORMULA_TOPOLOGY).await;
     let (status, body) = call(cfg.clone(), get("/api/mg/2200/formula?metric=bogus")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(error_of(&body).contains("bogus"));
@@ -1475,7 +1462,7 @@ async fn formula_endpoint_rejects_unknown_metric_and_bad_ids() {
 
 #[tokio::test]
 async fn formula_endpoint_reports_error_kind_for_missing_component() {
-    let cfg = config_with(FORMULA_TOPOLOGY).await;
+    let (cfg, _dir) = config_with(FORMULA_TOPOLOGY).await;
     let (status, body) = call(
         cfg,
         get("/api/mg/2200/formula?metric=battery&component_ids=99"),
@@ -1489,7 +1476,7 @@ async fn formula_endpoint_reports_error_kind_for_missing_component() {
 #[tokio::test]
 async fn formula_endpoint_honors_allow_unconnected() {
     // The same battery topology, plus a meter nobody connects to.
-    let cfg = config_with(
+    let (cfg, _dir) = config_with(
         r#"(progn
              (%make-meter :id 9)
              (%make-grid-connection-point :id 1
@@ -1517,14 +1504,14 @@ async fn formula_endpoint_honors_allow_unconnected() {
 
 #[tokio::test]
 async fn formula_endpoint_404s_unknown_microgrid() {
-    let cfg = config_with(FORMULA_TOPOLOGY).await;
+    let (cfg, _dir) = config_with(FORMULA_TOPOLOGY).await;
     let (status, _) = call(cfg, get("/api/mg/9999/formula?metric=grid")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
 async fn microgrids_import_creates_entry_and_managed_file() {
-    let cfg = config_with("(%make-grid-connection-point :id 1)").await;
+    let (cfg, _dir) = config_with("(%make-grid-connection-point :id 1)").await;
     let body = r#"{
       "name": "imported site",
       "components": {"electricalComponents": [
@@ -1589,7 +1576,7 @@ async fn microgrids_import_creates_entry_and_managed_file() {
 #[tokio::test]
 async fn ui_created_microgrid_survives_a_restart() {
     let (config, dir) =
-        config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
+        config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     // Create via the endpoint, add components via scoped eval.
     let (st, body) = call(
         config.clone(),
@@ -1627,7 +1614,11 @@ async fn ui_created_microgrid_survives_a_restart() {
 
     // "Restart": a brand-new Config on the same state dir, loading the file.
     let file = dir.join(format!("microgrids/{id}.lisp"));
-    let cfg2 = Config::new_with(&[file.to_string_lossy().into_owned()], Some(dir.clone())).unwrap();
+    let cfg2 = Config::new_with(
+        &[file.to_string_lossy().into_owned()],
+        Some(dir.to_path_buf()),
+    )
+    .unwrap();
     let reg = cfg2.microgrids();
     let r = reg.lock();
     let e = r.get(&id).expect("microgrid survives the restart");
@@ -1646,7 +1637,7 @@ async fn ui_created_microgrid_survives_a_restart() {
 #[tokio::test]
 async fn microgrids_import_rejects_id_collisions_atomically() {
     // Component id 1 already exists in the config's microgrid.
-    let cfg = config_with("(%make-grid-connection-point :id 1)").await;
+    let (cfg, _dir) = config_with("(%make-grid-connection-point :id 1)").await;
     let body = r#"{
       "name": "colliding site",
       "components": {"electricalComponents": [
@@ -1668,7 +1659,7 @@ async fn microgrids_import_serializes_racing_imports() {
     // lock runs them one at a time, so the loser's collision scan
     // sees the winner's components and returns 409 — component ids
     // stay enterprise-unique, with no silent duplicate.
-    let cfg = config_with("(%make-grid-connection-point :id 1)").await;
+    let (cfg, _dir) = config_with("(%make-grid-connection-point :id 1)").await;
     let body = |name: &str| {
         format!(
             r#"{{
@@ -1700,7 +1691,7 @@ async fn microgrids_import_serializes_racing_imports() {
 
 #[tokio::test]
 async fn microgrids_import_rejects_unsupported_category() {
-    let cfg = config_with("(%make-grid-connection-point :id 1)").await;
+    let (cfg, _dir) = config_with("(%make-grid-connection-point :id 1)").await;
     let body = r#"{
       "name": "hvac site",
       "components": {"electricalComponents": [
@@ -1716,7 +1707,7 @@ async fn microgrids_import_rejects_unsupported_category() {
 /// knobs derive from it and the site enforces them.
 #[tokio::test]
 async fn operational_mode_eval_derives_and_is_enforced() {
-    let cfg = config_with("(%make-grid-connection-point :id 1)").await;
+    let (cfg, _dir) = config_with("(%make-grid-connection-point :id 1)").await;
     let (status, body) = call(
         cfg.clone(),
         post(
@@ -1755,7 +1746,7 @@ async fn operational_mode_eval_derives_and_is_enforced() {
 /// mid-load, and the load runs on in the blocking pool.
 #[tokio::test]
 async fn create_lock_outlives_a_dropped_handler_until_the_load_ends() {
-    let config =
+    let (config, _dir) =
         config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
@@ -1792,7 +1783,7 @@ async fn create_lock_outlives_a_dropped_handler_until_the_load_ends() {
 #[tokio::test]
 async fn load_endpoint_offers_load_as_on_collision() {
     let (config, dir) =
-        config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
+        config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     let text = crate::lisp::microgrid_file::compose(
         "(make-microgrid :id 9 :name \"dup\" :grpc-port 8890\n  :topology\n  (lambda ()\n    nil))",
         "",
@@ -1830,7 +1821,7 @@ async fn load_endpoint_offers_load_as_on_collision() {
 #[tokio::test]
 async fn load_as_reports_a_committed_partial_as_a_warning_not_a_conflict() {
     let (config, dir) =
-        config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
+        config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     let text = crate::lisp::microgrid_file::compose(
         "(make-microgrid :id 40 :name \"p\" :grpc-port 8840\n  :topology\n  \
          (lambda ()\n    (%make-meter :id 410)))",
@@ -1861,7 +1852,7 @@ async fn load_as_reports_a_committed_partial_as_a_warning_not_a_conflict() {
 #[tokio::test]
 async fn load_as_waits_for_a_create_in_flight() {
     let (config, dir) =
-        config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
+        config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     let text = crate::lisp::microgrid_file::compose(
         "(make-microgrid :id 44 :name \"w\" :grpc-port 8844\n  :topology\n  (lambda ()\n    nil))",
         "",
@@ -1889,7 +1880,7 @@ async fn load_as_waits_for_a_create_in_flight() {
 #[tokio::test]
 async fn snapshot_load_as_waits_for_a_create_in_flight() {
     let (config, _dir) =
-        config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
+        config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     call(
         config.clone(),
         post_json("/api/microgrids", r#"{"name":"s","id":46}"#),
@@ -1929,7 +1920,7 @@ async fn snapshot_load_as_waits_for_a_create_in_flight() {
 #[tokio::test]
 async fn a_repeated_load_as_is_an_error_not_a_fabricated_warning() {
     let (config, dir) =
-        config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
+        config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     let text = crate::lisp::microgrid_file::compose(
         "(make-microgrid :id 42 :name \"ok\" :grpc-port 8842\n  :topology\n  \
          (lambda ()\n    (%make-meter :id 420)))",
@@ -1960,7 +1951,7 @@ async fn a_repeated_load_as_is_an_error_not_a_fabricated_warning() {
 #[tokio::test]
 async fn undo_reverts_the_last_structural_edit() {
     let (config, _dir) =
-        config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
+        config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     let (st, body) = call(
         config.clone(),
         post_json("/api/microgrids", r#"{"name":"u","id":30}"#),
@@ -2001,7 +1992,7 @@ async fn undo_reverts_the_last_structural_edit() {
 #[tokio::test]
 async fn snapshots_are_per_microgrid() {
     let (config, dir) =
-        config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
+        config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     call(
         config.clone(),
         post_json("/api/microgrids", r#"{"name":"s","id":31}"#),
@@ -2074,7 +2065,7 @@ async fn snapshots_are_per_microgrid() {
 /// commented out, so later structural edits regenerate the file.
 #[tokio::test]
 async fn adopt_makes_an_unmanaged_single_mg_file_managed() {
-    let (config, dir) = config_with_dir(
+    let (config, dir) = config_with(
         "(make-microgrid :id 9 :grpc-port 8800 :topology \
                                          (lambda () (%make-meter :id 700 :power-w 100.0)))",
     )
@@ -2103,7 +2094,7 @@ async fn adopt_makes_an_unmanaged_single_mg_file_managed() {
 #[tokio::test]
 async fn concurrent_creates_get_distinct_microgrids() {
     let (config, _dir) =
-        config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
+        config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     let (a, b) = tokio::join!(
         call(
             config.clone(),
@@ -2139,7 +2130,7 @@ async fn concurrent_creates_get_distinct_microgrids() {
 /// refused, as another microgrid's would be.
 #[tokio::test]
 async fn create_refuses_a_reserved_port() {
-    let config = config_with("nil").await;
+    let (config, _dir) = config_with("nil").await;
     let ports = [config.assets_socket_addr(), config.dispatch_socket_addr()]
         .map(|a| a.parse::<std::net::SocketAddr>().unwrap().port());
     for port in ports {
@@ -2163,7 +2154,7 @@ async fn create_refuses_a_reserved_port() {
 #[tokio::test]
 async fn create_refuses_a_taken_id_or_port() {
     let (config, _dir) =
-        config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
+        config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     let (st, body) = call(
         config.clone(),
         post_json(
@@ -2200,7 +2191,7 @@ async fn create_refuses_a_taken_id_or_port() {
 /// With inert runtimes, nothing is started and the list says so.
 #[tokio::test]
 async fn the_list_reports_no_runtime_under_inert_runtimes() {
-    let config = config_with("nil").await;
+    let (config, _dir) = config_with("nil").await;
     let (st, body) = call(config, get("/api/microgrids")).await;
     assert_eq!(st, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -2240,7 +2231,7 @@ async fn listed(
 /// create answer and in the list.
 #[tokio::test]
 async fn create_reports_the_bound_address() {
-    let config = config_with("nil").await;
+    let (config, _dir) = config_with("nil").await;
     let runtimes = live_runtimes(&config, true);
     let (st, body) = call_with(
         config.clone(),
@@ -2271,7 +2262,7 @@ async fn create_reports_the_bound_address() {
 async fn create_on_a_held_port_reports_a_failed_runtime() {
     let holder = std::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)).unwrap();
     let port = holder.local_addr().unwrap().port();
-    let config = config_with("nil").await;
+    let (config, _dir) = config_with("nil").await;
     let runtimes = live_runtimes(&config, false);
     let (st, body) = call_with(
         config.clone(),
@@ -2299,7 +2290,7 @@ async fn create_on_a_held_port_reports_a_failed_runtime() {
 /// file declaring two microgrids is refused instead of losing one.
 #[tokio::test]
 async fn adopt_refuses_a_file_declaring_two_microgrids() {
-    let (config, _dir) = config_with_dir(
+    let (config, _dir) = config_with(
         "(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))\n\
          (make-microgrid :id 10 :grpc-port 8810 :topology (lambda () nil))",
     )
@@ -2319,7 +2310,7 @@ async fn adopt_refuses_a_file_declaring_two_microgrids() {
 #[tokio::test]
 async fn undo_depths_track_edits() {
     let (config, _dir) =
-        config_with_dir("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
+        config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     call(
         config.clone(),
         post_json("/api/microgrids", r#"{"name":"d","id":32}"#),
@@ -2365,7 +2356,7 @@ fn browser_post(path: &str, host: &str, origin: Option<&str>, body: &str) -> Req
 
 #[tokio::test]
 async fn origin_guard_passes_same_origin_browser_requests() {
-    let config = config_with("").await;
+    let (config, _dir) = config_with("").await;
     let (st, _) = call(
         config.clone(),
         browser_post(
@@ -2404,7 +2395,7 @@ async fn origin_guard_passes_same_origin_browser_requests() {
 
 #[tokio::test]
 async fn origin_guard_rejects_foreign_origin_and_rebound_host() {
-    let config = config_with("").await;
+    let (config, _dir) = config_with("").await;
     // Cross-origin POST — text/plain needs no CORS preflight, and
     // executing it would run attacker Lisp, so the guard must reject
     // before routing.
@@ -2441,7 +2432,7 @@ async fn eval_body_is_capped_by_the_default_limit() {
     // Pin axum's stock 2 MB `DefaultBodyLimit` on /api/eval so a
     // future extractor or layer reshuffle can't silently drop the
     // cap on the code-execution endpoint.
-    let config = config_with("").await;
+    let (config, _dir) = config_with("").await;
     let (st, body) = call(config, post("/api/eval", &"x".repeat(3 * 1024 * 1024))).await;
     assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
     assert!(!error_of(&body).is_empty());
@@ -2451,7 +2442,7 @@ async fn eval_body_is_capped_by_the_default_limit() {
 /// JSON error.
 #[tokio::test]
 async fn a_non_utf8_eval_body_is_a_json_error() {
-    let config = config_with("").await;
+    let (config, _dir) = config_with("").await;
     let req = Request::builder()
         .method(Method::POST)
         .uri("/api/eval")
@@ -2466,7 +2457,7 @@ async fn a_non_utf8_eval_body_is_a_json_error() {
 async fn setpoints_resolve_per_microgrid() {
     use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
     // Two microgrids: 9 and 31.
-    let config =
+    let (config, _dir) =
         config_with("(make-microgrid :id 9 :grpc-port 8800 :topology (lambda () nil))").await;
     call(
         config.clone(),
@@ -2522,7 +2513,7 @@ async fn setpoints_resolve_per_microgrid() {
 /// underlying reactive source.
 #[tokio::test]
 async fn component_snapshot_reads_meter_knobs_and_envelope() {
-    let cfg = config_with("(%make-meter :id 7)").await;
+    let (cfg, _dir) = config_with("(%make-meter :id 7)").await;
     call(cfg.clone(), post("/api/eval", "(set-meter-power 7 1500)")).await;
     call(
         cfg.clone(),
@@ -2552,7 +2543,7 @@ async fn component_snapshot_reads_meter_knobs_and_envelope() {
 /// A quoted or symbol source prints its Lisp form readably in `expr`.
 #[tokio::test]
 async fn component_snapshot_prints_expression_sources() {
-    let cfg = config_with("(%make-meter :id 7)").await;
+    let (cfg, _dir) = config_with("(%make-meter :id 7)").await;
     let (status, _) = call(
         cfg.clone(),
         post("/api/eval", "(set-meter-power 7 '(lambda () 25))"),
@@ -2583,7 +2574,7 @@ async fn component_snapshot_prints_expression_sources() {
 /// `value` still reflects the lambda's result either way.
 #[tokio::test]
 async fn component_snapshot_ships_raw_compiled_defun_expr() {
-    let cfg = config_with("(%make-meter :id 7)").await;
+    let (cfg, _dir) = config_with("(%make-meter :id 7)").await;
     let (status, _) = call(
         cfg.clone(),
         post("/api/eval", "(set-meter-power 7 (lambda () 25))"),
@@ -2610,7 +2601,7 @@ async fn component_snapshot_ships_raw_compiled_defun_expr() {
 
 #[tokio::test]
 async fn component_snapshot_404s_unknown_ids() {
-    let cfg = config_with("(%make-meter :id 7)").await;
+    let (cfg, _dir) = config_with("(%make-meter :id 7)").await;
     let (status, _b) = call(cfg.clone(), get("/api/mg/2200/component/99")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, _b) = call(cfg, get("/api/mg/9999/component/7")).await;
@@ -2627,7 +2618,7 @@ async fn component_snapshot_404s_unknown_ids() {
 /// without dragging in a whole battery rig.
 #[tokio::test]
 async fn component_snapshot_inverter_knobs_and_reactive_envelope() {
-    let cfg = config_with(
+    let (cfg, _dir) = config_with(
         "(%make-solar-inverter :id 4)
          (%make-battery-inverter :id 5)
          (connect 4 5)",
@@ -2672,7 +2663,7 @@ async fn component_snapshot_inverter_knobs_and_reactive_envelope() {
 /// — the once-a-second flicker this test guards against.
 #[tokio::test]
 async fn component_snapshot_reactive_envelope_falls_back_to_own_bounds() {
-    let cfg = config_with(
+    let (cfg, _dir) = config_with(
         "(%make-battery-inverter :id 3
            :successors (list (%make-battery :id 4)))",
     )
@@ -2716,7 +2707,7 @@ async fn component_snapshot_reactive_envelope_falls_back_to_own_bounds() {
 #[tokio::test]
 async fn component_snapshot_reports_remaining_s_for_a_timed_setpoint() {
     use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
-    let cfg = config_with("(%make-solar-inverter :id 4)").await;
+    let (cfg, _dir) = config_with("(%make-solar-inverter :id 4)").await;
     let lifetime_s: f64 = 5.0;
     let (status, _) = call(
         cfg.clone(),
@@ -2762,7 +2753,7 @@ async fn component_snapshot_reports_remaining_s_for_a_timed_setpoint() {
 /// shows up with the constant value just set, no `expr`.
 #[tokio::test]
 async fn component_snapshot_reads_reactive_var_knob() {
-    let cfg = config_with("(%make-meter :id 7)").await;
+    let (cfg, _dir) = config_with("(%make-meter :id 7)").await;
     let (status, _) = call(
         cfg.clone(),
         post("/api/eval", "(set-meter-reactive-power 7 1250)"),
@@ -2793,7 +2784,7 @@ async fn component_snapshot_reads_reactive_var_knob() {
 async fn control_drive_broadcasts_knob_changed() {
     use crate::sim::events::SiteEvent;
 
-    let cfg = config_with("(%make-meter :id 7)").await;
+    let (cfg, _dir) = config_with("(%make-meter :id 7)").await;
     let mut rx = cfg.site().subscribe_events();
     let (status, _) = call(
         cfg,
@@ -2827,7 +2818,7 @@ async fn control_drive_broadcasts_knob_changed() {
 async fn control_drive_clear_sunlight_broadcasts_weather_marker() {
     use crate::sim::events::SiteEvent;
 
-    let cfg = config_with("(%make-solar-inverter :id 8 :sunlight-pct 40)").await;
+    let (cfg, _dir) = config_with("(%make-solar-inverter :id 8 :sunlight-pct 40)").await;
     call(
         cfg.clone(),
         post_json(
@@ -2875,7 +2866,7 @@ async fn control_drive_clear_sunlight_broadcasts_weather_marker() {
 /// with can only come back from the snapshot the clear itself took.
 #[tokio::test]
 async fn drive_clear_sunlight_inside_a_scenario_restores_on_stop() {
-    let cfg = config_with("(%make-solar-inverter :id 8 :sunlight-pct 40)").await;
+    let (cfg, _dir) = config_with("(%make-solar-inverter :id 8 :sunlight-pct 40)").await;
     let knob = |body: Vec<u8>| -> serde_json::Value {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         v["knobs"]
@@ -2928,7 +2919,7 @@ async fn drive_clear_sunlight_inside_a_scenario_restores_on_stop() {
 /// knobs and its thermostat target.
 #[tokio::test]
 async fn component_snapshot_boiler_knobs_and_pressure_target() {
-    let cfg = config_with("(%make-steam-boiler :id 6 :target-bar 8.0)").await;
+    let (cfg, _dir) = config_with("(%make-steam-boiler :id 6 :target-bar 8.0)").await;
     let (status, _) = call(cfg.clone(), post("/api/eval", "(set-boiler-demand 6 40)")).await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = call(cfg.clone(), post("/api/eval", "(set-boiler-pressure 6 9)")).await;
@@ -2951,7 +2942,7 @@ async fn component_snapshot_boiler_knobs_and_pressure_target() {
 /// lists none.
 #[tokio::test]
 async fn component_snapshot_lists_exactly_the_knobs_each_kind_has() {
-    let cfg = config_with(
+    let (cfg, _dir) = config_with(
         "(%make-grid-connection-point :id 1
            :successors
            (list (%make-meter :id 2 :power-w 1000.0 :reactive-power-var 200.0)
@@ -2995,7 +2986,7 @@ async fn component_snapshot_lists_exactly_the_knobs_each_kind_has() {
 /// An unknown path answers the JSON 404, naming the method and path.
 #[tokio::test]
 async fn an_unknown_path_is_a_json_404() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call_json(cfg, get("/api/nope")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(error_of(&body), "no route for GET /api/nope");
@@ -3005,7 +2996,7 @@ async fn an_unknown_path_is_a_json_404() {
 /// JSON error.
 #[tokio::test]
 async fn a_ws_events_get_without_upgrade_is_a_json_error() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call_json(cfg, get("/ws/events")).await;
     assert!(status.is_client_error(), "{status}");
     assert!(!error_of(&body).is_empty());
@@ -3015,7 +3006,7 @@ async fn a_ws_events_get_without_upgrade_is_a_json_error() {
 /// nested per-microgrid router too.
 #[tokio::test]
 async fn a_wrong_method_is_a_json_405() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let req = Request::builder()
         .method(Method::GET)
         .uri("/api/microgrids/import")
@@ -3034,7 +3025,7 @@ async fn a_wrong_method_is_a_json_405() {
 /// rejection text.
 #[tokio::test]
 async fn a_malformed_json_body_is_a_json_400() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let req = Request::builder()
         .method(Method::POST)
         .uri("/api/mg/2200/component/1/drive")
@@ -3049,7 +3040,7 @@ async fn a_malformed_json_body_is_a_json_400() {
 /// A missing required query parameter is a JSON 400.
 #[tokio::test]
 async fn a_missing_query_parameter_is_a_json_400() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call_json(cfg, get("/api/mg/2200/formula")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(error_of(&body).contains("metric"), "{}", error_of(&body));
@@ -3058,7 +3049,7 @@ async fn a_missing_query_parameter_is_a_json_400() {
 /// The origin guard rejects with JSON and no trailing newline.
 #[tokio::test]
 async fn the_origin_guard_rejects_with_json() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let req = Request::builder()
         .uri("/api/microgrids")
         .header("host", "evil.example")
@@ -3104,7 +3095,7 @@ async fn the_origin_guard_rejects_with_json() {
 /// A handler error keeps its message and comes back as JSON.
 #[tokio::test]
 async fn a_handler_error_is_json_with_its_old_text() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call_json(cfg, get("/api/scripts?dir=..")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(error_of(&body), "invalid dir");
@@ -3114,7 +3105,7 @@ async fn a_handler_error_is_json_with_its_old_text() {
 /// not silently ignored.
 #[tokio::test]
 async fn an_old_field_name_is_refused() {
-    let cfg = config_with("(%make-meter :id 7)").await;
+    let (cfg, _dir) = config_with("(%make-meter :id 7)").await;
     let (status, body) = call_json(
         cfg,
         post_json("/api/mg/2200/component/7/drive", r#"{"reactive_var": 10}"#),
@@ -3131,7 +3122,7 @@ async fn an_old_field_name_is_refused() {
 /// Every query struct refuses a name it does not know.
 #[tokio::test]
 async fn an_unknown_query_name_is_refused() {
-    let cfg = config_with("(%make-battery :id 1000)").await;
+    let (cfg, _dir) = config_with("(%make-battery :id 1000)").await;
     for (path, field) in [
         (
             "/api/mg/2200/component/1000/history?metric=soc_pct&window=10",
@@ -3152,7 +3143,7 @@ async fn an_unknown_query_name_is_refused() {
 /// in kg/s.
 #[tokio::test]
 async fn steam_demand_is_driven_and_read_in_kg_per_s() {
-    let cfg = config_with("(%make-steam-boiler :id 9)").await;
+    let (cfg, _dir) = config_with("(%make-steam-boiler :id 9)").await;
     let (status, body) = call(
         cfg.clone(),
         post_json(
@@ -3192,7 +3183,7 @@ async fn steam_demand_is_driven_and_read_in_kg_per_s() {
 
 #[tokio::test]
 async fn weather_reports_unit_names() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, _) = call(
         cfg.clone(),
         post(
@@ -3286,7 +3277,7 @@ async fn weather_reports_unit_names() {
 /// An import claims the new microgrid's id under `id`; `mid` is refused.
 #[tokio::test]
 async fn import_claims_the_new_microgrids_id_as_id() {
-    let cfg = config_with("(%make-grid-connection-point :id 1)").await;
+    let (cfg, _dir) = config_with("(%make-grid-connection-point :id 1)").await;
     let body = |key: &str| {
         format!(
             r#"{{"name": "imported", "{key}": 77,
@@ -3311,7 +3302,7 @@ async fn import_claims_the_new_microgrids_id_as_id() {
 /// A snapshot loads as a new microgrid under `id`; `as_id` is refused.
 #[tokio::test]
 async fn snapshot_load_refuses_as_id() {
-    let cfg = config_with("").await;
+    let (cfg, _dir) = config_with("").await;
     let (status, body) = call_json(
         cfg,
         post_json(
@@ -3328,7 +3319,7 @@ async fn snapshot_load_refuses_as_id() {
 /// refused.
 #[tokio::test]
 async fn formula_takes_component_ids() {
-    let cfg = config_with(FORMULA_TOPOLOGY).await;
+    let (cfg, _dir) = config_with(FORMULA_TOPOLOGY).await;
     let (status, body) = call_json(
         cfg.clone(),
         get("/api/mg/2200/formula?metric=battery&component_ids=4"),
@@ -3348,7 +3339,7 @@ async fn formula_takes_component_ids() {
 /// The envelope carries its unit in each name.
 #[tokio::test]
 async fn component_envelope_names_carry_units() {
-    let cfg = config_with("(%make-meter :id 7)").await;
+    let (cfg, _dir) = config_with("(%make-meter :id 7)").await;
     call(cfg.clone(), post("/api/eval", "(set-meter-power 7 1500)")).await;
     let (_, body) = call(cfg, get("/api/mg/2200/component/7")).await;
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -3367,7 +3358,7 @@ async fn component_envelope_names_carry_units() {
 #[tokio::test]
 async fn setpoints_response_names_the_component_and_unit() {
     use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
-    let cfg = config_with("(%make-battery :id 1000)").await;
+    let (cfg, _dir) = config_with("(%make-battery :id 1000)").await;
     let ts = Utc::now();
     cfg.site().log_setpoint(
         1000,
@@ -3394,7 +3385,7 @@ async fn setpoints_response_names_the_component_and_unit() {
 /// A scenario's check entries name their component `component_id`.
 #[tokio::test]
 async fn scenario_timeline_names_the_component_id() {
-    let (cfg, dir) = config_with_dir("").await;
+    let (cfg, dir) = config_with("").await;
     let dst_dir = dir.join("sim");
     std::fs::create_dir_all(&dst_dir).unwrap();
     std::fs::copy("sim/scenarios.lisp", dst_dir.join("scenarios.lisp")).unwrap();
@@ -3426,7 +3417,7 @@ async fn scenario_timeline_names_the_component_id() {
 /// The report's power factor at the reactive peak is named for that.
 #[tokio::test]
 async fn scenario_report_names_the_power_factor_at_the_reactive_peak() {
-    let cfg = config_with("(scenario-start \"pf\")").await;
+    let (cfg, _dir) = config_with("(scenario-start \"pf\")").await;
     let now = Utc::now();
     cfg.site().record_grid_power_sample(3000.0, now);
     cfg.site().record_grid_reactive_sample(4000.0, now);
@@ -3441,7 +3432,7 @@ async fn scenario_report_names_the_power_factor_at_the_reactive_peak() {
 /// reactive power is spelled `VAr` in history.
 #[tokio::test]
 async fn report_checks_and_history_carry_units() {
-    let cfg = config_with("(%make-battery :id 1000 :initial-soc-pct 50.0)").await;
+    let (cfg, _dir) = config_with("(%make-battery :id 1000 :initial-soc-pct 50.0)").await;
     let (status, body) = call(
         cfg.clone(),
         post(
