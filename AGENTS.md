@@ -413,6 +413,8 @@ so construction + validation stay identical.
   clone and ticks it every pass — without that, no timer body ever
   runs (the same-ctx model has no background firing thread). In a
   headless `Config`, `refresh_once` and `sim_step` tick it.
+  A timer body's error goes to the log through the `Handle`'s body
+  error handler.
 - Proto roots are vendored under `submodules/`:
   - `submodules/frequenz-api-microgrid` (pinned at v0.18.1) — override
     with `MACROCOSIM_PROTO_ROOT` for a private mirror.

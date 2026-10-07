@@ -234,6 +234,8 @@ What to change in your own scripts:
   `target_soc_pct`, `phases`, `max_current_a`, `capacity_wh`,
   `energy_wh`, `plugged_at` and `state`. It answers 404 for an unknown
   component and 400 for one that is not a charger.
+- The error of a timer body that fails goes to the log, so the UI's log
+  shows it. It was printed to stderr only.
 
 ## Bug Fixes
 

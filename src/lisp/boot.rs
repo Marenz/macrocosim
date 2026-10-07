@@ -298,6 +298,8 @@ impl Config {
             Some(clock) => tulisp_async::register_with_clock(&mut ctx, executor, clock.clone()),
             None => tulisp_async::register(&mut ctx, executor),
         };
+        // A timer body's error goes to the log, which the UI shows.
+        timer_handle.set_body_error_handler(|_, e| log::error!("run-with-timer: {e}"));
 
         // Embedded scenario DSL prelude. The vocabulary a config needs —
         // `at` / `check` / `controller` / `drive-*` / `timeline` /
