@@ -3103,7 +3103,7 @@ mod tests {
             std::mem::forget(rt);
             built
         };
-        let restarted = boot(dir.clone()).expect("second boot reads enterprise.lisp");
+        let restarted = boot(dir.to_path_buf()).expect("second boot reads enterprise.lisp");
         assert_eq!(restarted.metadata().enterprise_id, 77);
         assert_eq!(
             restarted.metadata().default_augment_lifetime,
@@ -3132,7 +3132,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            boot(dir).is_err(),
+            boot(dir.to_path_buf()).is_err(),
             "a broken enterprise file must fail the boot"
         );
     }

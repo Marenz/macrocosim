@@ -6,6 +6,8 @@ pub mod proto_conv;
 pub mod runtime;
 pub mod server;
 pub mod sim;
+#[cfg(test)]
+pub(crate) mod test_dir;
 pub mod timefmt;
 pub mod timeout_tracker;
 pub mod tokio_runtime;

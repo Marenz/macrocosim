@@ -146,7 +146,7 @@ pub(super) fn register(
 mod tests {
     use super::super::super::test_support::config_with;
 
-    fn rig() -> (crate::lisp::Config, std::path::PathBuf) {
+    fn rig() -> (crate::lisp::Config, crate::test_dir::TestDir) {
         config_with(
             "(setq b1 (%make-battery :id 1 :rated-lower-w -10000.0 :rated-upper-w 10000.0))
              (%make-battery-inverter :id 2 :rated-lower-w -10000.0 :rated-upper-w 10000.0

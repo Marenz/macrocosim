@@ -142,7 +142,7 @@ mod tests {
     use chrono::Utc;
     use std::time::Duration;
 
-    fn rig() -> (crate::lisp::Config, std::path::PathBuf) {
+    fn rig() -> (crate::lisp::Config, crate::test_dir::TestDir) {
         config_with(
             "(setq b1 (%make-battery :id 1 :rated-lower-w -5000.0 :rated-upper-w 5000.0))
              (%make-battery-inverter :id 2 :rated-lower-w -4000.0 :rated-upper-w 4000.0

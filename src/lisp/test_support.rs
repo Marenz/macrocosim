@@ -1,26 +1,21 @@
 //! Shared test fixtures for the lisp/ subtree. Every child module's
 //! `#[cfg(test)] mod tests` block builds its `Config` instances
-//! through `config_with`, which seeds a unique temp dir + auto-
+//! through `config_with`, which seeds a fresh temp dir + auto-
 //! wraps the test body in a `(make-microgrid …)` form so callers
 //! don't have to repeat the boilerplate.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::Config;
+use crate::test_dir::TestDir;
 
 static UNIQ: AtomicU64 = AtomicU64::new(0);
 
-/// Build a Config from a tiny config.lisp body in a unique temp
-/// dir; returns the Config + the dir so tests can mess with the
-/// per-microgrid override path.
-pub(super) fn config_with(body: &str) -> (Config, std::path::PathBuf) {
-    let mut dir = std::env::temp_dir();
-    dir.push(format!(
-        "macrocosim-cfg-{}-{}",
-        std::process::id(),
-        UNIQ.fetch_add(1, Ordering::Relaxed),
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+/// Build a Config from a tiny config.lisp body in a fresh temp dir;
+/// returns the Config + the dir so tests can mess with the
+/// per-microgrid override path. Dropping the dir removes it.
+pub(super) fn config_with(body: &str) -> (Config, TestDir) {
+    let dir = TestDir::new("macrocosim-cfg-");
     let path = dir.join("config.lisp");
     let wrapped = wrap_test_body(body);
     std::fs::write(&path, wrapped).unwrap();
