@@ -2464,9 +2464,9 @@ dependencies = [
 
 [[package]]
 name = "tulisp-fmt"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27a4e68a20b8e95fd7f15c001db41fd797aefc1774be2af40b2f359bb04a72b1"
+checksum = "8122c68ab7fa65859e3f8542f0d6e496e4519e11634ffc7dadd4bd072e6f7645"
 
 [[package]]
 name = "tungstenite"

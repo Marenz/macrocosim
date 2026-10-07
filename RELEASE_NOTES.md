@@ -211,6 +211,10 @@ What to change in your own scripts:
 
 - `docs/names-and-units.md` lists the rules and the name of every
   quantity in Lisp, HTTP, macroctl and Python.
+- A `*-defaults` list saved into `enterprise.lisp`, and a form the UI
+  formats, keep each keyword on one line with its value when the list
+  is too wide for one line. Each keyword and each value had a line of
+  its own.
 - macroctl has `set-reactive-power` and `augment-reactive-bounds`.
 - `GET /api/mg/{mg}/component/{id}/ev` reads the car plugged into a
   charger: `plugged`, `presets`, and when plugged `preset`, `soc_pct`,
